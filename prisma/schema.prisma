@@ -749,6 +749,9 @@ model CustomRole {
   name           String // display name, e.g. "Manager"
   baseRole       Role     @default(EMPLOYEE) // legacy-gate fallback
   permissions    String[] // capability keys granted by this role
+  // External/client role: users with it see ONLY the projects they're added to,
+  // and no other part of the app (enforced in middleware + nav + projects API).
+  isExternal     Boolean  @default(false)
   isActive       Boolean  @default(true)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt

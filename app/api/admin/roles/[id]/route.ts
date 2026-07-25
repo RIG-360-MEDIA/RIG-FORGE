@@ -24,9 +24,10 @@ export async function PATCH(
 
     let body: unknown
     try { body = await request.json() } catch { return errorResponse('Invalid JSON', 400) }
-    const { name, baseRole, permissions } = body as Record<string, unknown>
+    const { name, baseRole, permissions, isExternal } = body as Record<string, unknown>
 
-    const data: { name?: string; baseRole?: 'ADMIN' | 'EMPLOYEE'; permissions?: string[] } = {}
+    const data: { name?: string; baseRole?: 'ADMIN' | 'EMPLOYEE'; permissions?: string[]; isExternal?: boolean } = {}
+    if (isExternal !== undefined) data.isExternal = isExternal === true
 
     if (name !== undefined) {
       if (typeof name !== 'string' || name.trim().length < 2)
@@ -46,7 +47,7 @@ export async function PATCH(
     const updated = await prisma.customRole.update({
       where: { id: params.id },
       data,
-      select: { id: true, name: true, baseRole: true, permissions: true },
+      select: { id: true, name: true, baseRole: true, permissions: true, isExternal: true },
     })
 
     // If baseRole changed, keep assigned users' coarse enum role in sync so legacy gates match.

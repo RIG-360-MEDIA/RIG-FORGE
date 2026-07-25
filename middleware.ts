@@ -22,6 +22,7 @@ interface EdgeJWTClaims {
   role: string
   isOnboarding: boolean
   mustChangePassword: boolean
+  isExternal?: boolean
   iat?: number
   exp?: number
 }
@@ -130,6 +131,20 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
   const isChangePasswordPage = pathname === '/dashboard/change-password'
   if (claims.mustChangePassword && isDashboard && !isChangePasswordPage) {
     return NextResponse.redirect(new URL('/dashboard/change-password', request.url))
+  }
+
+  // ── External / client users are locked to their projects ───────────────────
+  // They may only reach the projects area (+ their own profile / password).
+  // Any other dashboard page redirects to /dashboard/projects.
+  if (claims.isExternal && isDashboard) {
+    const allowed =
+      pathname === '/dashboard/projects' ||
+      pathname.startsWith('/dashboard/projects/') ||
+      pathname === '/dashboard/profile' ||
+      isChangePasswordPage
+    if (!allowed) {
+      return NextResponse.redirect(new URL('/dashboard/projects', request.url))
+    }
   }
 
   return NextResponse.next()

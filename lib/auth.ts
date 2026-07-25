@@ -17,6 +17,8 @@ export interface TokenPayload {
   organizationId: string
   /** Present only when the user has an assigned custom role (see lib/permissions.ts tokenCan). */
   capabilities?: string[]
+  /** True when the user's custom role is an external/client role (portal-restricted). */
+  isExternal?: boolean
 }
 
 // Re-exported from the client-safe module so server code can keep importing it

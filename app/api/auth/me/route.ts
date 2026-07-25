@@ -16,7 +16,7 @@ export async function GET(request: NextRequest): Promise<NextResponse<ApiRespons
 
     const user = await prisma.user.findUnique({
       where: { id: payload.userId },
-      include: { customRole: { select: { name: true, permissions: true } } },
+      include: { customRole: { select: { name: true, permissions: true, isExternal: true } } },
     })
     if (!user) return errorResponse('User not found', 404)
 
@@ -34,6 +34,7 @@ export async function GET(request: NextRequest): Promise<NextResponse<ApiRespons
       // Only send capabilities for custom-role users (keeps legacy shape otherwise).
       capabilities: user.customRole ? [...resolveCapabilities(user.role, user.customRole)] : undefined,
       customRoleName: user.customRole?.name ?? null,
+      isExternal: user.customRole?.isExternal === true,
       orgName: branding.orgName,
       orgShort: branding.orgShort,
     }

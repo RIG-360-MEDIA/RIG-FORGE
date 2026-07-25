@@ -32,6 +32,8 @@ export interface AuthUser {
   // gate UI controls. Undefined = legacy shape (admin=all, employee=none).
   capabilities?: string[]
   customRoleName?: string | null
+  // True when the user's custom role is an external/client role (portal-restricted).
+  isExternal?: boolean
   // Per-org (white-label) branding, resolved from the caller's Organization.
   orgName?: string
   orgShort?: string

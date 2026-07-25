@@ -11,6 +11,7 @@ interface CustomRole {
   name: string
   baseRole: 'ADMIN' | 'EMPLOYEE'
   permissions: string[]
+  isExternal?: boolean
   userCount?: number
 }
 
@@ -34,8 +35,9 @@ export default function RolesManager({ open, onClose, onRolesChanged }: RolesMan
   const [name, setName] = useState('')
   const [baseRole, setBaseRole] = useState<'ADMIN' | 'EMPLOYEE'>('EMPLOYEE')
   const [perms, setPerms] = useState<Set<string>>(new Set())
+  const [isExternal, setIsExternal] = useState(false)
 
-  const resetEditor = () => { setEditingId(null); setName(''); setBaseRole('EMPLOYEE'); setPerms(new Set()) }
+  const resetEditor = () => { setEditingId(null); setName(''); setBaseRole('EMPLOYEE'); setPerms(new Set()); setIsExternal(false) }
 
   const fetchRoles = useCallback(async () => {
     setLoading(true)
@@ -69,13 +71,14 @@ export default function RolesManager({ open, onClose, onRolesChanged }: RolesMan
     setName(r.name)
     setBaseRole(r.baseRole)
     setPerms(new Set(r.permissions))
+    setIsExternal(r.isExternal === true)
   }
 
   const handleSave = async () => {
     if (name.trim().length < 2) { addToast('error', 'Role name must be at least 2 characters'); return }
     setSaving(true)
     try {
-      const payload = { name: name.trim(), baseRole, permissions: [...perms] }
+      const payload = { name: name.trim(), baseRole, permissions: [...perms], isExternal }
       const res = await fetch(editingId ? `/api/admin/roles/${editingId}` : '/api/admin/roles', {
         method: editingId ? 'PATCH' : 'POST',
         credentials: 'include',
@@ -182,6 +185,28 @@ export default function RolesManager({ open, onClose, onRolesChanged }: RolesMan
               A new role starts with standard employee access and no extra permissions — toggle on
               exactly the capabilities this role should add. Base role sets the fallback access level.
             </p>
+
+            {/* External / client role toggle */}
+            <button
+              type="button"
+              onClick={() => setIsExternal((v) => !v)}
+              className={`w-full flex items-center justify-between gap-3 border px-3 py-2.5 text-left transition-colors ${
+                isExternal ? 'border-accent bg-accent/10' : 'border-border-default hover:border-accent'
+              }`}
+            >
+              <span>
+                <span className="block font-mono text-xs text-primary tracking-wide">External / client role</span>
+                <span className="block font-mono text-[10px] text-muted leading-relaxed mt-0.5">
+                  Users see ONLY the projects an admin adds them to — no other projects, and none of the
+                  rest of the app (team, tickets, reports, chat, dashboard).
+                </span>
+              </span>
+              <span className={`shrink-0 font-mono text-[10px] tracking-widest px-2 py-1 border ${
+                isExternal ? 'border-accent text-accent-ink' : 'border-border-default text-muted'
+              }`}>
+                {isExternal ? 'ON' : 'OFF'}
+              </span>
+            </button>
 
             {/* Permission toggles grouped */}
             <div className="space-y-4">

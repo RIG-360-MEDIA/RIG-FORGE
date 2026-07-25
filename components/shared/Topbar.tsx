@@ -84,7 +84,11 @@ export default function Topbar() {
   const NAV_CAP: Record<string, string> = {
     '/dashboard/onboarding': 'onboarding.approve',
   }
-  const navItems = baseNav.filter((i) => !NAV_CAP[i.href] || userCan(user, NAV_CAP[i.href]))
+  const capNav = baseNav.filter((i) => !NAV_CAP[i.href] || userCan(user, NAV_CAP[i.href]))
+  // External/client users are locked to their projects — show only Projects + Profile.
+  const navItems = user?.isExternal
+    ? capNav.filter((i) => i.href === '/dashboard/projects' || i.href === '/dashboard/profile')
+    : capNav
 
   const [statusOpen, setStatusOpen] = useState(false)
   const [userMenuOpen, setUserMenuOpen] = useState(false)

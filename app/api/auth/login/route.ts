@@ -20,7 +20,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<ApiRespon
 
     const user = await prisma.user.findUnique({
       where: { email: email.toLowerCase().trim() },
-      include: { customRole: { select: { permissions: true } } },
+      include: { customRole: { select: { permissions: true, isExternal: true } } },
     })
     if (!user) return errorResponse('Invalid email or password', 401)
     if (!user.isActive) return errorResponse('Account is deactivated', 403)
@@ -32,8 +32,9 @@ export async function POST(request: NextRequest): Promise<NextResponse<ApiRespon
     const capabilities = user.customRole
       ? [...resolveCapabilities(user.role, user.customRole)]
       : undefined
+    const isExternal = user.customRole?.isExternal === true
 
-    const token = signToken({ userId: user.id, email: user.email, role: user.role, isOnboarding: user.isOnboarding, mustChangePassword: user.mustChangePassword, organizationId: user.organizationId, capabilities })
+    const token = signToken({ userId: user.id, email: user.email, role: user.role, isOnboarding: user.isOnboarding, mustChangePassword: user.mustChangePassword, organizationId: user.organizationId, capabilities, ...(isExternal && { isExternal: true }) })
     if (!token) return errorResponse('Authentication service unavailable', 503)
 
     // If approved user: set WORKING + create daily activity.

@@ -22,6 +22,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         name: true,
         baseRole: true,
         permissions: true,
+        isExternal: true,
         _count: { select: { users: true } },
       },
     })
@@ -44,7 +45,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     let body: unknown
     try { body = await request.json() } catch { return errorResponse('Invalid JSON', 400) }
-    const { name, baseRole, permissions } = body as Record<string, unknown>
+    const { name, baseRole, permissions, isExternal } = body as Record<string, unknown>
 
     if (!name || typeof name !== 'string' || name.trim().length < 2)
       return errorResponse('Role name is required (min 2 chars)', 400)
@@ -57,8 +58,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     if (existing) return errorResponse('A role with that name already exists', 409)
 
     const role = await prisma.customRole.create({
-      data: { name: trimmed, baseRole: base, permissions: permissions as string[] },
-      select: { id: true, name: true, baseRole: true, permissions: true },
+      data: { name: trimmed, baseRole: base, permissions: permissions as string[], isExternal: isExternal === true },
+      select: { id: true, name: true, baseRole: true, permissions: true, isExternal: true },
     })
     return successResponse(role, 201)
   } catch (error) {

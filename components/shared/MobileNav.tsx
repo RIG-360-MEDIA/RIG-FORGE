@@ -43,6 +43,31 @@ export default function MobileNav() {
   if (!user || user.mustChangePassword) return null
   const canOnboard = userCan(user, 'onboarding.approve')
 
+  // External/client users are locked to their projects — a single tab, no More sheet.
+  if (user.isExternal) {
+    return (
+      <nav
+        className="lg:hidden fixed bottom-0 inset-x-0 z-40 flex items-stretch h-14 bg-surface-raised/95 backdrop-blur border-t border-border-default"
+        aria-label="Primary"
+      >
+        <Link
+          href="/dashboard/projects"
+          className="flex-1 flex flex-col items-center justify-center gap-0.5 text-accent-ink"
+        >
+          <IconFolder />
+          <span className="text-[10px] font-medium leading-none">Projects</span>
+        </Link>
+        <Link
+          href="/dashboard/profile"
+          className="flex-1 flex flex-col items-center justify-center gap-0.5 text-text-secondary"
+        >
+          <IconUser />
+          <span className="text-[10px] font-medium leading-none">Profile</span>
+        </Link>
+      </nav>
+    )
+  }
+
   // 4 thumb-priority tabs + a More sheet for the rest.
   const primary: Item[] = [
     { href: '/dashboard/messages', label: 'Chat', icon: <IconChat /> },

@@ -44,7 +44,9 @@ export async function GET(
       }),
       ...(status && { status: status as never }),
       ...(priority && { priority: priority as never }),
-      ...(!tokenCan(payload, 'projects.view_all') && {
+      // External/client users are ALWAYS limited to projects they're a member of,
+      // regardless of any capability — they only see what admins add them to.
+      ...((payload.isExternal || !tokenCan(payload, 'projects.view_all')) && {
         members: { some: { userId: payload.userId } },
       }),
     }
