@@ -38,6 +38,9 @@ const parentOf = (p: string) => '/' + p.split('/').filter(Boolean).slice(0, -1).
 
 export default function FilesPanel() {
   const [servers, setServers] = useState<string[] | null>(null)
+  // NAS is configured for the org but its server / tunnel isn't responding.
+  const [unreachable, setUnreachable] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
   const [server, setServer] = useState('')
   const [items, setItems] = useState<NasEntry[]>([])
   const [loading, setLoading] = useState(false)
@@ -60,13 +63,15 @@ export default function FilesPanel() {
   useEffect(() => {
     void (async () => {
       try {
-        const r = await api<{ enabled: boolean; servers: { label: string }[] }>('/api/nas/servers')
+        const r = await api<{ enabled: boolean; reachable?: boolean; servers: { label: string }[] }>('/api/nas/servers')
+        if (r.reachable === false) { setUnreachable(true); setServers([]); return }
+        setUnreachable(false)
         const labels = (r.servers || []).map((s) => s.label)
         setServers(labels)
         if (labels[0]) setServer(labels[0])
-      } catch { setServers([]) }
+      } catch { setUnreachable(true); setServers([]) }
     })()
-  }, [])
+  }, [reloadKey])
 
   const fetchList = useCallback(async (srv: string, p: string) => {
     if (!srv) return
@@ -152,6 +157,21 @@ export default function FilesPanel() {
   const crumbs = path.split('/').filter(Boolean)
 
   if (servers === null) return <div className="text-sm text-text-secondary p-4">Loading…</div>
+  if (unreachable) return (
+    <div className="p-6 text-center">
+      <p className="text-sm font-medium text-text-primary">NAS is currently unreachable</p>
+      <p className="mt-1 text-xs text-text-secondary leading-relaxed max-w-md mx-auto">
+        The file server is set up for this workspace but is not responding right now — the storage box or its connection
+        (Cloudflare Tunnel) appears to be offline. Files will return automatically once it is back online.
+      </p>
+      <button
+        onClick={() => { setServers(null); setUnreachable(false); setReloadKey((k) => k + 1) }}
+        className="mt-4 h-9 px-4 rounded-lg border border-border-default text-xs font-medium text-text-secondary hover:text-text-primary hover:border-accent/50 transition-colors"
+      >
+        Retry
+      </button>
+    </div>
+  )
   if (servers.length === 0) return <div className="text-sm text-text-secondary p-4">NAS is not available for this workspace.</div>
 
   const FileActions = ({ p, name }: { p: string; name: string }) => (
