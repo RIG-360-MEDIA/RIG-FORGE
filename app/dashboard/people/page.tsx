@@ -61,6 +61,9 @@ function PeoplePageInner() {
   const rawSelectedId = searchParams.get('member')
   const isAdmin = userCan(user, 'members.view')
   const isSuperAdmin = user?.role === 'SUPER_ADMIN'
+  // Role management (create/edit roles, assign them) is open to base admins +
+  // super-admins. Promoting to base ADMIN stays super-admin-only (enforced API-side).
+  const canManageRoles = user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN'
   // For employees, only allow slide-over for own profile
   const selectedId = isAdmin
     ? rawSelectedId
@@ -168,7 +171,7 @@ function PeoplePageInner() {
             </h1>
           </div>
           <div className="flex items-center gap-3">
-            {isSuperAdmin && (
+            {canManageRoles && (
               <button
                 type="button"
                 onClick={() => setRolesManagerOpen(true)}
@@ -314,6 +317,7 @@ function PeoplePageInner() {
         memberId={selectedId}
         isAdmin={isAdmin}
         isSuperAdmin={isSuperAdmin}
+        canManageRoles={canManageRoles}
         currentUserId={user?.id}
         onClose={closeMember}
         onRemoved={(id) => setMembers((prev) => prev.filter((m) => m.id !== id))}
@@ -322,8 +326,8 @@ function PeoplePageInner() {
         }
       />
 
-      {/* ── Roles & Permissions manager (super-admin) ──────────── */}
-      {isSuperAdmin && (
+      {/* ── Roles & Permissions manager (admins + super-admins) ─── */}
+      {canManageRoles && (
         <RolesManager
           open={rolesManagerOpen}
           onClose={() => setRolesManagerOpen(false)}

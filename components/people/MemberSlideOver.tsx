@@ -16,6 +16,8 @@ interface MemberSlideOverProps {
   memberId: string | null
   isAdmin: boolean
   isSuperAdmin?: boolean
+  /** Base admins + super-admins may assign custom roles (create/edit is in RolesManager). */
+  canManageRoles?: boolean
   currentUserId?: string   // required for employee guard
   onClose: () => void
   /** Called after a successful removal so the parent can refresh its list. */
@@ -70,7 +72,7 @@ function SectionHeading({ children }: { children: React.ReactNode }) {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function MemberSlideOver({ memberId, isAdmin, isSuperAdmin = false, currentUserId, onClose, onRemoved, onRoleChanged }: MemberSlideOverProps) {
+export default function MemberSlideOver({ memberId, isAdmin, isSuperAdmin = false, canManageRoles = false, currentUserId, onClose, onRemoved, onRoleChanged }: MemberSlideOverProps) {
   // CLIENT-SIDE GUARD: employee cannot view another user's profile
   // The API also enforces this (403), but we also never open the panel
   if (memberId && !isAdmin && currentUserId && memberId !== currentUserId) {
@@ -132,9 +134,9 @@ export default function MemberSlideOver({ memberId, isAdmin, isSuperAdmin = fals
     }
   }, [memberId, fetchMember])
 
-  // Super-admins: load available custom roles for the assignment control.
+  // Admins + super-admins: load available custom roles for the assignment control.
   useEffect(() => {
-    if (!memberId || !isSuperAdmin) return
+    if (!memberId || !canManageRoles) return
     let cancelled = false
     void (async () => {
       try {
@@ -144,7 +146,7 @@ export default function MemberSlideOver({ memberId, isAdmin, isSuperAdmin = fals
       } catch { /* non-fatal */ }
     })()
     return () => { cancelled = true }
-  }, [memberId, isSuperAdmin])
+  }, [memberId, canManageRoles])
 
   // ── Keyboard: Escape to close ──────────────────────────────────────────────
 
@@ -608,12 +610,25 @@ export default function MemberSlideOver({ memberId, isAdmin, isSuperAdmin = fals
                         Admins can manage members, projects, tickets and reports. Takes effect on the user&apos;s next request.
                       </p>
 
-                      {/* Custom role assignment */}
-                      {customRoles.length > 0 && (
-                        <div className="pt-1 border-t border-border-default mt-1">
-                          <p className="font-mono text-[10px] text-muted tracking-widest uppercase mt-2 mb-1.5">
-                            Custom Role
-                          </p>
+                    </div>
+                  )}
+
+                  {/* Custom role assignment — admins + super-admins (separate from
+                       the base-role toggle above, which is super-admin only). */}
+                  {canManageRoles &&
+                    member.role !== 'SUPER_ADMIN' &&
+                    member.id !== currentUserId && (
+                    <div className="forge-card p-4 space-y-2">
+                      <p className="font-mono text-xs text-secondary font-semibold tracking-wide">
+                        Custom Role
+                      </p>
+                      <p className="font-mono text-[10px] text-muted leading-relaxed">
+                        Grant a specific set of permissions. Build or edit roles from &ldquo;Manage Roles&rdquo;.
+                      </p>
+                      {customRoles.length === 0 ? (
+                        <p className="font-mono text-[10px] text-muted">No custom roles yet.</p>
+                      ) : (
+                        <>
                           <select
                             value={member.customRoleId ?? ''}
                             onChange={(e) => void handleAssignCustomRole(e.target.value || null)}
@@ -630,7 +645,7 @@ export default function MemberSlideOver({ memberId, isAdmin, isSuperAdmin = fals
                               Currently: {member.customRoleName}
                             </p>
                           )}
-                        </div>
+                        </>
                       )}
                     </div>
                   )}

@@ -4,9 +4,10 @@ import { prisma } from '@/lib/db'
 import { authenticateActive } from '@/lib/authz'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
 import { areValidCapabilities } from '@/lib/permissions'
+import { isAdminRole } from '@/lib/roles'
 
 /**
- * PATCH /api/admin/roles/[id] — edit a custom role. SUPER_ADMIN only.
+ * PATCH /api/admin/roles/[id] — edit a custom role. Admins & super-admins.
  * Body: { name?, baseRole?, permissions? }
  */
 export async function PATCH(
@@ -16,7 +17,7 @@ export async function PATCH(
   try {
     const payload = await authenticateActive(request)
     if (!payload) return errorResponse('Authentication required', 401)
-    if (payload.role !== 'SUPER_ADMIN') return errorResponse('Only super admins can edit roles', 403)
+    if (!isAdminRole(payload.role)) return errorResponse('Admin access required', 403)
 
     const existing = await prisma.customRole.findUnique({ where: { id: params.id } })
     if (!existing) return errorResponse('Role not found', 404)
@@ -64,7 +65,7 @@ export async function PATCH(
 }
 
 /**
- * DELETE /api/admin/roles/[id] — delete a custom role. SUPER_ADMIN only.
+ * DELETE /api/admin/roles/[id] — delete a custom role. Admins & super-admins.
  * Unassigns it from any users first (their coarse enum role is preserved).
  */
 export async function DELETE(
@@ -74,7 +75,7 @@ export async function DELETE(
   try {
     const payload = await authenticateActive(request)
     if (!payload) return errorResponse('Authentication required', 401)
-    if (payload.role !== 'SUPER_ADMIN') return errorResponse('Only super admins can delete roles', 403)
+    if (!isAdminRole(payload.role)) return errorResponse('Admin access required', 403)
 
     const existing = await prisma.customRole.findUnique({ where: { id: params.id } })
     if (!existing) return errorResponse('Role not found', 404)

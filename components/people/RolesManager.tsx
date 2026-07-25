@@ -179,7 +179,8 @@ export default function RolesManager({ open, onClose, onRolesChanged }: RolesMan
               </div>
             </div>
             <p className="font-mono text-[10px] text-muted leading-relaxed">
-              Base role sets the fallback access level; the toggles below grant specific capabilities.
+              A new role starts with standard employee access and no extra permissions — toggle on
+              exactly the capabilities this role should add. Base role sets the fallback access level.
             </p>
 
             {/* Permission toggles grouped */}

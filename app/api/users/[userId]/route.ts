@@ -3,6 +3,7 @@ import { type NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { authenticateActive, authenticateCapable } from '@/lib/authz'
 import { can } from '@/lib/permissions'
+import { isAdminRole } from '@/lib/roles'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
 
 /**
@@ -40,15 +41,23 @@ export async function PATCH(
     const payload = await authenticateActive(request)
     if (!payload) return errorResponse('Authentication required', 401)
 
-    if (payload.role !== 'SUPER_ADMIN') {
-      return errorResponse('Only super admins can change roles', 403)
-    }
-
     let body: unknown
     try { body = await request.json() } catch { return errorResponse('Invalid JSON', 400) }
     const { role, customRoleId } = body as Record<string, unknown>
 
     const assigningCustomRole = 'customRoleId' in (body as object)
+
+    // Gate by operation:
+    //  - Assigning/clearing a custom role is an admin action (admins hand out
+    //    the permission sets they build). Assigning an ADMIN-base role is still
+    //    reserved for super-admins below (an admin must not mint another admin).
+    //  - Changing the coarse base role (Employee <-> Admin) stays SUPER_ADMIN only.
+    if (assigningCustomRole) {
+      if (!isAdminRole(payload.role)) return errorResponse('Admin access required', 403)
+    } else {
+      if (payload.role !== 'SUPER_ADMIN') return errorResponse('Only super admins can change base roles', 403)
+    }
+
     if (!assigningCustomRole && role !== 'ADMIN' && role !== 'EMPLOYEE') {
       return errorResponse('Role must be ADMIN or EMPLOYEE', 400)
     }
@@ -88,6 +97,13 @@ export async function PATCH(
         select: { id: true, baseRole: true },
       })
       if (!customRole) return errorResponse('Custom role not found', 404)
+
+      // An ADMIN-base custom role bumps the target's enum role to ADMIN — that's
+      // effectively promotion, so keep it super-admin-only. Regular admins can
+      // still assign any EMPLOYEE-base role (any capability subset).
+      if (customRole.baseRole === 'ADMIN' && payload.role !== 'SUPER_ADMIN') {
+        return errorResponse('Only super admins can assign an admin-level role', 403)
+      }
 
       const updated = await prisma.user.update({
         where: { id: userId },

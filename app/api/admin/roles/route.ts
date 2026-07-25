@@ -33,14 +33,14 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 }
 
 /**
- * POST /api/admin/roles — create a custom role. SUPER_ADMIN only.
+ * POST /api/admin/roles — create a custom role. Admins & super-admins.
  * Body: { name, baseRole?: 'ADMIN' | 'EMPLOYEE', permissions: string[] }
  */
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
     const payload = await authenticateActive(request)
     if (!payload) return errorResponse('Authentication required', 401)
-    if (payload.role !== 'SUPER_ADMIN') return errorResponse('Only super admins can create roles', 403)
+    if (!isAdminRole(payload.role)) return errorResponse('Admin access required', 403)
 
     let body: unknown
     try { body = await request.json() } catch { return errorResponse('Invalid JSON', 400) }
