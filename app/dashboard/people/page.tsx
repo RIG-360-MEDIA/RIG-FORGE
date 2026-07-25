@@ -71,7 +71,12 @@ function PeoplePageInner() {
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [role, setRole] = useState('')
-  const [status, setStatus] = useState('')
+  // Seed the status filter from the URL so deep-links (e.g. the dashboard's
+  // "Working Now" card → ?status=WORKING) land pre-filtered.
+  const [status, setStatus] = useState(() => {
+    const s = searchParams.get('status')
+    return s === 'WORKING' || s === 'NOT_WORKING' ? s : ''
+  })
   const [rolesManagerOpen, setRolesManagerOpen] = useState(false)
 
   // Redirect unauthenticated users

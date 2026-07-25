@@ -154,9 +154,9 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
           <>
             {/* Row 1: Stat cards */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <StatCard label="Total Members" value={data.memberStats.total} />
-              <StatCard label="Working Now" value={data.memberStats.working} accent="green" />
-              <StatCard label="Open Tickets" value={data.openTicketsCount} accent="amber" />
+              <StatCard label="Total Members" value={data.memberStats.total} href="/dashboard/people" />
+              <StatCard label="Working Now" value={data.memberStats.working} accent="green" href="/dashboard/people?status=WORKING" />
+              <StatCard label="Open Tickets" value={data.openTicketsCount} accent="amber" href="/dashboard/tickets" />
               <StatCard
                 label="Pending Onboarding"
                 value={data.pendingOnboarding.length}
