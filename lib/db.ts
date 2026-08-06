@@ -14,7 +14,7 @@ const TENANT_MODELS = new Set<string>([
   'AssistantUsage', 'AssistantResponseCache', 'AssistantAuditLog', 'DailyLogDraft',
   'GoogleIntegration', 'StandupDigest', 'Conversation', 'ConversationMember',
   'ChatMessage', 'MessageReaction', 'MessageStar', 'Block', 'PushSubscription',
-  'Issue',
+  'Issue', 'NasIndexedFile',
 ])
 
 /**

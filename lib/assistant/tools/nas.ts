@@ -9,6 +9,10 @@ import { z } from 'zod'
 
 import { isNasEnabled, nasList, nasSearch, nasServers, nasFetchBytes } from '@/lib/nas/client'
 import { extractText } from '@/lib/nas/extract'
+import { getOrgId } from '@/lib/tenant-context'
+import { isRagIndexingEnabled } from '@/lib/rag/index-nas-file'
+import { embedQuery } from '@/lib/rag/embeddings'
+import { searchChunks } from '@/lib/rag/qdrant'
 
 export function buildNasTools(): ToolSet {
   return {
@@ -94,6 +98,35 @@ export function buildNasTools(): ToolSet {
           return { server, path, bytes: buf.length, content: text }
         } catch (e) {
           return { error: e instanceof Error ? e.message : 'read failed' }
+        }
+      },
+    }),
+
+    nas_semantic_search: tool({
+      description:
+        'Search the CONTENT of NAS documents by meaning (not filename) and return the most relevant passages, e.g. "what does the spec say about fire rating" or "find the clause about payment terms". Only covers files uploaded since content indexing was enabled — if it returns nothing, fall back to nas_search + nas_read. Each result includes the source file so you can cite it.',
+      inputSchema: z.object({
+        query: z.string().describe('A question or phrase describing what you\'re looking for, e.g. "fire rating requirements for the lobby".'),
+        limit: z.number().optional().describe('Max passages to return (default 6).'),
+      }),
+      execute: async ({ query, limit }) => {
+        if (!isNasEnabled()) return { error: 'NAS not available' }
+        if (!isRagIndexingEnabled()) return { error: 'Content search is not configured for this deployment.' }
+        try {
+          const vector = await embedQuery(query)
+          const hits = await searchChunks(getOrgId(), vector, limit ?? 6)
+          if (hits.length === 0) {
+            return { query, matches: [], hint: 'No indexed passages matched — try nas_search for a filename match instead.' }
+          }
+          return {
+            query,
+            matches: hits.map((h) => ({
+              server: h.server, path: h.path, fileName: h.fileName,
+              score: Math.round(h.score * 1000) / 1000, excerpt: h.text,
+            })),
+          }
+        } catch (e) {
+          return { error: e instanceof Error ? e.message : 'semantic search failed' }
         }
       },
     }),

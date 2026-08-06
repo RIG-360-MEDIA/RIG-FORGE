@@ -21,6 +21,7 @@
     "@ai-sdk/groq": "^3.0.39",
     "@ai-sdk/openai-compatible": "^2.0.48",
     "@prisma/client": "5.16.1",
+    "@qdrant/js-client-rest": "^1.18.0",
     "@supabase/supabase-js": "^2.108.2",
     "ai": "^6.0.191",
     "bcryptjs": "2.4.3",

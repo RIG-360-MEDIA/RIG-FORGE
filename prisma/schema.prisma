@@ -807,3 +807,30 @@ model Issue {
   @@index([reporterId])
   @@index([status])
 }
+
+// ─── NAS RAG indexing (chunk vectors live in Qdrant; this tracks status) ───────
+// One row per NAS file. contentHash lets re-uploads skip re-embedding when the
+// file is unchanged. Chunk text + embeddings themselves are NOT stored here —
+// see lib/rag/qdrant.ts — this table only tracks what's been indexed and where.
+enum NasIndexStatus {
+  PENDING
+  INDEXED
+  FAILED
+}
+
+model NasIndexedFile {
+  id             String         @id @default(cuid())
+  organizationId String         @default("rig360") // tenancy anchor (auto-scoped, see lib/db.ts)
+  server         String // NAS label, e.g. "WD"
+  path           String // full file path on that server
+  contentHash    String // sha256 of extracted text — skip re-embedding unchanged files
+  chunkCount     Int            @default(0)
+  status         NasIndexStatus @default(PENDING)
+  error          String?
+  indexedAt      DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@unique([organizationId, server, path])
+  @@index([organizationId])
+}

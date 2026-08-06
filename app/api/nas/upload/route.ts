@@ -3,6 +3,8 @@ import { type NextRequest } from 'next/server'
 import { getTokenFromCookies, verifyToken } from '@/lib/auth'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
 import { isNasEnabled, nasUpload } from '@/lib/nas/client'
+import { getOrgId } from '@/lib/tenant-context'
+import { indexNasFile, isRagIndexingEnabled } from '@/lib/rag/index-nas-file'
 
 export const runtime = 'nodejs'
 // Allow large-ish uploads (drawings/PDFs). Next caps body at 4MB by default for
@@ -32,6 +34,15 @@ export async function POST(request: NextRequest) {
 
   try {
     const res = await nasUpload(server, path, file, file.name)
+    if (isRagIndexingEnabled()) {
+      const organizationId = getOrgId()
+      const fullPath = `${path.replace(/\/$/, '')}/${file.name}`
+      // Fire-and-forget — don't make the uploader wait on embedding/indexing.
+      file
+        .arrayBuffer()
+        .then((buf) => indexNasFile(organizationId, server, fullPath, Buffer.from(buf)))
+        .catch((e) => console.error('[nas-rag] indexing failed:', e))
+    }
     return successResponse(res)
   } catch (e) {
     return errorResponse(e instanceof Error ? e.message : 'NAS upload failed', 502)
