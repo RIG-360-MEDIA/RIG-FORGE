@@ -3,9 +3,15 @@ import { PrismaClient } from '@prisma/client'
 import { getOrgId } from '@/lib/tenant-context'
 
 /**
- * Every table that carries an organizationId (the 28 tenant tables). Queries on
+ * Every table that carries an organizationId (the 30 tenant tables). Queries on
  * these are auto-scoped to the caller's org by the org-scope extension below.
  * Excludes Organization (the tenant registry) and WhatsappAuth (bridge infra).
+ *
+ * A model MISSING from this Set silently mis-stamps: creates fall back to the
+ * `@default("rig360")` column default, so another tenant's row lands in rig360
+ * and is invisible to the org that made it. CustomRole was missing until
+ * 2026-08-24 and did exactly that. When adding a model with an organizationId,
+ * add it here in the same change.
  */
 const TENANT_MODELS = new Set<string>([
   'User', 'Client', 'Project', 'ProjectMember', 'Task', 'Ticket', 'TicketComment',
@@ -14,7 +20,7 @@ const TENANT_MODELS = new Set<string>([
   'AssistantUsage', 'AssistantResponseCache', 'AssistantAuditLog', 'DailyLogDraft',
   'GoogleIntegration', 'StandupDigest', 'Conversation', 'ConversationMember',
   'ChatMessage', 'MessageReaction', 'MessageStar', 'Block', 'PushSubscription',
-  'Issue',
+  'Issue', 'CustomRole',
 ])
 
 /**

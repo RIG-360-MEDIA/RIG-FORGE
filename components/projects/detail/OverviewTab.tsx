@@ -1,12 +1,19 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 
 import MemberRow from '@/components/projects/detail/MemberRow'
 import MemberSlideOver from '@/components/people/MemberSlideOver'
+import Avatar from '@/components/ui/Avatar'
 import { useToast } from '@/components/ui/Toast'
-import type { ProjectDetail, ProjectLink, ApiResponse } from '@/lib/types'
+import type {
+  ProjectDetail,
+  ProjectLink,
+  ApiResponse,
+  MemberSummary,
+  PaginatedResponse,
+} from '@/lib/types'
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -423,14 +430,140 @@ function LinksSection({ projectId, links, canEdit, onSaved }: LinksSectionProps)
   )
 }
 
+// ─── Org user list (shared by the lead picker and the add-member control) ─────
+
+/**
+ * Lazily loads the org's active users, once, the first time `enabled` turns true.
+ * Both the lead picker and the add-member box need this list and neither should
+ * pay for it until an admin actually opens them. On a failed load the ref is
+ * released so the next open retries.
+ */
+function useOrgUsers(enabled: boolean) {
+  const [users, setUsers] = useState<MemberSummary[]>([])
+  const [loading, setLoading] = useState(false)
+  const loadedRef = useRef(false)
+
+  useEffect(() => {
+    if (!enabled || loadedRef.current) return
+    loadedRef.current = true
+    setLoading(true)
+    let alive = true
+    fetch('/api/users?limit=200', { credentials: 'include' })
+      .then((r) => r.json())
+      .then((json: ApiResponse<PaginatedResponse<MemberSummary>>) => {
+        if (alive && json.data) setUsers(json.data.items)
+      })
+      .catch(() => { loadedRef.current = false })
+      .finally(() => { if (alive) setLoading(false) })
+    return () => { alive = false }
+  }, [enabled])
+
+  return { users, loading }
+}
+
 // ─── Team members grid ────────────────────────────────────────────────────────
 
-function TeamSection({ project }: { project: ProjectDetail }) {
+interface TeamSectionProps {
+  project: ProjectDetail
+  isAdmin: boolean
+  onProjectChange: (next: ProjectDetail) => void
+}
+
+function TeamSection({ project, isAdmin, onProjectChange }: TeamSectionProps) {
+  const [adding, setAdding] = useState(false)
+  const [search, setSearch] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const { users, loading } = useOrgUsers(adding)
+
+  const memberIds = new Set(project.members.map((m) => m.userId))
+  const candidates = users
+    .filter((u) => !memberIds.has(u.id))
+    .filter((u) => u.name.toLowerCase().includes(search.trim().toLowerCase()))
+
+  async function addMember(user: MemberSummary) {
+    setSaving(true)
+    setError(null)
+    try {
+      const res = await fetch(`/api/projects/${project.id}/members`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ userIds: [user.id] }),
+      })
+      const json = (await res.json()) as ApiResponse<ProjectDetail>
+      if (!res.ok || !json.data) {
+        setError(json.error ?? 'Failed to add member')
+        return
+      }
+      onProjectChange(json.data)
+      setSearch('')
+    } catch {
+      setError('Network error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
     <div>
-      <h3 className="font-mono text-xs text-muted tracking-widest uppercase mb-3">
-        Team ({project.members.length})
-      </h3>
+      <div className="flex items-center justify-between gap-2 mb-3">
+        <h3 className="font-mono text-xs text-muted tracking-widest uppercase">
+          Team ({project.members.length})
+        </h3>
+        {isAdmin && (
+          <button
+            type="button"
+            onClick={() => { setAdding((v) => !v); setError(null); setSearch('') }}
+            className="font-mono text-[10px] text-muted hover:text-accent-ink tracking-widest uppercase transition-colors duration-150"
+          >
+            {adding ? 'Done' : '+ Add Member'}
+          </button>
+        )}
+      </div>
+
+      {isAdmin && adding && (
+        <div className="mb-3">
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={loading ? 'Loading people...' : 'SEARCH PEOPLE...'}
+            disabled={loading || saving}
+            autoFocus
+            className="w-full bg-background-primary border border-border-default px-3 py-2 font-mono text-xs text-primary placeholder:text-muted focus:border-accent focus:outline-none transition-colors duration-150 disabled:opacity-50"
+          />
+          {!loading && (
+            <div className="mt-1 max-h-48 overflow-y-auto border border-border-default border-t-0">
+              {candidates.length === 0 ? (
+                <p className="font-mono text-xs text-muted px-3 py-2">
+                  {users.length === 0
+                    ? 'No people found'
+                    : 'Everyone is already on this project'}
+                </p>
+              ) : (
+                candidates.slice(0, 20).map((u) => (
+                  <button
+                    key={u.id}
+                    type="button"
+                    disabled={saving}
+                    onClick={() => void addMember(u)}
+                    className="w-full flex items-center gap-3 px-3 py-2 hover:bg-background-tertiary transition-colors duration-150 text-left disabled:opacity-50"
+                  >
+                    <Avatar name={u.name} avatarUrl={u.avatarUrl} size="sm" />
+                    <span className="font-mono text-xs text-primary flex-1 truncate">{u.name}</span>
+                    <span className="font-mono text-[10px] text-muted uppercase tracking-widest shrink-0">
+                      {u.role}
+                    </span>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+          {error && <p className="font-mono text-[10px] text-status-danger mt-1">{error}</p>}
+        </div>
+      )}
+
       {project.members.length === 0 ? (
         <p className="font-mono text-xs text-muted text-center py-4">NO MEMBERS ASSIGNED</p>
       ) : (
@@ -497,6 +630,7 @@ function DetailsPanel({ project, isAdmin, onProjectChange }: DetailsPanelProps) 
   const [editingLead, setEditingLead] = useState(false)
   const [savingField, setSavingField] = useState<string | null>(null)
   const [fieldError, setFieldError] = useState<string | null>(null)
+  const { users: orgUsers, loading: orgUsersLoading } = useOrgUsers(editingLead)
 
   async function patchField(payload: Record<string, unknown>) {
     const key = Object.keys(payload)[0] ?? ''
@@ -529,6 +663,25 @@ function DetailsPanel({ project, isAdmin, onProjectChange }: DetailsPanelProps) 
     setSavingField('leadId')
     setFieldError(null)
     try {
+      // The picker lists everyone in the org, not just current members, because
+      // the lead you want is often not on the project yet. Put them on the team
+      // first so the roster stays consistent with who is leading it.
+      let next = project
+      if (newLeadId && !project.members.some((m) => m.userId === newLeadId)) {
+        const addRes = await fetch(`/api/projects/${project.id}/members`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ userIds: [newLeadId] }),
+        })
+        const addJson = (await addRes.json()) as ApiResponse<ProjectDetail>
+        if (!addRes.ok || !addJson.data) {
+          setFieldError(addJson.error ?? 'Could not add the new lead to the project')
+          return
+        }
+        next = addJson.data
+      }
+
       const res = await fetch(`/api/projects/${project.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -541,13 +694,15 @@ function DetailsPanel({ project, isAdmin, onProjectChange }: DetailsPanelProps) 
         return
       }
       const newLeadName = newLeadId
-        ? (project.members.find((m) => m.userId === newLeadId)?.name ?? null)
+        ? (next.members.find((m) => m.userId === newLeadId)?.name
+           ?? orgUsers.find((u) => u.id === newLeadId)?.name
+           ?? null)
         : null
       onProjectChange({
-        ...project,
+        ...next,
         leadId: newLeadId,
         leadName: newLeadName,
-        members: project.members.map((m) => ({ ...m, isLead: m.userId === newLeadId })),
+        members: next.members.map((m) => ({ ...m, isLead: m.userId === newLeadId })),
       })
       setEditingLead(false)
     } catch {
@@ -556,6 +711,9 @@ function DetailsPanel({ project, isAdmin, onProjectChange }: DetailsPanelProps) 
       setSavingField(null)
     }
   }
+
+  const projectMemberIds = new Set(project.members.map((m) => m.userId))
+  const nonMemberUsers = orgUsers.filter((u) => !projectMemberIds.has(u.id))
 
   const todayStr = new Date().toISOString().split('T')[0] ?? ''
   const deadlineStr = project.deadline
@@ -688,14 +846,26 @@ function DetailsPanel({ project, isAdmin, onProjectChange }: DetailsPanelProps) 
             <div className="relative">
               <select
                 defaultValue={project.leadId ?? ''}
-                disabled={savingField === 'leadId'}
+                disabled={savingField === 'leadId' || orgUsersLoading}
                 onChange={(e) => void changeLead(e.target.value || null)}
                 className="appearance-none bg-background-primary border border-border-default px-3 py-1 pr-6 font-mono text-xs text-primary focus:border-accent focus:outline-none cursor-pointer disabled:opacity-60"
               >
-                <option value="">— No Lead —</option>
-                {project.members.map((m) => (
-                  <option key={m.userId} value={m.userId}>{m.name}</option>
-                ))}
+                <option value="">{orgUsersLoading ? 'Loading...' : '— No Lead —'}</option>
+                {project.members.length > 0 && (
+                  <optgroup label="On this project">
+                    {project.members.map((m) => (
+                      <option key={m.userId} value={m.userId}>{m.name}</option>
+                    ))}
+                  </optgroup>
+                )}
+                {/* Anyone else in the org — picking one adds them to the team too. */}
+                {nonMemberUsers.length > 0 && (
+                  <optgroup label="Add to project as lead">
+                    {nonMemberUsers.map((u) => (
+                      <option key={u.id} value={u.id}>{u.name}</option>
+                    ))}
+                  </optgroup>
+                )}
               </select>
               <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 font-mono text-muted text-[10px]">▾</span>
             </div>
@@ -803,7 +973,7 @@ export default function OverviewTab({ project, isAdmin, isLead, currentUserId, o
       </div>
 
       {/* ── Team members grid ── */}
-      <TeamSection project={project} />
+      <TeamSection project={project} isAdmin={isAdmin} onProjectChange={onProjectChange} />
 
       {/* ── Bottom row: member rows + blockers + details panel ── */}
       <div className="flex flex-col lg:flex-row gap-8 lg:gap-10">

@@ -19,7 +19,9 @@ export async function PATCH(
     if (!payload) return errorResponse('Authentication required', 401)
     if (!isAdminRole(payload.role)) return errorResponse('Admin access required', 403)
 
-    const existing = await prisma.customRole.findUnique({ where: { id: params.id } })
+    // findFirst, not findUnique — findUnique is left unscoped by the org-scope
+    // extension, which would let an admin edit another tenant's role by id.
+    const existing = await prisma.customRole.findFirst({ where: { id: params.id } })
     if (!existing) return errorResponse('Role not found', 404)
 
     let body: unknown
@@ -78,7 +80,8 @@ export async function DELETE(
     if (!payload) return errorResponse('Authentication required', 401)
     if (!isAdminRole(payload.role)) return errorResponse('Admin access required', 403)
 
-    const existing = await prisma.customRole.findUnique({ where: { id: params.id } })
+    // findFirst so the lookup is org-scoped — see the note in PATCH above.
+    const existing = await prisma.customRole.findFirst({ where: { id: params.id } })
     if (!existing) return errorResponse('Role not found', 404)
 
     await prisma.user.updateMany({ where: { customRoleId: params.id }, data: { customRoleId: null } })
