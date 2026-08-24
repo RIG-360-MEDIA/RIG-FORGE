@@ -71,6 +71,16 @@ export interface ProjectLink {
   url: string
 }
 
+/** A client (project counterparty). Mirrors the Client model. */
+export interface ClientSummary {
+  id: string
+  name: string
+  contactEmail: string | null
+  contactPhone: string | null
+  /** How many projects point at this client. 0 on a just-created client. */
+  projectCount: number
+}
+
 /** Lightweight project shape for list views. */
 export interface ProjectSummary {
   id: string
@@ -81,6 +91,9 @@ export interface ProjectSummary {
   deadline: Date | null
   leadId: string | null
   leadName: string | null
+  clientId: string | null
+  clientName: string | null
+  siteLocation: string | null
   links: ProjectLink[]
   totalTasks: number
   doneTasks: number
@@ -105,6 +118,9 @@ export interface ProjectDetail {
   deadline: Date | null
   leadId: string | null
   leadName: string | null
+  clientId: string | null
+  clientName: string | null
+  siteLocation: string | null
   links: ProjectLink[]
   totalTasks: number
   doneTasks: number
@@ -129,6 +145,7 @@ export interface ProjectDetail {
     priority: string
     assigneeId: string | null
     assigneeName: string | null
+    startDate: Date | null
     dueDate: Date | null
     completedAt: Date | null
     createdAt: Date
@@ -221,6 +238,7 @@ export interface TaskSummary {
   assigneeId: string | null
   assigneeName: string | null
   assigneeAvatar: string | null
+  startDate: Date | null
   dueDate: Date | null
   completedAt: Date | null
   createdAt: Date

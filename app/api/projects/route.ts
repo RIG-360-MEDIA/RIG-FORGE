@@ -30,6 +30,24 @@ export async function GET(
     const search = searchParams.get('search')?.trim() ?? ''
     const status = searchParams.get('status') ?? ''
     const priority = searchParams.get('priority') ?? ''
+    const clientId = searchParams.get('clientId') ?? ''
+    const sort = searchParams.get('sort') ?? 'recent'
+
+    // Allowlisted sorts — never interpolate a raw param into orderBy.
+    // `client` sorts by the related client's name; projects with no client sort
+    // last (Postgres puts NULLs last on ASC by default), which is what we want.
+    //
+    // Every entry ends with `id` as a tiebreaker. This list is cursor-paginated,
+    // and a non-unique sort key (name/client/deadline all repeat) leaves ties in
+    // an arbitrary order between queries — which makes the cursor skip or repeat
+    // rows across pages. The id keeps the ordering total and therefore stable.
+    const ORDER_BY: Record<string, Prisma.ProjectOrderByWithRelationInput[]> = {
+      recent: [{ createdAt: 'desc' }, { id: 'asc' }],
+      name: [{ name: 'asc' }, { id: 'asc' }],
+      client: [{ client: { name: 'asc' } }, { name: 'asc' }, { id: 'asc' }],
+      deadline: [{ deadline: 'asc' }, { id: 'asc' }],
+    }
+    const orderBy = ORDER_BY[sort] ?? ORDER_BY.recent
 
     // ── 3. Build where clause ─────────────────────────────────────────────────
     // ADMIN: all active projects
@@ -44,6 +62,7 @@ export async function GET(
       }),
       ...(status && { status: status as never }),
       ...(priority && { priority: priority as never }),
+      ...(clientId && { clientId }),
       // External/client users are ALWAYS limited to projects they're a member of,
       // regardless of any capability — they only see what admins add them to.
       ...((payload.isExternal || !tokenCan(payload, 'projects.view_all')) && {
@@ -59,8 +78,9 @@ export async function GET(
       where,
       ...(cursor && { cursor: { id: cursor }, skip: 1 }),
       take: limit + 1,
-      orderBy: { createdAt: 'desc' },
+      orderBy,
       include: {
+        client: { select: { id: true, name: true } },
         tasks: {
           where: { isActive: true },
           select: { status: true },
@@ -101,6 +121,9 @@ export async function GET(
         deadline: p.deadline,
         leadId: p.leadId,
         leadName: p.lead?.name ?? null,
+        clientId: p.clientId,
+        clientName: p.client?.name ?? null,
+        siteLocation: p.siteLocation,
         links,
         totalTasks,
         doneTasks,
@@ -151,7 +174,7 @@ export async function POST(
       return errorResponse('Request body must be a JSON object', 400)
     }
 
-    const { name, description, status, priority, deadline, leadId, links } =
+    const { name, description, status, priority, deadline, leadId, links, clientId, siteLocation, memberIds } =
       body as Record<string, unknown>
 
     // ── 3. Validate required fields ───────────────────────────────────────────
@@ -223,6 +246,70 @@ export async function POST(
       resolvedLinks = links as ProjectLink[]
     }
 
+    // ── Client (optional) ─────────────────────────────────────────────────────
+    // Verify it exists AND is visible under the caller's org. findFirst goes
+    // through the org-scope extension (lib/db.ts), unlike findUnique — so this
+    // also stops one tenant attaching a project to another tenant's client.
+    let resolvedClientId: string | null = null
+    if (clientId !== undefined && clientId !== null && clientId !== '') {
+      if (typeof clientId !== 'string') {
+        return errorResponse('clientId must be a string', 400)
+      }
+      const client = await prisma.client.findFirst({
+        where: { id: clientId, isActive: true },
+        select: { id: true },
+      })
+      if (!client) return errorResponse('clientId must reference a valid client', 400)
+      resolvedClientId = client.id
+    }
+
+    // ── Site location (optional) ──────────────────────────────────────────────
+    let resolvedSiteLocation: string | null = null
+    if (siteLocation !== undefined && siteLocation !== null && siteLocation !== '') {
+      if (typeof siteLocation !== 'string') {
+        return errorResponse('siteLocation must be a string', 400)
+      }
+      if (siteLocation.length > 200) {
+        return errorResponse('siteLocation must not exceed 200 characters', 400)
+      }
+      if (HTML_TAG_RE.test(siteLocation)) {
+        return errorResponse('Site location must not contain HTML or script tags', 400)
+      }
+      resolvedSiteLocation = siteLocation.trim()
+    }
+
+    // ── Extra members (optional) ──────────────────────────────────────────────
+    // The create modal has always sent `memberIds`, but this route used to drop
+    // it on the floor — every project was created with the lead as its only
+    // member and the picker's selections vanished silently. Validate them here
+    // and create the memberships alongside the lead's.
+    let extraMemberIds: string[] = []
+    if (memberIds !== undefined && memberIds !== null) {
+      if (!Array.isArray(memberIds)) {
+        return errorResponse('memberIds must be an array', 400)
+      }
+      if (memberIds.some((m) => typeof m !== 'string')) {
+        return errorResponse('memberIds must be an array of user ids', 400)
+      }
+      // Dedupe, and drop the lead — they're added below and ProjectMember is
+      // @@unique([userId, projectId]), so including them twice would throw.
+      const unique = [...new Set((memberIds as string[]).map((m) => m.trim()).filter(Boolean))]
+        .filter((id) => id !== leadId.trim())
+
+      if (unique.length > 0) {
+        // findMany runs through the org-scope extension (lib/db.ts), so this
+        // also prevents attaching a user from another tenant.
+        const found = await prisma.user.findMany({
+          where: { id: { in: unique }, isActive: true },
+          select: { id: true },
+        })
+        if (found.length !== unique.length) {
+          return errorResponse('memberIds must reference valid active users', 400)
+        }
+        extraMemberIds = found.map((u) => u.id)
+      }
+    }
+
     // ── 4. Create project + auto-add lead as member + create ProjectThread ────
     const project = await prisma.project.create({
       data: {
@@ -232,6 +319,8 @@ export async function POST(
         priority: resolvedPriority as never,
         deadline: resolvedDeadline,
         leadId: leadId.trim(),
+        clientId: resolvedClientId,
+        siteLocation: resolvedSiteLocation,
         links: resolvedLinks as never,
         // NOTE: nested creates are NOT touched by the org-scope extension
         // (lib/db.ts only injects organizationId on top-level ops). Without an
@@ -240,7 +329,10 @@ export async function POST(
         // them with the caller's org so scoped reads (counts, lists, assignee
         // dropdowns) see them.
         members: {
-          create: { userId: leadId.trim(), organizationId: getOrgId() },
+          create: [
+            { userId: leadId.trim(), organizationId: getOrgId() },
+            ...extraMemberIds.map((userId) => ({ userId, organizationId: getOrgId() })),
+          ],
         },
         thread: {
           create: { organizationId: getOrgId() },

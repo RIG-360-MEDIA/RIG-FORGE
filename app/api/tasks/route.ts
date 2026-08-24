@@ -162,6 +162,20 @@ export async function POST(request: NextRequest) {
       dueDate = parsed
     }
 
+    let startDate: Date | null = null
+    if (typeof data.startDate === 'string' && data.startDate.length > 0) {
+      const parsed = new Date(data.startDate)
+      if (Number.isNaN(parsed.getTime())) return errorResponse('startDate is not a valid date', 400)
+      startDate = parsed
+    }
+
+    // Ordering is enforced here, not in the DB — Postgres has no CHECK for it
+    // and Prisma can't express one. Both routes that write these fields must
+    // repeat this (see PATCH in ./[id]/route.ts).
+    if (startDate && dueDate && startDate > dueDate) {
+      return errorResponse('startDate must be on or before dueDate', 400)
+    }
+
     const completedAt = status === 'DONE' ? new Date() : null
 
     const created = await prisma.$transaction(async (tx) => {
@@ -174,6 +188,7 @@ export async function POST(request: NextRequest) {
           priority,
           projectId,
           assigneeId,
+          startDate,
           dueDate,
           completedAt,
         },

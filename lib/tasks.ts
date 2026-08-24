@@ -15,6 +15,7 @@ export type TaskForSummary = {
   projectId: string
   assigneeId: string | null
   expectedOutput: string | null
+  startDate: Date | null
   dueDate: Date | null
   completedAt: Date | null
   createdAt: Date
@@ -40,6 +41,7 @@ export function buildTaskSummary(task: TaskForSummary): TaskSummary {
     assigneeName: task.assignee?.name ?? null,
     assigneeAvatar: task.assignee?.avatarUrl ?? null,
     expectedOutput: task.expectedOutput,
+    startDate: task.startDate,
     dueDate: task.dueDate,
     completedAt: task.completedAt,
     createdAt: task.createdAt,

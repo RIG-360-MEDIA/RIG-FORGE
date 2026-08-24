@@ -3,7 +3,8 @@
 import { useState, useEffect, useRef } from 'react'
 
 import Avatar from '@/components/ui/Avatar'
-import type { ProjectDetail, MemberSummary, ProjectLink, ApiResponse, PaginatedResponse } from '@/lib/types'
+import ClientPicker from '@/components/projects/ClientPicker'
+import type { ProjectDetail, MemberSummary, ProjectLink, ApiResponse, PaginatedResponse, ClientSummary } from '@/lib/types'
 
 interface CreateProjectModalProps {
   isOpen: boolean
@@ -27,6 +28,8 @@ export default function CreateProjectModal({
   const [priority, setPriority] = useState<string>('MEDIUM')
   const [deadline, setDeadline] = useState('')
   const [leadId, setLeadId] = useState('')
+  const [client, setClient] = useState<ClientSummary | null>(null)
+  const [siteLocation, setSiteLocation] = useState('')
   const [links, setLinks] = useState<ProjectLink[]>([])
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -61,6 +64,8 @@ export default function CreateProjectModal({
       setPriority('MEDIUM')
       setDeadline('')
       setLeadId('')
+      setClient(null)
+      setSiteLocation('')
       setLinks([])
       setMemberSearch('')
       setSelectedMembers([])
@@ -139,6 +144,8 @@ export default function CreateProjectModal({
           priority,
           deadline: deadline ? new Date(deadline).toISOString() : undefined,
           leadId,
+          clientId: client?.id,
+          siteLocation: siteLocation.trim() || undefined,
           links: validLinks.length > 0 ? validLinks : undefined,
           memberIds: selectedMembers.map((m) => m.id),
         }),
@@ -276,6 +283,29 @@ export default function CreateProjectModal({
                 onChange={(e) => setDeadline(e.target.value)}
                 min={todayStr}
                 className="w-full bg-background-primary border border-border-default px-4 py-3 font-mono text-sm text-primary focus:border-accent focus:outline-none transition-colors duration-150 [color-scheme:light]"
+              />
+            </div>
+
+            {/* Client */}
+            <div>
+              <label className="block font-mono text-xs text-secondary tracking-widest uppercase mb-2">
+                Client
+              </label>
+              <ClientPicker value={client} onChange={setClient} />
+            </div>
+
+            {/* Site Location */}
+            <div>
+              <label className="block font-mono text-xs text-secondary tracking-widest uppercase mb-2">
+                Site Location
+              </label>
+              <input
+                type="text"
+                value={siteLocation}
+                onChange={(e) => setSiteLocation(e.target.value)}
+                maxLength={200}
+                className="w-full bg-background-primary border border-border-default px-4 py-3 font-mono text-sm text-primary placeholder:text-muted focus:border-accent focus:outline-none transition-colors duration-150"
+                placeholder="e.g. Plot 14, Sector 62, Noida"
               />
             </div>
 

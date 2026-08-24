@@ -8,7 +8,7 @@ import { getOrgId } from '@/lib/tenant-context'
  * Excludes Organization (the tenant registry) and WhatsappAuth (bridge infra).
  */
 const TENANT_MODELS = new Set<string>([
-  'User', 'Project', 'ProjectMember', 'Task', 'Ticket', 'TicketComment',
+  'User', 'Client', 'Project', 'ProjectMember', 'Task', 'Ticket', 'TicketComment',
   'DailyLog', 'DailyActivity', 'WeeklyReport', 'TaskThread', 'ProjectThread',
   'ThreadMessage', 'Notification', 'AssistantConversation', 'AssistantMessage',
   'AssistantUsage', 'AssistantResponseCache', 'AssistantAuditLog', 'DailyLogDraft',

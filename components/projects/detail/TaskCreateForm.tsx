@@ -30,6 +30,7 @@ export default function TaskCreateForm({
   const [priority, setPriority] = useState<string>('MEDIUM')
   const [assigneeId, setAssigneeId] = useState<string | null>(null)
   const [estimateHours, setEstimateHours] = useState<string>('')
+  const [startDate, setStartDate] = useState('')
   const [dueDate, setDueDate] = useState('')
   const [pickerOpen, setPickerOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -59,7 +60,17 @@ export default function TaskCreateForm({
       if (estimateHours.trim() !== '' && !isNaN(est) && est > 0) {
         body.estimateHours = est
       }
+      if (startDate) body.startDate = new Date(startDate).toISOString()
       if (dueDate) body.dueDate = new Date(dueDate).toISOString()
+
+      // Caught client-side too so the user sees it immediately; the API
+      // enforces the same rule regardless (see app/api/tasks/route.ts).
+      if (startDate && dueDate && new Date(startDate) > new Date(dueDate)) {
+        const msg = 'Start date must be on or before the due date'
+        setFooterError(msg)
+        setSubmitting(false)
+        return
+      }
 
       const res = await fetch('/api/tasks', {
         method: 'POST',
@@ -191,13 +202,25 @@ export default function TaskCreateForm({
 
         <div>
           <p className="font-mono text-[10px] text-muted tracking-widest uppercase mb-1">
+            START DATE
+          </p>
+          <input
+            type="date"
+            value={startDate}
+            onChange={(e) => setStartDate(e.target.value)}
+            className="bg-background-primary border border-border-default font-mono text-sm text-primary px-3 py-2 focus:border-accent focus:outline-none [color-scheme:light]"
+          />
+        </div>
+
+        <div>
+          <p className="font-mono text-[10px] text-muted tracking-widest uppercase mb-1">
             DUE DATE
           </p>
           <input
             type="date"
             value={dueDate}
             onChange={(e) => setDueDate(e.target.value)}
-            min={todayStr}
+            min={startDate || todayStr}
             className="bg-background-primary border border-border-default font-mono text-sm text-primary px-3 py-2 focus:border-accent focus:outline-none [color-scheme:light]"
           />
         </div>

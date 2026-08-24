@@ -168,6 +168,7 @@ function TaskRow({ task, currentUserId, canManage, onStatusChange, onEdit, onDel
                 <span>Status: <span className="text-foreground">{STATUS_LABELS[task.status as TaskStatus] ?? task.status}</span></span>
                 <span>Priority: <span className="text-foreground">{task.priority}</span></span>
                 <span>Assignee: <span className="text-foreground">{task.assigneeName ?? 'Unassigned'}</span></span>
+                <span>Start: <span className="text-foreground">{formatDate(task.startDate)}</span></span>
                 <span>Due: <span className="text-foreground">{formatDate(task.dueDate)}</span></span>
               </div>
             </div>
@@ -196,6 +197,9 @@ function TaskFormModal({ mode, projectId, members, task, onClose, onSaved }: Tas
   const [expectedOutput, setExpected]   = useState(task?.expectedOutput ?? '')
   const [assigneeId, setAssigneeId]     = useState(task?.assigneeId ?? '')
   const [priority, setPriority]         = useState<Priority>((task?.priority as Priority) ?? 'MEDIUM')
+  const [startDate, setStartDate]       = useState(
+    task?.startDate ? new Date(task.startDate).toISOString().slice(0, 10) : '',
+  )
   const [dueDate, setDueDate]           = useState(
     task?.dueDate ? new Date(task.dueDate).toISOString().slice(0, 10) : '',
   )
@@ -220,8 +224,14 @@ function TaskFormModal({ mode, projectId, members, task, onClose, onSaved }: Tas
         expectedOutput: expectedOutput.trim(),
         assigneeId: assigneeId || null,
         priority,
+        startDate: startDate || null,
         dueDate: dueDate || null,
         status,
+      }
+      if (startDate && dueDate && new Date(startDate) > new Date(dueDate)) {
+        setError('Start date must be on or before the due date.')
+        setSubmitting(false)
+        return
       }
       if (!isEdit) payload.projectId = projectId
 
@@ -326,11 +336,22 @@ function TaskFormModal({ mode, projectId, members, task, onClose, onSaved }: Tas
             </div>
 
             <div>
+              <label className="text-xs text-muted uppercase tracking-wider">Start Date</label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className={fieldClass}
+              />
+            </div>
+
+            <div>
               <label className="text-xs text-muted uppercase tracking-wider">Due Date</label>
               <input
                 type="date"
                 value={dueDate}
                 onChange={(e) => setDueDate(e.target.value)}
+                min={startDate || undefined}
                 className={fieldClass}
               />
             </div>

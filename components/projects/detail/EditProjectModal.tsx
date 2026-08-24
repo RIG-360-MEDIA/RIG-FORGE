@@ -2,7 +2,25 @@
 
 import { useState, useEffect } from 'react'
 
-import type { ProjectDetail, ProjectSummary, ApiResponse } from '@/lib/types'
+import ClientPicker from '@/components/projects/ClientPicker'
+import type { ProjectDetail, ProjectSummary, ApiResponse, ClientSummary } from '@/lib/types'
+
+/**
+ * ProjectDetail carries clientId + clientName (flattened), but ClientPicker
+ * wants a ClientSummary. Contact fields and projectCount aren't part of the
+ * detail payload and the picker doesn't display them for an already-selected
+ * client, so this partial shape is sufficient.
+ */
+function clientFromProject(project: ProjectDetail): ClientSummary | null {
+  if (!project.clientId) return null
+  return {
+    id: project.clientId,
+    name: project.clientName ?? '',
+    contactEmail: null,
+    contactPhone: null,
+    projectCount: 0,
+  }
+}
 
 interface EditProjectModalProps {
   isOpen: boolean
@@ -34,6 +52,8 @@ export default function EditProjectModal({
   const [status, setStatus] = useState(project.status)
   const [priority, setPriority] = useState(project.priority)
   const [deadline, setDeadline] = useState(() => toDateInputValue(project.deadline))
+  const [client, setClient] = useState<ClientSummary | null>(() => clientFromProject(project))
+  const [siteLocation, setSiteLocation] = useState(project.siteLocation ?? '')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -44,6 +64,8 @@ export default function EditProjectModal({
     setStatus(project.status)
     setPriority(project.priority)
     setDeadline(toDateInputValue(project.deadline))
+    setClient(clientFromProject(project))
+    setSiteLocation(project.siteLocation ?? '')
     setError(null)
   }, [isOpen, project])
 
@@ -76,6 +98,8 @@ export default function EditProjectModal({
           status,
           priority,
           deadline: deadline ? new Date(deadline).toISOString() : null,
+          clientId: client?.id ?? null,
+          siteLocation: siteLocation.trim() || null,
         }),
       })
       const json = (await res.json()) as ApiResponse<ProjectSummary>
@@ -191,6 +215,27 @@ export default function EditProjectModal({
                   </span>
                 </div>
               </div>
+            </div>
+
+            <div>
+              <label className="block font-mono text-xs text-secondary tracking-widest uppercase mb-2">
+                Client
+              </label>
+              <ClientPicker value={client} onChange={setClient} />
+            </div>
+
+            <div>
+              <label className="block font-mono text-xs text-secondary tracking-widest uppercase mb-2">
+                Site Location
+              </label>
+              <input
+                type="text"
+                value={siteLocation}
+                onChange={(e) => setSiteLocation(e.target.value)}
+                maxLength={200}
+                className="w-full bg-background-primary border border-border-default px-4 py-3 font-mono text-sm text-primary placeholder:text-muted focus:border-accent focus:outline-none transition-colors duration-150"
+                placeholder="e.g. Plot 14, Sector 62, Noida"
+              />
             </div>
 
             <div>

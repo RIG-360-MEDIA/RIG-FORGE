@@ -17,6 +17,10 @@ type LoadedTask = {
   projectId: string
   assigneeId: string | null
   status: TaskStatus
+  // Both dates are loaded so a PATCH touching only ONE of them can still be
+  // validated against the stored value of the other (start <= due).
+  startDate: Date | null
+  dueDate: Date | null
   project: { leadId: string | null }
 }
 
@@ -28,6 +32,8 @@ async function loadTask(id: string): Promise<LoadedTask | null> {
       projectId: true,
       assigneeId: true,
       status: true,
+      startDate: true,
+      dueDate: true,
       project: { select: { leadId: true } },
     },
   })
@@ -73,7 +79,7 @@ export async function PATCH(
     // we use the looser status-change permissions; otherwise the caller must
     // be an admin or the project lead.
     const writableKeys = ['title', 'description', 'expectedOutput', 'priority',
-                          'assigneeId', 'dueDate', 'status'] as const
+                          'assigneeId', 'startDate', 'dueDate', 'status'] as const
     const touched = writableKeys.filter((k) => k in data)
     if (touched.length === 0) {
       return errorResponse('No editable fields provided', 400)
@@ -151,6 +157,27 @@ export async function PATCH(
       } else {
         return errorResponse('dueDate must be an ISO string or null', 400)
       }
+    }
+
+    if ('startDate' in data) {
+      if (data.startDate === null || data.startDate === '') {
+        update.startDate = null
+      } else if (typeof data.startDate === 'string') {
+        const parsed = new Date(data.startDate)
+        if (Number.isNaN(parsed.getTime())) return errorResponse('startDate is not a valid date', 400)
+        update.startDate = parsed
+      } else {
+        return errorResponse('startDate must be an ISO string or null', 400)
+      }
+    }
+
+    // Cross-field check. A PATCH may carry only one of the two, so fall back to
+    // the stored value for whichever wasn't sent — otherwise setting just one
+    // date could quietly produce start > due.
+    const nextStart = ('startDate' in data ? update.startDate : task.startDate) as Date | null
+    const nextDue = ('dueDate' in data ? update.dueDate : task.dueDate) as Date | null
+    if (nextStart && nextDue && nextStart.getTime() > nextDue.getTime()) {
+      return errorResponse('startDate must be on or before dueDate', 400)
     }
 
     if ('status' in data) {
