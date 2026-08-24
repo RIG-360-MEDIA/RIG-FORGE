@@ -183,7 +183,10 @@ export async function POST(request: NextRequest) {
         data: {
           title,
           description: typeof data.description === 'string' ? data.description : null,
-          expectedOutput: typeof data.expectedOutput === 'string' ? data.expectedOutput : null,
+          // Optional. Trim to null so a blank or whitespace-only box is stored
+          // as "no expected output", matching how PATCH already treats it.
+          expectedOutput:
+            typeof data.expectedOutput === 'string' ? data.expectedOutput.trim() || null : null,
           status,
           priority,
           projectId,

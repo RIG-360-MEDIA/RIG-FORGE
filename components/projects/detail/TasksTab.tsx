@@ -209,8 +209,10 @@ function TaskFormModal({ mode, projectId, members, task, onClose, onSaved }: Tas
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!title.trim() || !expectedOutput.trim()) {
-      setError('Title and Expected Output are required.')
+    // Only the title is required. Expected Output stays available for anyone who
+    // wants to record a deliverable, but a description alone is often enough.
+    if (!title.trim()) {
+      setError('Title is required.')
       return
     }
     setSubmitting(true)
@@ -221,7 +223,7 @@ function TaskFormModal({ mode, projectId, members, task, onClose, onSaved }: Tas
       const payload: Record<string, unknown> = {
         title: title.trim(),
         description: description.trim() || null,
-        expectedOutput: expectedOutput.trim(),
+        expectedOutput: expectedOutput.trim() || null,
         assigneeId: assigneeId || null,
         priority,
         startDate: startDate || null,
@@ -293,14 +295,13 @@ function TaskFormModal({ mode, projectId, members, task, onClose, onSaved }: Tas
           </div>
 
           <div>
-            <label className="text-xs text-muted uppercase tracking-wider">Expected Output *</label>
+            <label className="text-xs text-muted uppercase tracking-wider">Expected Output</label>
             <textarea
               value={expectedOutput}
               onChange={(e) => setExpected(e.target.value)}
               rows={2}
               className={`${fieldClass} resize-none`}
-              placeholder="What should be delivered?"
-              required
+              placeholder="Optional — what should be delivered?"
             />
           </div>
 

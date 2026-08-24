@@ -30,6 +30,7 @@ export default function TaskCreateForm({
   const [priority, setPriority] = useState<string>('MEDIUM')
   const [assigneeId, setAssigneeId] = useState<string | null>(null)
   const [estimateHours, setEstimateHours] = useState<string>('')
+  const [expectedOutput, setExpectedOutput] = useState('')
   const [startDate, setStartDate] = useState('')
   const [dueDate, setDueDate] = useState('')
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -60,6 +61,7 @@ export default function TaskCreateForm({
       if (estimateHours.trim() !== '' && !isNaN(est) && est > 0) {
         body.estimateHours = est
       }
+      if (expectedOutput.trim()) body.expectedOutput = expectedOutput.trim()
       if (startDate) body.startDate = new Date(startDate).toISOString()
       if (dueDate) body.dueDate = new Date(dueDate).toISOString()
 
@@ -197,6 +199,21 @@ export default function TaskCreateForm({
             value={estimateHours}
             onChange={(e) => setEstimateHours(e.target.value)}
             className="w-[100px] bg-background-primary border border-border-default font-mono text-sm text-primary px-3 py-2 focus:border-accent focus:outline-none"
+          />
+        </div>
+
+        {/* Optional. Kept available on create as well as edit so a deliverable
+            can be recorded up front, but a task never requires one. */}
+        <div>
+          <p className="font-mono text-[10px] text-muted tracking-widest uppercase mb-1">
+            EXPECTED OUTPUT
+          </p>
+          <textarea
+            value={expectedOutput}
+            onChange={(e) => setExpectedOutput(e.target.value)}
+            rows={2}
+            placeholder="Optional — what should be delivered?"
+            className="w-full resize-none bg-background-primary border border-border-default font-mono text-sm text-primary px-3 py-2 placeholder:text-muted focus:border-accent focus:outline-none"
           />
         </div>
 
