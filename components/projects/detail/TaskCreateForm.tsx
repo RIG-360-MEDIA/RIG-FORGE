@@ -31,6 +31,7 @@ export default function TaskCreateForm({
   const [assigneeId, setAssigneeId] = useState<string | null>(null)
   const [estimateHours, setEstimateHours] = useState<string>('')
   const [expectedOutput, setExpectedOutput] = useState('')
+  const [points, setPoints] = useState('')
   const [startDate, setStartDate] = useState('')
   const [dueDate, setDueDate] = useState('')
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -62,6 +63,7 @@ export default function TaskCreateForm({
         body.estimateHours = est
       }
       if (expectedOutput.trim()) body.expectedOutput = expectedOutput.trim()
+      if (points) body.points = Number(points)
       if (startDate) body.startDate = new Date(startDate).toISOString()
       if (dueDate) body.dueDate = new Date(dueDate).toISOString()
 
@@ -200,6 +202,34 @@ export default function TaskCreateForm({
             onChange={(e) => setEstimateHours(e.target.value)}
             className="w-[100px] bg-background-primary border border-border-default font-mono text-sm text-primary px-3 py-2 focus:border-accent focus:outline-none"
           />
+        </div>
+
+        {/* Marks. Choosing 5 (payment related) raises the task to at least HIGH
+            priority server-side, so the hint here matches what actually happens. */}
+        <div>
+          <p className="font-mono text-[10px] text-muted tracking-widest uppercase mb-1">
+            MARKS
+          </p>
+          <div className="relative w-[190px]">
+            <select
+              value={points}
+              onChange={(e) => setPoints(e.target.value)}
+              className="w-full appearance-none bg-background-primary border border-border-default py-2 pl-3 pr-7 font-mono text-xs text-primary focus:border-accent focus:outline-none cursor-pointer"
+            >
+              <option value="">— None —</option>
+              <option value="1">1 — Small task</option>
+              <option value="2">2 — Bigger task</option>
+              <option value="5">5 — Payment related</option>
+            </select>
+            <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 font-mono text-muted text-[10px]">
+              ▾
+            </span>
+          </div>
+          {points === '5' && (
+            <p className="mt-1 font-mono text-[10px] text-status-danger">
+              Payment task — will be set to HIGH priority
+            </p>
+          )}
         </div>
 
         {/* Optional. Kept available on create as well as edit so a deliverable

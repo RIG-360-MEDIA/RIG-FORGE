@@ -145,6 +145,7 @@ export interface ProjectDetail {
     priority: string
     assigneeId: string | null
     assigneeName: string | null
+    points: number | null
     startDate: Date | null
     dueDate: Date | null
     completedAt: Date | null
@@ -238,6 +239,8 @@ export interface TaskSummary {
   assigneeId: string | null
   assigneeName: string | null
   assigneeAvatar: string | null
+  /** 1 (small), 2 (bigger), 5 (payment related). Null when unmarked. */
+  points: number | null
   startDate: Date | null
   dueDate: Date | null
   completedAt: Date | null

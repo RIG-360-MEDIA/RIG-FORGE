@@ -6,7 +6,7 @@ import { getTokenFromCookies, verifyToken } from '@/lib/auth'
 import { tokenCan } from '@/lib/permissions'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
 import { isMemberOfProject } from '@/lib/projects'
-import { buildTaskSummary } from '@/lib/tasks'
+import { buildTaskSummary, parseTaskPoints, priorityForPoints, VALID_TASK_POINTS } from '@/lib/tasks'
 import type { PaginatedResponse, TaskSummary } from '@/lib/types'
 
 const DEFAULT_LIMIT = 20
@@ -143,6 +143,13 @@ export async function POST(request: NextRequest) {
       priority = data.priority as Priority
     }
 
+    const points = parseTaskPoints(data.points)
+    if (points === 'invalid') {
+      return errorResponse(`points must be one of: ${VALID_TASK_POINTS.join(', ')}`, 400)
+    }
+    // A payment-related task is raised to at least HIGH automatically.
+    priority = priorityForPoints(points ?? null, priority)
+
     let assigneeId: string | null = null
     if (typeof data.assigneeId === 'string') {
       const membership = await prisma.projectMember.findUnique({
@@ -189,6 +196,7 @@ export async function POST(request: NextRequest) {
             typeof data.expectedOutput === 'string' ? data.expectedOutput.trim() || null : null,
           status,
           priority,
+          points: points ?? null,
           projectId,
           assigneeId,
           startDate,

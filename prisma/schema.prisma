@@ -211,6 +211,11 @@ model Task {
   priority       Priority
   assigneeId     String?
   projectId      String
+  // Effort/importance marking, chosen from a fixed set: 1 (small), 2 (bigger),
+  // 5 (payment related). Optional — existing tasks and anyone who does not want
+  // to use it simply leave it null. A 5 also raises priority to at least HIGH
+  // and is shown in red; both of those are applied in the API, not the DB.
+  points         Int?
   startDate      DateTime? // when work is planned to begin; must be <= dueDate (enforced in the API, not the DB)
   dueDate        DateTime?
   completedAt    DateTime?

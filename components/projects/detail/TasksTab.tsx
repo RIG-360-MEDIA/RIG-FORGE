@@ -32,6 +32,14 @@ const PRIORITY_STYLES: Record<Priority, string> = {
   CRITICAL: 'bg-red-900 text-red-300',
 }
 
+/** Marks a task can carry. 5 means payment related — see lib/tasks.ts. */
+const PAYMENT_POINTS = 5
+const POINTS_LABELS: Record<number, string> = {
+  1: '1 mark — small task',
+  2: '2 marks — bigger task',
+  5: '5 marks — payment related',
+}
+
 const STATUS_LABELS: Record<TaskStatus, string> = {
   TODO:        'To Do',
   IN_PROGRESS: 'In Progress',
@@ -88,7 +96,15 @@ function TaskRow({ task, currentUserId, canManage, onStatusChange, onEdit, onDel
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded((v) => !v) } }}
       >
         <td className="py-3 px-4 max-w-xs">
-          <span className="text-sm font-medium truncate block text-primary">{task.title}</span>
+          {/* Payment-related tasks read in red, as requested, so they stand out
+              in a long list without having to open each one. */}
+          <span
+            className={`text-sm font-medium truncate block ${
+              task.points === PAYMENT_POINTS ? 'text-status-danger' : 'text-primary'
+            }`}
+          >
+            {task.title}
+          </span>
         </td>
         <td className="py-3 px-4 text-sm text-muted whitespace-nowrap">
           {task.assigneeName ?? 'Unassigned'}
@@ -104,9 +120,23 @@ function TaskRow({ task, currentUserId, canManage, onStatusChange, onEdit, onDel
           )}
         </td>
         <td className="py-3 px-4">
-          <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${PRIORITY_STYLES[task.priority as Priority] ?? PRIORITY_STYLES.MEDIUM}`}>
-            {task.priority}
-          </span>
+          <div className="flex items-center gap-1.5">
+            <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${PRIORITY_STYLES[task.priority as Priority] ?? PRIORITY_STYLES.MEDIUM}`}>
+              {task.priority}
+            </span>
+            {task.points != null && (
+              <span
+                title={POINTS_LABELS[task.points] ?? `${task.points} marks`}
+                className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                  task.points === PAYMENT_POINTS
+                    ? 'bg-status-danger/20 text-status-danger'
+                    : 'bg-surface-raised text-muted'
+                }`}
+              >
+                {task.points}
+              </span>
+            )}
+          </div>
         </td>
         <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
           {canChangeStatus ? (
@@ -167,6 +197,9 @@ function TaskRow({ task, currentUserId, canManage, onStatusChange, onEdit, onDel
               <div className="flex gap-6 text-xs text-muted pt-1">
                 <span>Status: <span className="text-foreground">{STATUS_LABELS[task.status as TaskStatus] ?? task.status}</span></span>
                 <span>Priority: <span className="text-foreground">{task.priority}</span></span>
+                <span>Marks: <span className={task.points === PAYMENT_POINTS ? 'text-status-danger' : 'text-foreground'}>
+                  {task.points != null ? (POINTS_LABELS[task.points] ?? task.points) : '—'}
+                </span></span>
                 <span>Assignee: <span className="text-foreground">{task.assigneeName ?? 'Unassigned'}</span></span>
                 <span>Start: <span className="text-foreground">{formatDate(task.startDate)}</span></span>
                 <span>Due: <span className="text-foreground">{formatDate(task.dueDate)}</span></span>
@@ -197,6 +230,7 @@ function TaskFormModal({ mode, projectId, members, task, onClose, onSaved }: Tas
   const [expectedOutput, setExpected]   = useState(task?.expectedOutput ?? '')
   const [assigneeId, setAssigneeId]     = useState(task?.assigneeId ?? '')
   const [priority, setPriority]         = useState<Priority>((task?.priority as Priority) ?? 'MEDIUM')
+  const [points, setPoints]             = useState<string>(task?.points != null ? String(task.points) : '')
   const [startDate, setStartDate]       = useState(
     task?.startDate ? new Date(task.startDate).toISOString().slice(0, 10) : '',
   )
@@ -226,6 +260,7 @@ function TaskFormModal({ mode, projectId, members, task, onClose, onSaved }: Tas
         expectedOutput: expectedOutput.trim() || null,
         assigneeId: assigneeId || null,
         priority,
+        points: points === '' ? null : Number(points),
         startDate: startDate || null,
         dueDate: dueDate || null,
         status,
@@ -334,6 +369,25 @@ function TaskFormModal({ mode, projectId, members, task, onClose, onSaved }: Tas
                 <option value="HIGH" className="bg-background-primary text-primary">High</option>
                 <option value="CRITICAL" className="bg-background-primary text-primary">Critical</option>
               </select>
+            </div>
+
+            <div>
+              <label className="text-xs text-muted uppercase tracking-wider">Marks</label>
+              <select
+                value={points}
+                onChange={(e) => setPoints(e.target.value)}
+                className={fieldClass}
+              >
+                <option value="" className="bg-background-primary text-primary">— None —</option>
+                <option value="1" className="bg-background-primary text-primary">1 — Small task</option>
+                <option value="2" className="bg-background-primary text-primary">2 — Bigger task</option>
+                <option value="5" className="bg-background-primary text-primary">5 — Payment related</option>
+              </select>
+              {points === '5' && (
+                <p className="mt-1 text-[10px] text-status-danger">
+                  Payment task — will be set to at least HIGH priority
+                </p>
+              )}
             </div>
 
             <div>

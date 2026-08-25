@@ -111,6 +111,7 @@ export async function fetchProjectDetail(
       priority: t.priority,
       assigneeId: t.assigneeId,
       assigneeName: t.assignee?.name ?? null,
+      points: t.points,
       startDate: t.startDate,
       dueDate: t.dueDate,
       completedAt: t.completedAt,
