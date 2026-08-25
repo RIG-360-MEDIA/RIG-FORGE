@@ -193,8 +193,24 @@ export async function getAuthorizedClient(userId: string): Promise<OAuth2Client>
       // signal instead of a raw 500.
       const msg = err instanceof Error ? err.message : String(err)
       if (/invalid_grant|invalid_token|unauthorized|invalid_client/i.test(msg)) {
+        // These mean very different things and have been indistinguishable in
+        // the logs, which made the recurring "Google keeps disconnecting"
+        // reports hard to pin down:
+        //   invalid_grant  → this user's refresh token is dead. Common causes:
+        //                    they revoked access, or the OAuth consent screen
+        //                    is still in "Testing", where Google expires every
+        //                    refresh token after 7 days.
+        //   invalid_client → OUR credentials are wrong. Affects everyone, and
+        //                    no amount of reconnecting will help.
+        const kind = /invalid_client/i.test(msg)
+          ? 'invalid_client (server OAuth credentials are wrong — affects ALL users)'
+          : /invalid_grant/i.test(msg)
+            ? 'invalid_grant (this user must reconnect; if this recurs weekly, check the OAuth app is Published, not in Testing)'
+            : 'unauthorized'
+        console.warn(`[google] refresh failed for user ${userId}: ${kind}`)
         throw new Error(GOOGLE_REAUTH_REQUIRED)
       }
+      console.error(`[google] refresh failed for user ${userId} with an unexpected error:`, err)
       throw err
     }
     if (credentials.access_token) {
