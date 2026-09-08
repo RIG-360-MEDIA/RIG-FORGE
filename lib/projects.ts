@@ -14,6 +14,32 @@ export async function isMemberOfProject(
   return membership !== null
 }
 
+/**
+ * Can this user be given a task on this project?
+ *
+ * Normally the assignee must be an active member of the project. SUPER_ADMINs
+ * are the exception: they oversee every project, and the team needs to be able
+ * to send questions up to them without an admin first adding them to each
+ * project one by one. So a super admin is assignable everywhere.
+ *
+ * findFirst (not findUnique) so the org-scope extension applies and one tenant
+ * cannot assign work to another tenant's super admin.
+ */
+export async function canBeAssigned(userId: string, projectId: string): Promise<boolean> {
+  const user = await prisma.user.findFirst({
+    where: { id: userId, isActive: true },
+    select: { role: true },
+  })
+  if (!user) return false
+  if (user.role === 'SUPER_ADMIN') return true
+
+  const membership = await prisma.projectMember.findUnique({
+    where: { userId_projectId: { userId, projectId } },
+    select: { id: true },
+  })
+  return membership !== null
+}
+
 // ─── Query helpers ────────────────────────────────────────────────────────────
 
 export async function fetchProjectDetail(

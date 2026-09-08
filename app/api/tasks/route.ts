@@ -5,7 +5,7 @@ import { prisma } from '@/lib/db'
 import { getTokenFromCookies, verifyToken } from '@/lib/auth'
 import { tokenCan } from '@/lib/permissions'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
-import { isMemberOfProject } from '@/lib/projects'
+import { isMemberOfProject, canBeAssigned } from '@/lib/projects'
 import { buildTaskSummary, parseTaskPoints, priorityForPoints, VALID_TASK_POINTS } from '@/lib/tasks'
 import type { PaginatedResponse, TaskSummary } from '@/lib/types'
 
@@ -120,11 +120,18 @@ export async function POST(request: NextRequest) {
     })
     if (!project) return errorResponse('Project not found', 400)
 
-    // Only admin/super_admin or this project's lead can create tasks.
+    // Anyone ON the project may raise a task in it — the team needs to be able
+    // to send work and questions to each other, and to admins, not only receive
+    // it downwards from a lead. Editing and deleting a task stay restricted to
+    // admins and the project lead.
+    //
+    // External (client/supplier) users are excluded: they are project members
+    // too, and must not be able to create work items.
     const isAdmin = tokenCan(payload, 'tasks.manage')
     const isLead  = project.leadId === payload.userId
-    if (!isAdmin && !isLead) {
-      return errorResponse('Only admins or the project lead can create tasks', 403)
+    const isMember = !payload.isExternal && (await isMemberOfProject(payload.userId, projectId))
+    if (!isAdmin && !isLead && !isMember) {
+      return errorResponse('Only admins, the project lead, or a member of this project can create tasks', 403)
     }
 
     let status: TaskStatus = 'TODO'
@@ -152,11 +159,7 @@ export async function POST(request: NextRequest) {
 
     let assigneeId: string | null = null
     if (typeof data.assigneeId === 'string') {
-      const membership = await prisma.projectMember.findUnique({
-        where: { userId_projectId: { userId: data.assigneeId, projectId } },
-        include: { user: { select: { isActive: true } } },
-      })
-      if (!membership || !membership.user.isActive) {
+      if (!(await canBeAssigned(data.assigneeId, projectId))) {
         return errorResponse('assignee must be an active member of the project', 400)
       }
       assigneeId = data.assigneeId

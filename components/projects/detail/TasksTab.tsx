@@ -19,6 +19,12 @@ export interface TasksTabProps {
   isAdmin: boolean
   isLead: boolean
   currentUserId: string
+  /**
+   * May this user raise a new task here? True for anyone on the project, which
+   * is everyone who can open this tab, EXCEPT external client/supplier users.
+   * Separate from `isAdmin`/`isLead`, which still gate editing and deleting.
+   */
+  canCreate: boolean
 }
 
 type FilterMode = 'all' | 'mine' | 'TODO' | 'IN_PROGRESS' | 'DONE'
@@ -496,7 +502,7 @@ function TaskGroup({ label, tasks, currentUserId, canManage, onStatusChange, onE
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function TasksTab({ projectId, isAdmin, isLead, currentUserId }: TasksTabProps) {
+export default function TasksTab({ projectId, isAdmin, isLead, currentUserId, canCreate }: TasksTabProps) {
   const canManage = isAdmin || isLead
 
   const [tasks, setTasks]               = useState<TaskSummary[]>([])
@@ -531,7 +537,9 @@ export default function TasksTab({ projectId, isAdmin, isLead, currentUserId }: 
 
   const fetchMembers = useCallback(async () => {
     try {
-      const res = await fetch(`/api/projects/${projectId}/members`, { credentials: 'include' })
+      // includeSuperAdmins: a super admin can be given a task on any project
+      // without being added to it, so they must appear in the assignee picker.
+      const res = await fetch(`/api/projects/${projectId}/members?includeSuperAdmins=1`, { credentials: 'include' })
       if (!res.ok) return
       const json = await res.json() as ApiResponse<Member[]>
       if (json.data) setMembers(json.data)
@@ -656,7 +664,9 @@ export default function TasksTab({ projectId, isAdmin, isLead, currentUserId }: 
           className="ml-auto bg-surface-raised border border-border-default rounded px-3 py-1.5 text-xs focus:outline-none focus:border-accent w-48"
         />
 
-        {canManage && (
+        {/* canCreate, not canManage: anyone on the project may raise a task,
+            but only admins and the lead may edit or delete one. */}
+        {canCreate && (
           <button
             type="button"
             onClick={() => setShowModal(true)}

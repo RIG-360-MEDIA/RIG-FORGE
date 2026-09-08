@@ -5,6 +5,7 @@ import { prisma } from '@/lib/db'
 import { getTokenFromCookies, verifyToken } from '@/lib/auth'
 import { tokenCan } from '@/lib/permissions'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
+import { canBeAssigned } from '@/lib/projects'
 import { buildTaskSummary, parseTaskPoints, priorityForPoints, VALID_TASK_POINTS } from '@/lib/tasks'
 
 const VALID_TASK_STATUSES: TaskStatus[] = ['TODO', 'IN_PROGRESS', 'DONE']
@@ -159,11 +160,9 @@ export async function PATCH(
       if (data.assigneeId === null || data.assigneeId === '') {
         update.assigneeId = null
       } else if (typeof data.assigneeId === 'string') {
-        const membership = await prisma.projectMember.findUnique({
-          where: { userId_projectId: { userId: data.assigneeId, projectId: task.projectId } },
-          include: { user: { select: { isActive: true } } },
-        })
-        if (!membership || !membership.user.isActive) {
+        // Same rule as task creation: project members, plus super admins
+        // anywhere. See canBeAssigned in lib/projects.ts.
+        if (!(await canBeAssigned(data.assigneeId, task.projectId))) {
           return errorResponse('assignee must be an active member of the project', 400)
         }
         update.assigneeId = data.assigneeId

@@ -5,6 +5,7 @@ import { getTokenFromCookies, verifyToken } from '@/lib/auth'
 import { tokenCan } from '@/lib/permissions'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
 import { fetchProjectDetail } from '@/lib/projects'
+import { excludeHiddenUsersWhere } from '@/lib/hidden-users'
 
 // ─── Route params ─────────────────────────────────────────────────────────────
 
@@ -60,6 +61,25 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
         name: m.user.name,
         avatarUrl: m.user.avatarUrl,
       }))
+
+    // Opt-in, so the roster this endpoint normally returns is unchanged for
+    // every existing caller. The task assignee picker asks for this because a
+    // super admin can be given a task on any project without being added to it
+    // (see canBeAssigned in lib/projects.ts) — without them here, the picker
+    // would not offer the one person the team most needs to send questions to.
+    if (request.nextUrl.searchParams.get('includeSuperAdmins') === '1') {
+      const already = new Set(result.map((m) => m.userId))
+      const supers = await prisma.user.findMany({
+        where: { role: 'SUPER_ADMIN', isActive: true, ...excludeHiddenUsersWhere() },
+        select: { id: true, name: true, avatarUrl: true },
+        orderBy: { name: 'asc' },
+      })
+      for (const s of supers) {
+        if (!already.has(s.id)) {
+          result.push({ userId: s.id, name: s.name, avatarUrl: s.avatarUrl })
+        }
+      }
+    }
 
     return successResponse(result)
   } catch (error) {

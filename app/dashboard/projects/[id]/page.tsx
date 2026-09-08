@@ -204,6 +204,7 @@ export default function ProjectDetailPage() {
             isAdmin={isAdmin}
             isLead={isLead}
             currentUserId={userId ?? ''}
+            canCreate={!user?.isExternal}
           />
         )}
         {tab === 'updates' && (
