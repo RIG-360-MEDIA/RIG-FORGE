@@ -8,6 +8,7 @@ import MeetPanel from '@/components/workspace/MeetPanel'
 import DrivePanel from '@/components/workspace/DrivePanel'
 import ContactsPanel from '@/components/workspace/ContactsPanel'
 import FilesPanel from '@/components/workspace/FilesPanel'
+import BylawsPanel from '@/components/workspace/BylawsPanel'
 
 const TABS = [
   { key: 'mail', label: '📬 Mail' },
@@ -15,6 +16,7 @@ const TABS = [
   { key: 'meet', label: '📹 Meet' },
   { key: 'drive', label: '📁 Drive' },
   { key: 'files', label: '🗄️ Files' },
+  { key: 'bylaws', label: '📜 Bylaws' },
   { key: 'contacts', label: '👥 Contacts' },
 ] as const
 
@@ -44,7 +46,10 @@ export default function WorkspacePage() {
   }, [])
 
   const tabs = TABS.filter(
-    (t) => (t.key !== 'code' || githubEnabled) && (t.key !== 'files' || nasEnabled),
+    (t) =>
+      (t.key !== 'code' || githubEnabled) &&
+      (t.key !== 'files' || nasEnabled) &&
+      (t.key !== 'bylaws' || nasEnabled), // bylaws RAG is NAS-org-scoped, same gate as Files
   )
 
   // An invite link (?call=<room>) drops the user straight onto the Meet tab.
@@ -75,6 +80,7 @@ export default function WorkspacePage() {
       {tab === 'meet' && <MeetPanel />}
       {tab === 'drive' && <DrivePanel />}
       {tab === 'files' && <FilesPanel />}
+      {tab === 'bylaws' && <BylawsPanel />}
       {tab === 'contacts' && <ContactsPanel />}
     </div>
   )

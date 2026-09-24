@@ -1,15 +1,17 @@
 /**
- * Text embeddings via the Hugging Face Inference API. Default model is a
- * sentence-transformers model (BAAI/bge-small-en-v1.5), for which HF's
- * feature-extraction endpoint already returns one pooled vector per input —
- * no manual mean-pooling needed. Kept provider-agnostic behind embedTexts()
- * so swapping providers later only touches this file.
+ * Text embeddings via Hugging Face's "Inference Providers" router, using the
+ * hf-inference provider (their own serverless infra — the successor to the
+ * old standalone api-inference.huggingface.co, which is decommissioned).
+ * Default model is a sentence-transformers model (BAAI/bge-small-en-v1.5),
+ * for which the feature-extraction endpoint already returns one pooled
+ * vector per input — no manual mean-pooling needed. Kept provider-agnostic
+ * behind embedTexts() so swapping providers later only touches this file.
  */
 const HF_API_KEY = process.env.HF_API_KEY?.trim()
 const MODEL = process.env.HF_EMBEDDING_MODEL?.trim() || 'BAAI/bge-small-en-v1.5'
 export const EMBEDDING_DIM = Number(process.env.HF_EMBEDDING_DIM ?? 384)
 
-const ENDPOINT = `https://api-inference.huggingface.co/models/${MODEL}`
+const ENDPOINT = `https://router.huggingface.co/hf-inference/models/${MODEL}`
 const BATCH_SIZE = 16
 
 export function isEmbeddingConfigured(): boolean {

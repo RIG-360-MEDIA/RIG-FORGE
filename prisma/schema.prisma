@@ -834,3 +834,25 @@ model NasIndexedFile {
   @@unique([organizationId, server, path])
   @@index([organizationId])
 }
+
+// ─── Trijya bylaws RAG (fully separate index — own Qdrant collection, own
+// table). Deliberately not folded into NasIndexedFile: bylaws are a distinct
+// knowledge base the assistant should search separately from general NAS
+// content, not intermixed with drawings/specs/misc files. See
+// lib/nas/bylaws-crawl.ts (folder matching) and lib/rag/bylaws.ts (indexing).
+model BylawsIndexedFile {
+  id             String         @id @default(cuid())
+  organizationId String         @default("trijya") // tenancy anchor (auto-scoped, see lib/db.ts)
+  server         String // NAS label the bylaws folder was found on
+  path           String // full file path on that server
+  contentHash    String // sha256 of extracted text — skip re-embedding unchanged files
+  chunkCount     Int            @default(0)
+  status         NasIndexStatus @default(PENDING)
+  error          String?
+  indexedAt      DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@unique([organizationId, server, path])
+  @@index([organizationId])
+}

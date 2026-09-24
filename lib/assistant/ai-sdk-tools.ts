@@ -24,6 +24,7 @@ import * as gmail from './tools/gmail'
 import * as gdrive from './tools/gdrive'
 import * as whatsapp from './tools/whatsapp'
 import { buildNasTools } from './tools/nas'
+import { buildBylawsTools } from './tools/bylaws'
 import { isNasEnabled as isNasEnabledForOrg } from '@/lib/nas/client'
 import { isAdminRole } from '@/lib/auth'
 import { APP_NAME_UPPER } from '@/lib/branding'
@@ -582,6 +583,7 @@ export async function buildAllToolsAsync(caller: ToolUser): Promise<ToolSet> {
   // NAS (office file server) tools — only for the NAS-owning org (Trijya).
   if (isNasEnabledForOrg()) {
     Object.assign(base, buildNasTools())
+    Object.assign(base, buildBylawsTools())
   }
 
   return base
@@ -602,6 +604,7 @@ const TOOL_GROUPS: Array<{ prefixes: string[]; trigger: RegExp }> = [
   { prefixes: ['drive_', 'propose_drive_'], trigger: /\b(drive|file|files|folder|folders|document|\bdocs?\b|upload|attachment|spreadsheet|sheet)\b/i },
   { prefixes: ['wa_', 'propose_wa_'], trigger: /\b(whatsapp|whats app|\bwa\b|broadcast)\b/i },
   { prefixes: ['nas_'], trigger: /\b(nas|file|files|folder|folders|document|\bdocs?\b|drawing|drawings|dwg|revit|\bcad\b|blueprint|floor ?plan|elevation|render|renders|spec|specs|drive|project files|on the server)\b/i },
+  { prefixes: ['bylaws_'], trigger: /\b(bylaw|by-law|by ?laws|regulation|ordinance|zoning|setback|statute|building code|compliance)\b/i },
 ]
 
 // Name prefixes of the optional (integration) tool groups. A query whose tool

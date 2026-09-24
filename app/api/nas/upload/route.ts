@@ -3,8 +3,10 @@ import { type NextRequest } from 'next/server'
 import { getTokenFromCookies, verifyToken } from '@/lib/auth'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
 import { isNasEnabled, nasUpload } from '@/lib/nas/client'
+import { isBylawsPath } from '@/lib/nas/bylaws-crawl'
 import { getOrgId } from '@/lib/tenant-context'
 import { indexNasFile, isRagIndexingEnabled } from '@/lib/rag/index-nas-file'
+import { indexBylawsFile, isBylawsIndexingEnabled } from '@/lib/rag/index-bylaws-file'
 
 export const runtime = 'nodejs'
 // Allow large-ish uploads (drawings/PDFs). Next caps body at 4MB by default for
@@ -34,9 +36,19 @@ export async function POST(request: NextRequest) {
 
   try {
     const res = await nasUpload(server, path, file, file.name)
-    if (isRagIndexingEnabled()) {
+    const fullPath = `${path.replace(/\/$/, '')}/${file.name}`
+    const inBylawsFolder = isBylawsPath(fullPath)
+
+    // Bylaws files go ONLY into the separate bylaws index, never the general
+    // one — keeps the two RAG pipelines fully independent (see lib/rag/index-bylaws-file.ts).
+    if (inBylawsFolder && isBylawsIndexingEnabled()) {
       const organizationId = getOrgId()
-      const fullPath = `${path.replace(/\/$/, '')}/${file.name}`
+      file
+        .arrayBuffer()
+        .then((buf) => indexBylawsFile(organizationId, server, fullPath, Buffer.from(buf)))
+        .catch((e) => console.error('[bylaws-rag] indexing failed:', e))
+    } else if (!inBylawsFolder && isRagIndexingEnabled()) {
+      const organizationId = getOrgId()
       // Fire-and-forget — don't make the uploader wait on embedding/indexing.
       file
         .arrayBuffer()
