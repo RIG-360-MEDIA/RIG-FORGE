@@ -5,7 +5,8 @@ import { prisma } from '@/lib/db'
 import { getTokenFromCookies, verifyToken } from '@/lib/auth'
 import { tokenCan } from '@/lib/permissions'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
-import { buildTaskSummary } from '@/lib/tasks'
+import { canBeAssigned } from '@/lib/projects'
+import { buildTaskSummary, parseTaskPoints, priorityForPoints, VALID_TASK_POINTS } from '@/lib/tasks'
 
 const VALID_TASK_STATUSES: TaskStatus[] = ['TODO', 'IN_PROGRESS', 'DONE']
 const VALID_PRIORITIES: Priority[]      = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']
@@ -17,6 +18,14 @@ type LoadedTask = {
   projectId: string
   assigneeId: string | null
   status: TaskStatus
+  // Both loaded so the payment rule can be evaluated against the task's final
+  // state when a PATCH changes only one of points or priority.
+  priority: Priority
+  points: number | null
+  // Both dates are loaded so a PATCH touching only ONE of them can still be
+  // validated against the stored value of the other (start <= due).
+  startDate: Date | null
+  dueDate: Date | null
   project: { leadId: string | null }
 }
 
@@ -28,6 +37,10 @@ async function loadTask(id: string): Promise<LoadedTask | null> {
       projectId: true,
       assigneeId: true,
       status: true,
+      priority: true,
+      points: true,
+      startDate: true,
+      dueDate: true,
       project: { select: { leadId: true } },
     },
   })
@@ -72,8 +85,8 @@ export async function PATCH(
     // Decide which keys are present. If the request *only* touches `status`,
     // we use the looser status-change permissions; otherwise the caller must
     // be an admin or the project lead.
-    const writableKeys = ['title', 'description', 'expectedOutput', 'priority',
-                          'assigneeId', 'dueDate', 'status'] as const
+    const writableKeys = ['title', 'description', 'expectedOutput', 'priority', 'points',
+                          'assigneeId', 'startDate', 'dueDate', 'status'] as const
     const touched = writableKeys.filter((k) => k in data)
     if (touched.length === 0) {
       return errorResponse('No editable fields provided', 400)
@@ -124,15 +137,32 @@ export async function PATCH(
       update.priority = data.priority as Priority
     }
 
+    if ('points' in data) {
+      const parsed = parseTaskPoints(data.points)
+      if (parsed === 'invalid') {
+        return errorResponse(`points must be one of: ${VALID_TASK_POINTS.join(', ')}`, 400)
+      }
+      update.points = parsed ?? null
+    }
+
+    // Keep the payment rule true after any edit. Evaluate against what the task
+    // WILL be, not what was sent, so it holds whether the caller changed points,
+    // changed priority, or changed something else entirely on a 5-mark task.
+    // It only ever raises priority — see priorityForPoints.
+    {
+      const nextPoints = 'points' in update ? (update.points as number | null) : task.points
+      const nextPriority = ('priority' in update ? update.priority : task.priority) as Priority
+      const adjusted = priorityForPoints(nextPoints, nextPriority)
+      if (adjusted !== nextPriority) update.priority = adjusted
+    }
+
     if ('assigneeId' in data) {
       if (data.assigneeId === null || data.assigneeId === '') {
         update.assigneeId = null
       } else if (typeof data.assigneeId === 'string') {
-        const membership = await prisma.projectMember.findUnique({
-          where: { userId_projectId: { userId: data.assigneeId, projectId: task.projectId } },
-          include: { user: { select: { isActive: true } } },
-        })
-        if (!membership || !membership.user.isActive) {
+        // Same rule as task creation: project members, plus super admins
+        // anywhere. See canBeAssigned in lib/projects.ts.
+        if (!(await canBeAssigned(data.assigneeId, task.projectId))) {
           return errorResponse('assignee must be an active member of the project', 400)
         }
         update.assigneeId = data.assigneeId
@@ -151,6 +181,27 @@ export async function PATCH(
       } else {
         return errorResponse('dueDate must be an ISO string or null', 400)
       }
+    }
+
+    if ('startDate' in data) {
+      if (data.startDate === null || data.startDate === '') {
+        update.startDate = null
+      } else if (typeof data.startDate === 'string') {
+        const parsed = new Date(data.startDate)
+        if (Number.isNaN(parsed.getTime())) return errorResponse('startDate is not a valid date', 400)
+        update.startDate = parsed
+      } else {
+        return errorResponse('startDate must be an ISO string or null', 400)
+      }
+    }
+
+    // Cross-field check. A PATCH may carry only one of the two, so fall back to
+    // the stored value for whichever wasn't sent — otherwise setting just one
+    // date could quietly produce start > due.
+    const nextStart = ('startDate' in data ? update.startDate : task.startDate) as Date | null
+    const nextDue = ('dueDate' in data ? update.dueDate : task.dueDate) as Date | null
+    if (nextStart && nextDue && nextStart.getTime() > nextDue.getTime()) {
+      return errorResponse('startDate must be on or before dueDate', 400)
     }
 
     if ('status' in data) {

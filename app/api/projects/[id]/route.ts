@@ -91,7 +91,7 @@ export async function PATCH(
     }
 
     const raw = body as Record<string, unknown>
-    const { name, description, status, priority, deadline, leadId, links } = raw
+    const { name, description, status, priority, deadline, leadId, links, clientId, siteLocation } = raw
 
     const validStatuses = ['ACTIVE', 'ON_HOLD', 'COMPLETED', 'ARCHIVED']
     const validPriorities = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']
@@ -103,6 +103,8 @@ export async function PATCH(
       priority?: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
       deadline?: Date | null
       leadId?: string | null
+      clientId?: string | null
+      siteLocation?: string | null
       links?: ProjectLink[]
     } = {}
 
@@ -162,6 +164,40 @@ export async function PATCH(
           data.leadId = leadId.trim()
         } else {
           return errorResponse('leadId must be null or a non-empty string', 400)
+        }
+      }
+
+      // Client — null or '' clears it. findFirst (not findUnique) so the
+      // org-scope extension applies and one tenant can't attach another
+      // tenant's client. See lib/db.ts.
+      if (clientId !== undefined) {
+        if (clientId === null || clientId === '') {
+          data.clientId = null
+        } else if (typeof clientId === 'string') {
+          const client = await prisma.client.findFirst({
+            where: { id: clientId, isActive: true },
+            select: { id: true },
+          })
+          if (!client) return errorResponse('clientId must reference a valid client', 400)
+          data.clientId = client.id
+        } else {
+          return errorResponse('clientId must be null or a string', 400)
+        }
+      }
+
+      if (siteLocation !== undefined) {
+        if (siteLocation === null || siteLocation === '') {
+          data.siteLocation = null
+        } else if (typeof siteLocation === 'string') {
+          if (siteLocation.length > 200) {
+            return errorResponse('siteLocation must not exceed 200 characters', 400)
+          }
+          if (/<[^>]+>/i.test(siteLocation)) {
+            return errorResponse('Site location must not contain HTML or script tags', 400)
+          }
+          data.siteLocation = siteLocation.trim()
+        } else {
+          return errorResponse('siteLocation must be null or a string', 400)
         }
       }
     }

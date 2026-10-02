@@ -84,11 +84,27 @@ export async function GET(request: NextRequest) {
   }
 
   // Persist (upsert — user might be re-connecting with a new account)
+  //
+  // This route authenticates from the OAuth `state` JWT, not the session
+  // cookie, so `verifyToken` never runs and no org context is set for the
+  // request. Without the explicit organizationId below, the org-scope
+  // extension in lib/db.ts falls back to the @default("rig360") column
+  // default and files every tenant's Google connection under rig360 —
+  // which is exactly what happened to all four Trijya users.
   try {
+    const owner = await prisma.user.findUnique({
+      where: { id: claims.userId },
+      select: { organizationId: true },
+    })
+    if (!owner) {
+      return redirectWith(profileUrl, { google: 'error', reason: 'unknown-user' })
+    }
+
     await prisma.googleIntegration.upsert({
       where: { userId: claims.userId },
       create: {
         userId: claims.userId,
+        organizationId: owner.organizationId,
         email: tokens.email,
         accessToken: encryptSecret(tokens.accessToken) ?? tokens.accessToken,
         refreshToken: encryptSecret(tokens.refreshToken) ?? tokens.refreshToken,
@@ -96,6 +112,9 @@ export async function GET(request: NextRequest) {
         scopes: tokens.scope,
       },
       update: {
+        // Also set on update so reconnecting repairs a row that was already
+        // written with the wrong org before this fix.
+        organizationId: owner.organizationId,
         email: tokens.email,
         accessToken: encryptSecret(tokens.accessToken) ?? tokens.accessToken,
         refreshToken: encryptSecret(tokens.refreshToken) ?? tokens.refreshToken,

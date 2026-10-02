@@ -259,6 +259,26 @@ export default function ProjectListRow({
             <span className="font-mono font-bold text-sm text-primary leading-snug break-words line-clamp-3">
               {project.name}
             </span>
+            {/* Client + site sit directly under the name so the "CLIENT A–Z"
+                sort has something visible to sort by. Hidden entirely when the
+                project has neither, to avoid an empty line on internal work. */}
+            {(project.clientName || project.siteLocation) && (
+              <div className="flex items-center gap-2 min-w-0 mt-0.5">
+                {project.clientName && (
+                  <span className="font-mono text-[10px] text-accent-ink tracking-widest uppercase truncate">
+                    {project.clientName}
+                  </span>
+                )}
+                {project.clientName && project.siteLocation && (
+                  <span className="font-mono text-[10px] text-muted shrink-0">·</span>
+                )}
+                {project.siteLocation && (
+                  <span className="font-mono text-[10px] text-muted truncate">
+                    {project.siteLocation}
+                  </span>
+                )}
+              </div>
+            )}
             <div className="flex items-center gap-2 min-w-0 mt-1">
               <span className="shrink-0">
                 <PriorityBadge priority={project.priority} />

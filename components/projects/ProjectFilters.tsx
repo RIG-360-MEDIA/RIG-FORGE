@@ -8,11 +8,13 @@ interface ProjectFiltersProps {
   search: string
   status: string
   priority: string
+  sort: string
   total: number
   isAdmin: boolean
   onSearchChange: (v: string) => void
   onStatusChange: (v: string) => void
   onPriorityChange: (v: string) => void
+  onSortChange: (v: string) => void
   onCreateClick: () => void
 }
 
@@ -20,11 +22,13 @@ export default function ProjectFilters({
   search,
   status,
   priority,
+  sort,
   total,
   isAdmin,
   onSearchChange,
   onStatusChange,
   onPriorityChange,
+  onSortChange,
   onCreateClick,
 }: ProjectFiltersProps) {
   return (
@@ -82,6 +86,22 @@ export default function ProjectFilters({
             { value: 'MEDIUM', label: 'MEDIUM' },
             { value: 'HIGH', label: 'HIGH' },
             { value: 'CRITICAL', label: 'CRITICAL' },
+          ]}
+          className="text-xs"
+        />
+      </div>
+
+      {/* Sort — values must match the ORDER_BY allowlist in app/api/projects/route.ts */}
+      <div className="relative w-[170px] shrink-0">
+        <Select
+          aria-label="Sort projects"
+          value={sort}
+          onChange={(e) => onSortChange(e.target.value)}
+          options={[
+            { value: 'recent', label: 'NEWEST FIRST' },
+            { value: 'client', label: 'CLIENT A–Z' },
+            { value: 'name', label: 'NAME A–Z' },
+            { value: 'deadline', label: 'DEADLINE' },
           ]}
           className="text-xs"
         />

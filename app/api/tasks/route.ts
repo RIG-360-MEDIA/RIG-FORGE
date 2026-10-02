@@ -5,8 +5,8 @@ import { prisma } from '@/lib/db'
 import { getTokenFromCookies, verifyToken } from '@/lib/auth'
 import { tokenCan } from '@/lib/permissions'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
-import { isMemberOfProject } from '@/lib/projects'
-import { buildTaskSummary } from '@/lib/tasks'
+import { isMemberOfProject, canBeAssigned } from '@/lib/projects'
+import { buildTaskSummary, parseTaskPoints, priorityForPoints, VALID_TASK_POINTS } from '@/lib/tasks'
 import type { PaginatedResponse, TaskSummary } from '@/lib/types'
 
 const DEFAULT_LIMIT = 20
@@ -120,11 +120,18 @@ export async function POST(request: NextRequest) {
     })
     if (!project) return errorResponse('Project not found', 400)
 
-    // Only admin/super_admin or this project's lead can create tasks.
+    // Anyone ON the project may raise a task in it — the team needs to be able
+    // to send work and questions to each other, and to admins, not only receive
+    // it downwards from a lead. Editing and deleting a task stay restricted to
+    // admins and the project lead.
+    //
+    // External (client/supplier) users are excluded: they are project members
+    // too, and must not be able to create work items.
     const isAdmin = tokenCan(payload, 'tasks.manage')
     const isLead  = project.leadId === payload.userId
-    if (!isAdmin && !isLead) {
-      return errorResponse('Only admins or the project lead can create tasks', 403)
+    const isMember = !payload.isExternal && (await isMemberOfProject(payload.userId, projectId))
+    if (!isAdmin && !isLead && !isMember) {
+      return errorResponse('Only admins, the project lead, or a member of this project can create tasks', 403)
     }
 
     let status: TaskStatus = 'TODO'
@@ -143,13 +150,16 @@ export async function POST(request: NextRequest) {
       priority = data.priority as Priority
     }
 
+    const points = parseTaskPoints(data.points)
+    if (points === 'invalid') {
+      return errorResponse(`points must be one of: ${VALID_TASK_POINTS.join(', ')}`, 400)
+    }
+    // A payment-related task is raised to at least HIGH automatically.
+    priority = priorityForPoints(points ?? null, priority)
+
     let assigneeId: string | null = null
     if (typeof data.assigneeId === 'string') {
-      const membership = await prisma.projectMember.findUnique({
-        where: { userId_projectId: { userId: data.assigneeId, projectId } },
-        include: { user: { select: { isActive: true } } },
-      })
-      if (!membership || !membership.user.isActive) {
+      if (!(await canBeAssigned(data.assigneeId, projectId))) {
         return errorResponse('assignee must be an active member of the project', 400)
       }
       assigneeId = data.assigneeId
@@ -162,6 +172,20 @@ export async function POST(request: NextRequest) {
       dueDate = parsed
     }
 
+    let startDate: Date | null = null
+    if (typeof data.startDate === 'string' && data.startDate.length > 0) {
+      const parsed = new Date(data.startDate)
+      if (Number.isNaN(parsed.getTime())) return errorResponse('startDate is not a valid date', 400)
+      startDate = parsed
+    }
+
+    // Ordering is enforced here, not in the DB — Postgres has no CHECK for it
+    // and Prisma can't express one. Both routes that write these fields must
+    // repeat this (see PATCH in ./[id]/route.ts).
+    if (startDate && dueDate && startDate > dueDate) {
+      return errorResponse('startDate must be on or before dueDate', 400)
+    }
+
     const completedAt = status === 'DONE' ? new Date() : null
 
     const created = await prisma.$transaction(async (tx) => {
@@ -169,11 +193,16 @@ export async function POST(request: NextRequest) {
         data: {
           title,
           description: typeof data.description === 'string' ? data.description : null,
-          expectedOutput: typeof data.expectedOutput === 'string' ? data.expectedOutput : null,
+          // Optional. Trim to null so a blank or whitespace-only box is stored
+          // as "no expected output", matching how PATCH already treats it.
+          expectedOutput:
+            typeof data.expectedOutput === 'string' ? data.expectedOutput.trim() || null : null,
           status,
           priority,
+          points: points ?? null,
           projectId,
           assigneeId,
+          startDate,
           dueDate,
           completedAt,
         },

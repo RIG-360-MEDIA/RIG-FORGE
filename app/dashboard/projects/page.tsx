@@ -40,6 +40,9 @@ function detailToSummary(detail: ProjectDetail): ProjectSummary {
     deadline: detail.deadline,
     leadId: detail.leadId,
     leadName: detail.leadName,
+    clientId: detail.clientId,
+    clientName: detail.clientName,
+    siteLocation: detail.siteLocation,
     links: detail.links,
     totalTasks: detail.totalTasks,
     doneTasks: detail.doneTasks,
@@ -108,6 +111,7 @@ export default function ProjectsPage() {
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [priorityFilter, setPriorityFilter] = useState('')
+  const [sortBy, setSortBy] = useState('recent')
 
   // ── UI state ───────────────────────────────────────────────────────────────
   const [showModal, setShowModal] = useState(false)
@@ -135,6 +139,7 @@ export default function ProjectsPage() {
     if (debouncedSearch) params.set('search', debouncedSearch)
     if (statusFilter) params.set('status', statusFilter)
     if (priorityFilter) params.set('priority', priorityFilter)
+    if (sortBy) params.set('sort', sortBy)
 
     const res = await fetch(`/api/projects?${params.toString()}`, {
       credentials: 'include',
@@ -154,7 +159,7 @@ export default function ProjectsPage() {
     }
     setNextCursor(cursor)
     setTotal(count)
-  }, [debouncedSearch, statusFilter, priorityFilter])
+  }, [debouncedSearch, statusFilter, priorityFilter, sortBy])
 
   useEffect(() => {
     if (authLoading || !user) return
@@ -235,11 +240,13 @@ export default function ProjectsPage() {
         search={search}
         status={statusFilter}
         priority={priorityFilter}
+        sort={sortBy}
         total={total}
         isAdmin={isAdmin}
         onSearchChange={setSearch}
         onStatusChange={setStatusFilter}
         onPriorityChange={setPriorityFilter}
+        onSortChange={setSortBy}
         onCreateClick={() => setShowModal(true)}
       />
 

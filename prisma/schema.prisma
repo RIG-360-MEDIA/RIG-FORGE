@@ -133,6 +133,30 @@ model User {
   @@index([organizationId])
 }
 
+// A counterparty the org does work for. One Client has many Projects, so project
+// lists can group/sort by client instead of relying on free-text names that drift
+// with typos. `googleContactId` holds the People API resourceName when the client
+// was picked from Google Contacts (see /api/google/contacts/list), so the record
+// can be matched back later. Clients are OPTIONAL on a project — Project.clientId
+// is nullable and every existing project keeps a null client.
+model Client {
+  id              String   @id @default(cuid())
+  organizationId  String   @default("rig360") // tenancy anchor — MUST be listed in lib/db.ts TENANT_MODELS
+  name            String
+  contactEmail    String?
+  contactPhone    String?
+  googleContactId String? // People API resourceName, when picked from Contacts
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  projects Project[]
+
+  // One client name per org. Also what makes "sort projects by client" stable.
+  @@unique([organizationId, name])
+  @@index([organizationId])
+}
+
 model Project {
   id             String        @id @default(cuid())
   organizationId String        @default("rig360") // tenancy anchor (single-org for now)
@@ -142,18 +166,22 @@ model Project {
   priority       Priority
   deadline       DateTime?
   leadId         String?
+  clientId       String? // optional owning client; null = internal / unassigned
+  siteLocation   String? // free-text site or address the work happens at
   links          Json?
   isActive       Boolean       @default(true)
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 
   lead    User?           @relation("ProjectLead", fields: [leadId], references: [id])
+  client  Client?         @relation(fields: [clientId], references: [id], onDelete: SetNull)
   members ProjectMember[]
   tasks   Task[]
   thread  ProjectThread?
   tickets Ticket[]
 
   @@index([leadId])
+  @@index([clientId])
   @@index([organizationId])
 }
 
@@ -183,6 +211,12 @@ model Task {
   priority       Priority
   assigneeId     String?
   projectId      String
+  // Effort/importance marking, chosen from a fixed set: 1 (small), 2 (bigger),
+  // 5 (payment related). Optional — existing tasks and anyone who does not want
+  // to use it simply leave it null. A 5 also raises priority to at least HIGH
+  // and is shown in red; both of those are applied in the API, not the DB.
+  points         Int?
+  startDate      DateTime? // when work is planned to begin; must be <= dueDate (enforced in the API, not the DB)
   dueDate        DateTime?
   completedAt    DateTime?
   isActive       Boolean    @default(true)

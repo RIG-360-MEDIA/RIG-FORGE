@@ -19,6 +19,12 @@ export interface TasksTabProps {
   isAdmin: boolean
   isLead: boolean
   currentUserId: string
+  /**
+   * May this user raise a new task here? True for anyone on the project, which
+   * is everyone who can open this tab, EXCEPT external client/supplier users.
+   * Separate from `isAdmin`/`isLead`, which still gate editing and deleting.
+   */
+  canCreate: boolean
 }
 
 type FilterMode = 'all' | 'mine' | 'TODO' | 'IN_PROGRESS' | 'DONE'
@@ -30,6 +36,14 @@ const PRIORITY_STYLES: Record<Priority, string> = {
   MEDIUM:   'bg-blue-900 text-blue-300',
   HIGH:     'bg-orange-900 text-orange-300',
   CRITICAL: 'bg-red-900 text-red-300',
+}
+
+/** Marks a task can carry. 5 means payment related — see lib/tasks.ts. */
+const PAYMENT_POINTS = 5
+const POINTS_LABELS: Record<number, string> = {
+  1: '1 mark — small task',
+  2: '2 marks — bigger task',
+  5: '5 marks — payment related',
 }
 
 const STATUS_LABELS: Record<TaskStatus, string> = {
@@ -88,7 +102,15 @@ function TaskRow({ task, currentUserId, canManage, onStatusChange, onEdit, onDel
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded((v) => !v) } }}
       >
         <td className="py-3 px-4 max-w-xs">
-          <span className="text-sm font-medium truncate block text-primary">{task.title}</span>
+          {/* Payment-related tasks read in red, as requested, so they stand out
+              in a long list without having to open each one. */}
+          <span
+            className={`text-sm font-medium truncate block ${
+              task.points === PAYMENT_POINTS ? 'text-status-danger' : 'text-primary'
+            }`}
+          >
+            {task.title}
+          </span>
         </td>
         <td className="py-3 px-4 text-sm text-muted whitespace-nowrap">
           {task.assigneeName ?? 'Unassigned'}
@@ -104,9 +126,23 @@ function TaskRow({ task, currentUserId, canManage, onStatusChange, onEdit, onDel
           )}
         </td>
         <td className="py-3 px-4">
-          <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${PRIORITY_STYLES[task.priority as Priority] ?? PRIORITY_STYLES.MEDIUM}`}>
-            {task.priority}
-          </span>
+          <div className="flex items-center gap-1.5">
+            <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${PRIORITY_STYLES[task.priority as Priority] ?? PRIORITY_STYLES.MEDIUM}`}>
+              {task.priority}
+            </span>
+            {task.points != null && (
+              <span
+                title={POINTS_LABELS[task.points] ?? `${task.points} marks`}
+                className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                  task.points === PAYMENT_POINTS
+                    ? 'bg-status-danger/20 text-status-danger'
+                    : 'bg-surface-raised text-muted'
+                }`}
+              >
+                {task.points}
+              </span>
+            )}
+          </div>
         </td>
         <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
           {canChangeStatus ? (
@@ -167,7 +203,11 @@ function TaskRow({ task, currentUserId, canManage, onStatusChange, onEdit, onDel
               <div className="flex gap-6 text-xs text-muted pt-1">
                 <span>Status: <span className="text-foreground">{STATUS_LABELS[task.status as TaskStatus] ?? task.status}</span></span>
                 <span>Priority: <span className="text-foreground">{task.priority}</span></span>
+                <span>Marks: <span className={task.points === PAYMENT_POINTS ? 'text-status-danger' : 'text-foreground'}>
+                  {task.points != null ? (POINTS_LABELS[task.points] ?? task.points) : '—'}
+                </span></span>
                 <span>Assignee: <span className="text-foreground">{task.assigneeName ?? 'Unassigned'}</span></span>
+                <span>Start: <span className="text-foreground">{formatDate(task.startDate)}</span></span>
                 <span>Due: <span className="text-foreground">{formatDate(task.dueDate)}</span></span>
               </div>
             </div>
@@ -196,6 +236,10 @@ function TaskFormModal({ mode, projectId, members, task, onClose, onSaved }: Tas
   const [expectedOutput, setExpected]   = useState(task?.expectedOutput ?? '')
   const [assigneeId, setAssigneeId]     = useState(task?.assigneeId ?? '')
   const [priority, setPriority]         = useState<Priority>((task?.priority as Priority) ?? 'MEDIUM')
+  const [points, setPoints]             = useState<string>(task?.points != null ? String(task.points) : '')
+  const [startDate, setStartDate]       = useState(
+    task?.startDate ? new Date(task.startDate).toISOString().slice(0, 10) : '',
+  )
   const [dueDate, setDueDate]           = useState(
     task?.dueDate ? new Date(task.dueDate).toISOString().slice(0, 10) : '',
   )
@@ -205,8 +249,10 @@ function TaskFormModal({ mode, projectId, members, task, onClose, onSaved }: Tas
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!title.trim() || !expectedOutput.trim()) {
-      setError('Title and Expected Output are required.')
+    // Only the title is required. Expected Output stays available for anyone who
+    // wants to record a deliverable, but a description alone is often enough.
+    if (!title.trim()) {
+      setError('Title is required.')
       return
     }
     setSubmitting(true)
@@ -217,11 +263,18 @@ function TaskFormModal({ mode, projectId, members, task, onClose, onSaved }: Tas
       const payload: Record<string, unknown> = {
         title: title.trim(),
         description: description.trim() || null,
-        expectedOutput: expectedOutput.trim(),
+        expectedOutput: expectedOutput.trim() || null,
         assigneeId: assigneeId || null,
         priority,
+        points: points === '' ? null : Number(points),
+        startDate: startDate || null,
         dueDate: dueDate || null,
         status,
+      }
+      if (startDate && dueDate && new Date(startDate) > new Date(dueDate)) {
+        setError('Start date must be on or before the due date.')
+        setSubmitting(false)
+        return
       }
       if (!isEdit) payload.projectId = projectId
 
@@ -283,14 +336,13 @@ function TaskFormModal({ mode, projectId, members, task, onClose, onSaved }: Tas
           </div>
 
           <div>
-            <label className="text-xs text-muted uppercase tracking-wider">Expected Output *</label>
+            <label className="text-xs text-muted uppercase tracking-wider">Expected Output</label>
             <textarea
               value={expectedOutput}
               onChange={(e) => setExpected(e.target.value)}
               rows={2}
               className={`${fieldClass} resize-none`}
-              placeholder="What should be delivered?"
-              required
+              placeholder="Optional — what should be delivered?"
             />
           </div>
 
@@ -326,11 +378,41 @@ function TaskFormModal({ mode, projectId, members, task, onClose, onSaved }: Tas
             </div>
 
             <div>
+              <label className="text-xs text-muted uppercase tracking-wider">Marks</label>
+              <select
+                value={points}
+                onChange={(e) => setPoints(e.target.value)}
+                className={fieldClass}
+              >
+                <option value="" className="bg-background-primary text-primary">— None —</option>
+                <option value="1" className="bg-background-primary text-primary">1 — Small task</option>
+                <option value="2" className="bg-background-primary text-primary">2 — Bigger task</option>
+                <option value="5" className="bg-background-primary text-primary">5 — Payment related</option>
+              </select>
+              {points === '5' && (
+                <p className="mt-1 text-[10px] text-status-danger">
+                  Payment task — will be set to at least HIGH priority
+                </p>
+              )}
+            </div>
+
+            <div>
+              <label className="text-xs text-muted uppercase tracking-wider">Start Date</label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className={fieldClass}
+              />
+            </div>
+
+            <div>
               <label className="text-xs text-muted uppercase tracking-wider">Due Date</label>
               <input
                 type="date"
                 value={dueDate}
                 onChange={(e) => setDueDate(e.target.value)}
+                min={startDate || undefined}
                 className={fieldClass}
               />
             </div>
@@ -420,7 +502,7 @@ function TaskGroup({ label, tasks, currentUserId, canManage, onStatusChange, onE
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function TasksTab({ projectId, isAdmin, isLead, currentUserId }: TasksTabProps) {
+export default function TasksTab({ projectId, isAdmin, isLead, currentUserId, canCreate }: TasksTabProps) {
   const canManage = isAdmin || isLead
 
   const [tasks, setTasks]               = useState<TaskSummary[]>([])
@@ -455,7 +537,9 @@ export default function TasksTab({ projectId, isAdmin, isLead, currentUserId }: 
 
   const fetchMembers = useCallback(async () => {
     try {
-      const res = await fetch(`/api/projects/${projectId}/members`, { credentials: 'include' })
+      // includeSuperAdmins: a super admin can be given a task on any project
+      // without being added to it, so they must appear in the assignee picker.
+      const res = await fetch(`/api/projects/${projectId}/members?includeSuperAdmins=1`, { credentials: 'include' })
       if (!res.ok) return
       const json = await res.json() as ApiResponse<Member[]>
       if (json.data) setMembers(json.data)
@@ -580,7 +664,9 @@ export default function TasksTab({ projectId, isAdmin, isLead, currentUserId }: 
           className="ml-auto bg-surface-raised border border-border-default rounded px-3 py-1.5 text-xs focus:outline-none focus:border-accent w-48"
         />
 
-        {canManage && (
+        {/* canCreate, not canManage: anyone on the project may raise a task,
+            but only admins and the lead may edit or delete one. */}
+        {canCreate && (
           <button
             type="button"
             onClick={() => setShowModal(true)}

@@ -87,6 +87,45 @@ async function verifyJWT(token: string): Promise<EdgeJWTClaims | null> {
   }
 }
 
+// ─── External / client API allowlist ──────────────────────────────────────────
+
+/**
+ * The only /api paths an EXTERNAL (client/supplier) user may reach. Everything
+ * else is refused, so adding a route does not silently expose it to clients.
+ *
+ * A trailing slash means "this subtree only" — `/api/users/me/` lets a client
+ * read and edit their OWN profile without opening `/api/users`, which returns
+ * the whole staff directory including email addresses.
+ *
+ * `/api/tasks` is safe to expose: it requires a projectId for EMPLOYEE-base
+ * callers (which every external user is) and checks project membership before
+ * returning anything.
+ */
+const EXTERNAL_API_ALLOWLIST = [
+  '/api/auth/',          // session, logout, own Google connection status
+  '/api/branding',       // white-label org name/colours, needed to render
+  '/api/health',
+  '/api/heartbeat',
+  '/api/projects',       // their portal — list/detail already membership-scoped
+  '/api/tasks',          // project-scoped; membership enforced in the route
+  '/api/notifications',  // their own notifications only
+  '/api/users/me/',      // own profile, password, setup status
+  '/api/push/subscribe',
+]
+
+/**
+ * Prefix match with a segment boundary, so `/api/projects` cannot be satisfied
+ * by something like `/api/projects-admin`. Entries ending in `/` match the
+ * whole subtree; the rest match the path exactly or as a parent segment.
+ */
+function isPathAllowed(pathname: string, allowlist: string[]): boolean {
+  return allowlist.some((entry) =>
+    entry.endsWith('/')
+      ? pathname.startsWith(entry)
+      : pathname === entry || pathname.startsWith(`${entry}/`),
+  )
+}
+
 // ─── Middleware ───────────────────────────────────────────────────────────────
 
 export async function middleware(request: NextRequest): Promise<NextResponse> {
@@ -95,6 +134,7 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
 
   const isPending = pathname === '/pending'
   const isDashboard = pathname.startsWith('/dashboard')
+  const isApi = pathname.startsWith('/api')
 
   // ── No token → protected routes send to login ─────────────────────────────
   if (!token) {
@@ -147,12 +187,29 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
     }
   }
 
+  // ── External / client users: API allowlist ─────────────────────────────────
+  // Hiding nav and redirecting pages is not access control — the APIs behind
+  // them were still answering. A client could read the staff directory, every
+  // internal issue, chat, reports and tickets by calling /api directly. Only
+  // /api/projects scoped itself. This fails CLOSED: anything not listed is
+  // refused, so a new route is private until someone opts it in here.
+  if (claims.isExternal && isApi && !isPathAllowed(pathname, EXTERNAL_API_ALLOWLIST)) {
+    return NextResponse.json(
+      { data: null, error: 'Not available for this account' },
+      { status: 403 },
+    )
+  }
+
   return NextResponse.next()
 }
 
 // ─── Matcher ─────────────────────────────────────────────────────────────────
-// Only protect dashboard and pending. Landing (/) and login (/login) are always public.
+// Dashboard and pending are protected as before. /api is included so the
+// external-user allowlist above can run — without it middleware never sees an
+// API request and every route stays open to clients. Requests with no valid
+// token fall straight through to the route's own auth, so this changes nothing
+// for cron jobs, webhooks and the login flow. Landing (/) and /login stay public.
 
 export const config = {
-  matcher: ['/dashboard/:path*', '/pending'],
+  matcher: ['/dashboard/:path*', '/pending', '/api/:path*'],
 }
