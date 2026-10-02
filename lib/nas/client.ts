@@ -149,6 +149,61 @@ export async function nasFetchBytes(server: string, path: string, maxBytes = 8_0
   return buf.length > maxBytes ? buf.subarray(0, maxBytes) : buf
 }
 
+/** Thrown by nasFetchBytesStrict when a file exceeds the size limit. */
+export class FileTooLargeError extends Error {
+  /** `exact` is false when we stopped reading part-way, so the true size is
+   * unknown — only that it is over the limit. Saying "file is 1.0 MB" for a
+   * 5 MB file would be wrong, and this text is stored as the FAILED reason. */
+  constructor(readonly bytes: number, readonly limit: number, readonly exact = true) {
+    const lim = `${(limit / 1_048_576).toFixed(0)} MB indexing limit`
+    super(exact
+      ? `file is ${(bytes / 1_048_576).toFixed(1)} MB, over the ${lim}`
+      : `file is larger than the ${lim} (download stopped at ${(bytes / 1_048_576).toFixed(1)} MB)`)
+    this.name = 'FileTooLargeError'
+  }
+}
+
+/**
+ * Download a whole file, REFUSING rather than truncating if it is over
+ * `maxBytes`. For content indexing, where a partial file is worse than none.
+ *
+ * nasFetchBytes above silently cuts files at 8 MB. That is acceptable for a
+ * short text preview, but fatal for indexing: a PDF keeps its cross-reference
+ * table at the END, so a cut PDF is corrupt and cannot be parsed at all. It
+ * also buffers the ENTIRE file before cutting, so its limit never protected
+ * memory either — a 245 MB file was fully loaded first.
+ *
+ * Here the size is checked from Content-Length before the body is read, and
+ * the body is streamed with a running count that aborts as soon as the limit
+ * is crossed, so an oversized file is never held in memory.
+ */
+export async function nasFetchBytesStrict(server: string, path: string, maxBytes: number): Promise<Buffer> {
+  const r = await nasDownload(server, path)
+  if (!r.ok) throw new Error(`NAS download failed (${r.status})`)
+
+  const declared = Number(r.headers.get('content-length'))
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await r.body?.cancel().catch(() => {})
+    throw new FileTooLargeError(declared, maxBytes)
+  }
+  if (!r.body) return Buffer.from(await r.arrayBuffer())
+
+  const reader = r.body.getReader()
+  const parts: Uint8Array[] = []
+  let total = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.byteLength
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {})
+      throw new FileTooLargeError(total, maxBytes, false)
+    }
+    parts.push(value)
+  }
+  return Buffer.concat(parts, total)
+}
+
 export async function nasUpload(server: string, path: string, file: Blob, filename: string): Promise<{ ok: boolean; path: string }> {
   const form = new FormData()
   form.append('file', file, filename)

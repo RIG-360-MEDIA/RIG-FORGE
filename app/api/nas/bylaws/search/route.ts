@@ -25,7 +25,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const body = await request.json().catch(() => null)
     const query = typeof body?.query === 'string' ? body.query.trim() : ''
     if (!query) return errorResponse('query is required', 400)
-    const limit = typeof body?.limit === 'number' ? Math.min(Math.max(body.limit, 1), 20) : 8
+    if (query.length > 1000) return errorResponse('query must not exceed 1000 characters', 400)
+    // Number.isFinite rejects NaN/Infinity (typeof NaN === 'number', so the old
+    // check let NaN straight through to Qdrant), and Math.floor stops a
+    // fractional limit such as 2.7 being sent as-is.
+    const limit = typeof body?.limit === 'number' && Number.isFinite(body.limit)
+      ? Math.min(Math.max(Math.floor(body.limit), 1), 20)
+      : 8
 
     const vector = await embedQuery(query)
     const hits = await searchChunks(getOrgId(), vector, limit, BYLAWS_COLLECTION)
@@ -38,7 +44,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       })),
     })
   } catch (error) {
+    // Log the detail server-side only. The raw message used to be returned to
+    // the browser, and Qdrant/HF errors can include the internal service URL.
     console.error('[POST /api/nas/bylaws/search]', error)
-    return errorResponse(error instanceof Error ? error.message : 'Server error', 500)
+    return errorResponse('Bylaws search failed. Please try again.', 500)
   }
 }

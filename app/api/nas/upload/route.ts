@@ -41,11 +41,19 @@ export async function POST(request: NextRequest) {
 
     // Bylaws files go ONLY into the separate bylaws index, never the general
     // one — keeps the two RAG pipelines fully independent (see lib/rag/index-bylaws-file.ts).
+    // The indexers report failures as a returned outcome rather than by
+    // throwing, so log those explicitly — otherwise a failed index would only
+    // be visible in the tracking table, never in the server logs.
+    const report = (tag: string) => (outcome: Awaited<ReturnType<typeof indexNasFile>>) => {
+      if (outcome.status === 'failed') console.warn(`[${tag}] ${fullPath}: ${outcome.reason}`)
+      else if (outcome.status === 'indexed' && outcome.warning) console.warn(`[${tag}] ${fullPath}: ${outcome.warning}`)
+    }
     if (inBylawsFolder && isBylawsIndexingEnabled()) {
       const organizationId = getOrgId()
       file
         .arrayBuffer()
         .then((buf) => indexBylawsFile(organizationId, server, fullPath, Buffer.from(buf)))
+        .then(report('bylaws-rag'))
         .catch((e) => console.error('[bylaws-rag] indexing failed:', e))
     } else if (!inBylawsFolder && isRagIndexingEnabled()) {
       const organizationId = getOrgId()
@@ -53,6 +61,7 @@ export async function POST(request: NextRequest) {
       file
         .arrayBuffer()
         .then((buf) => indexNasFile(organizationId, server, fullPath, Buffer.from(buf)))
+        .then(report('nas-rag'))
         .catch((e) => console.error('[nas-rag] indexing failed:', e))
     }
     return successResponse(res)

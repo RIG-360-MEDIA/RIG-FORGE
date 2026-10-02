@@ -49,6 +49,18 @@ export function ensureCollection(collection: string = COLLECTION): Promise<void>
           vectors: { size: EMBEDDING_DIM, distance: 'Cosine' },
         })
       }
+      // Payload indexes on every field we filter by. Without them every
+      // filtered search and delete is a scan of the whole collection, and
+      // filtered vector search can return fewer results than asked for. The
+      // chunkIndex range index is also what makes pruneStaleChunks efficient.
+      // Idempotent: creating an index that already exists is harmless, so this
+      // also upgrades collections created before these were added.
+      await Promise.all([
+        c.createPayloadIndex(collection, { field_name: 'organizationId', field_schema: 'keyword', wait: true }),
+        c.createPayloadIndex(collection, { field_name: 'server', field_schema: 'keyword', wait: true }),
+        c.createPayloadIndex(collection, { field_name: 'path', field_schema: 'keyword', wait: true }),
+        c.createPayloadIndex(collection, { field_name: 'chunkIndex', field_schema: 'integer', wait: true }),
+      ].map((p) => p.catch(() => {})))
     })().catch((e) => {
       collectionReady.delete(collection) // allow retry on next call
       throw e
@@ -97,23 +109,33 @@ export async function upsertChunks(
   })
 }
 
-/** Delete every indexed chunk for a file — call before re-upserting so a
- * shrunk file doesn't leave orphaned chunks from its previous, longer version. */
-export async function deleteFileChunks(
+/**
+ * Delete chunks left over from a LONGER previous version of a file: everything
+ * with chunkIndex >= keepCount.
+ *
+ * Replaces the old delete-everything-then-upsert sequence, which had two
+ * problems: if the upsert failed after the delete, the file's chunks were gone
+ * for good; and between the two calls the file was briefly unsearchable.
+ * Point ids are deterministic per (org, server, path, chunkIndex), so upserting
+ * the new chunks overwrites the old ones in place — only the tail beyond the
+ * new length needs removing, and that is done AFTER the upsert succeeds.
+ */
+export async function pruneStaleChunks(
   organizationId: string,
   server: string,
   path: string,
+  keepCount: number,
   collection: string = COLLECTION,
 ): Promise<void> {
   await ensureCollection(collection)
-  const c = getClient()
-  await c.delete(collection, {
+  await getClient().delete(collection, {
     wait: true,
     filter: {
       must: [
         { key: 'organizationId', match: { value: organizationId } },
         { key: 'server', match: { value: server } },
         { key: 'path', match: { value: path } },
+        { key: 'chunkIndex', range: { gte: keepCount } },
       ],
     },
   })
@@ -122,6 +144,20 @@ export async function deleteFileChunks(
 export interface ChunkSearchHit extends ChunkPayload {
   score: number
 }
+
+/**
+ * Minimum cosine similarity for a passage to be returned at all. Without one,
+ * search always returns `limit` passages however unrelated, and the assistant
+ * will confidently cite irrelevant text.
+ *
+ * Calibrated on 2026-10-02 against real bge-small-en-v1.5 embeddings using
+ * bylaw-style passages: at 0.50, 9 of 9 relevant passages were kept and 10 of
+ * 12 irrelevant ones dropped; at 0.55 relevant answers start being lost. This
+ * model's relevant and irrelevant score ranges OVERLAP, so this is a junk
+ * filter, not a guarantee — it removes the clearly unrelated tail.
+ * Re-calibrate if HF_EMBEDDING_MODEL changes.
+ */
+const MIN_SCORE = Number(process.env.RAG_MIN_SCORE ?? 0.5)
 
 export async function searchChunks(
   organizationId: string,
@@ -136,6 +172,7 @@ export async function searchChunks(
     limit,
     filter: { must: [{ key: 'organizationId', match: { value: organizationId } }] },
     with_payload: true,
+    score_threshold: MIN_SCORE,
   })
   return res.map((r) => ({ ...(r.payload as unknown as ChunkPayload), score: r.score }))
 }

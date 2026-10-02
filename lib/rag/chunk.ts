@@ -17,6 +17,13 @@ export function chunkText(text: string, targetChars = TARGET_CHARS, overlapChars
   const clean = text.replace(/\r\n/g, '\n').trim()
   if (!clean) return []
 
+  // Guard the hard-split step below. If overlap >= target the step is <= 0, the
+  // loop never advances, and it allocates until the whole process runs out of
+  // memory — a synchronous loop, so it would take the web server down for every
+  // user. Clamp both so the step is always at least 1.
+  targetChars = Math.max(1, Math.floor(targetChars))
+  overlapChars = Math.min(Math.max(0, Math.floor(overlapChars)), targetChars - 1)
+
   const paragraphs = clean.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean)
   const pieces: string[] = []
   for (const p of paragraphs) {
