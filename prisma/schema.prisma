@@ -862,6 +862,12 @@ model NasIndexedFile {
   status         NasIndexStatus @default(PENDING)
   error          String?
   indexedAt      DateTime?
+  // Last time the stale-index sweep (app/api/cron/rag-stale-sweep) confirmed
+  // this file still exists on the NAS. Null on rows written before the sweep
+  // existed — the sweep falls back to updatedAt for those. A grace window
+  // (RAG_STALE_GRACE_HOURS) tolerates one slow/partial crawl without a false
+  // prune — see lib/rag/stale-sweep.ts.
+  lastSeenAt     DateTime?
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 
@@ -884,6 +890,7 @@ model BylawsIndexedFile {
   status         NasIndexStatus @default(PENDING)
   error          String?
   indexedAt      DateTime?
+  lastSeenAt     DateTime? // see NasIndexedFile.lastSeenAt — same stale-sweep mechanism
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 
@@ -907,6 +914,24 @@ model BylawsReindexRun {
   startedAt      DateTime         @default(now())
   finishedAt     DateTime?
   results        Json? // ServerResult[] — same shape the route used to return synchronously
+  error          String?
+  createdAt      DateTime         @default(now())
+
+  @@index([organizationId, startedAt])
+}
+
+// Twin of BylawsReindexRun for POST /api/nas/reindex — the general-NAS
+// backfill scoped to NAS_INDEX_FOLDERS (see lib/rag/fetch-and-index.ts).
+// Kept as a separate table rather than a shared one with a pipeline
+// discriminator, matching the existing NasIndexedFile/BylawsIndexedFile twin
+// convention in this schema.
+model NasReindexRun {
+  id             String           @id @default(cuid())
+  organizationId String           @default("rig360") // tenancy anchor (auto-scoped, see lib/db.ts)
+  status         ReindexRunStatus @default(RUNNING)
+  startedAt      DateTime         @default(now())
+  finishedAt     DateTime?
+  results        Json?
   error          String?
   createdAt      DateTime         @default(now())
 

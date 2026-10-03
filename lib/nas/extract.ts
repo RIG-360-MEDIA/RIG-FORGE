@@ -4,9 +4,10 @@
  * formats (CAD, images) return a short note instead of throwing.
  */
 import * as XLSX from 'xlsx'
+import mammoth from 'mammoth'
 
 const TEXTY = new Set(['txt', 'csv', 'md', 'log', 'json', 'xml', 'svg', 'ini', 'yaml', 'yml', 'tsv', 'rtf'])
-export const EXTRACTABLE = new Set([...TEXTY, 'pdf', 'xlsx', 'xls'])
+export const EXTRACTABLE = new Set([...TEXTY, 'pdf', 'xlsx', 'xls', 'docx'])
 const MAX_TEXT = 12_000
 
 export function fileExt(name: string): string {
@@ -45,6 +46,15 @@ export async function extractText(name: string, buf: Buffer): Promise<string> {
       return out.slice(0, MAX_TEXT) || '(empty spreadsheet)'
     } catch {
       return `(could not parse spreadsheet ${name})`
+    }
+  }
+  if (x === 'docx') {
+    try {
+      const { value } = await mammoth.extractRawText({ buffer: buf })
+      const t = value.trim()
+      return t ? t.slice(0, MAX_TEXT) : '(empty document)'
+    } catch (e) {
+      return `(could not extract text from ${name}: ${e instanceof Error ? e.message.slice(0, 80) : 'error'})`
     }
   }
   return `(binary ${x || 'file'}, ${buf.length} bytes — text extraction for this type isn't supported yet; download it to view)`
@@ -107,6 +117,15 @@ export async function extractForIndex(name: string, buf: Buffer): Promise<IndexE
       return cap(out)
     } catch (e) {
       return { ok: false, reason: `spreadsheet could not be parsed: ${e instanceof Error ? e.message.slice(0, 120) : 'error'}` }
+    }
+  }
+
+  if (x === 'docx') {
+    try {
+      const { value } = await mammoth.extractRawText({ buffer: buf })
+      return cap(value)
+    } catch (e) {
+      return { ok: false, reason: `.docx could not be parsed: ${e instanceof Error ? e.message.slice(0, 120) : 'error'}` }
     }
   }
 

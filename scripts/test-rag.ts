@@ -104,7 +104,7 @@ async function main() {
 
   // ── FIX 3 + 4: extraction for indexing ────────────────────────────────────
   console.log('\n## Fixes 3+4 — indexing extraction: full documents, failures reported')
-  const { extractForIndex, extractText } = await import('../lib/nas/extract')
+  const { extractForIndex, extractText, isExtractable } = await import('../lib/nas/extract')
   const big = Array.from({ length: 2000 }, (_, i) => `Section ${i + 1}: Setback, FAR and height rules apply.`).join('\n')
   const full = await extractForIndex('bylaws.txt', Buffer.from(big))
   check('long document indexed in full (was 12,000 chars)', full.ok && full.text.length >= big.length * 0.99,
@@ -272,6 +272,62 @@ async function main() {
   const okExtract = await asTrijya(() => client.nasExtractText('WD', '/ok.pdf'))
   check('a successful extraction is returned as-is', okExtract.ok && okExtract.text === 'Extracted text.' && okExtract.method === 'text')
   globalThis.fetch = realFetch
+
+  // ── fetchAndIndexFile — branch selection (K/E/F's shared helper) ──────────
+  console.log('\n## fetchAndIndexFile — size-based branch selection')
+  const { fetchAndIndexFile } = await import('../lib/rag/fetch-and-index')
+  const fakeIndexerCalls: Array<{ bytesOrText: unknown }> = []
+  const fakeIndexer = async (_org: string, _server: string, _path: string, bytesOrText: unknown) => {
+    fakeIndexerCalls.push({ bytesOrText })
+    return { status: 'indexed' as const, chunks: 1 }
+  }
+
+  fakeIndexerCalls.length = 0
+  globalThis.fetch = (async () => new Response(new Uint8Array(10), { status: 200, headers: { 'content-length': '10' } })) as typeof fetch
+  const smallFile = await asTrijya(() => fetchAndIndexFile({ organizationId: 'trijya', server: 'WD', path: '/small.txt', size: 10, indexer: fakeIndexer }))
+  check('under the size limit -> fetches bytes, calls the indexer with a Buffer', smallFile.status === 'indexed' && Buffer.isBuffer(fakeIndexerCalls[0]?.bytesOrText))
+
+  fakeIndexerCalls.length = 0
+  const bigNonPdf = await asTrijya(() => fetchAndIndexFile({ organizationId: 'trijya', server: 'WD', path: '/big.docx', size: 5_000_000, indexer: fakeIndexer }))
+  check('over the limit, not a PDF -> skipped as too large, indexer never called', bigNonPdf.status === 'skipped' && 'tooLarge' in bigNonPdf && fakeIndexerCalls.length === 0, bigNonPdf.status)
+
+  fakeIndexerCalls.length = 0
+  globalThis.fetch = (async () => new Response(JSON.stringify({ ok: true, text: 'extracted text', method: 'text', truncated: false }), { status: 200 })) as typeof fetch
+  const bigPdfOk = await asTrijya(() => fetchAndIndexFile({ organizationId: 'trijya', server: 'WD', path: '/big.pdf', size: 5_000_000, indexer: fakeIndexer }))
+  check('over the limit, PDF, connector extraction succeeds -> indexer called with preExtracted text (no bytes fetched)',
+    bigPdfOk.status === 'indexed' && !Buffer.isBuffer(fakeIndexerCalls[0]?.bytesOrText) && (fakeIndexerCalls[0]?.bytesOrText as { text: string })?.text === 'extracted text')
+
+  fakeIndexerCalls.length = 0
+  globalThis.fetch = (async () => new Response(JSON.stringify({ ok: false, reason: 'connector not deployed' }), { status: 200 })) as typeof fetch
+  const bigPdfFail = await asTrijya(() => fetchAndIndexFile({ organizationId: 'trijya', server: 'WD', path: '/big.pdf', size: 5_000_000, indexer: fakeIndexer }))
+  check('over the limit, PDF, connector extraction fails -> falls back to skippedTooLarge, reason mentions why',
+    bigPdfFail.status === 'skipped' && 'tooLarge' in bigPdfFail && /connector not deployed/.test(bigPdfFail.reason) && fakeIndexerCalls.length === 0)
+  globalThis.fetch = realFetch
+
+  // ── searchChunksHybrid's re-ranking — pure, no live Qdrant needed ─────────
+  console.log('\n## rerankByKeyword — keyword boost on a synthetic candidate set')
+  const { rerankByKeyword } = await import('../lib/rag/qdrant')
+  const synthetic = [
+    { score: 0.60, text: 'Clause 40: Maximum building height for a residential zone is 15 metres.', path: 'height.txt' },
+    { score: 0.55, text: 'Clause 12: The minimum front setback from the road boundary shall be 4.5 metres.', path: 'setback.txt' },
+    { score: 0.52, text: 'Clause 7: Parking shall be provided at one space per 50 square metres.', path: 'parking.txt' },
+  ]
+  const noOverlap = rerankByKeyword(synthetic, 'zzz qqq xyz', 3)
+  check('no keyword overlap -> pure vector order preserved, matchType "vector"', noOverlap.map((h) => h.path).join(',') === 'height.txt,setback.txt,parking.txt' && noOverlap.every((h) => h.matchType === 'vector'))
+  const boosted = rerankByKeyword(synthetic, 'setback road boundary', 3)
+  check('keyword-matching passage (lower cosine score) is boosted above a pure-vector match', boosted[0]!.path === 'setback.txt', boosted.map((h) => `${h.path}:${h.matchType}`).join(', '))
+  const truncated = rerankByKeyword(synthetic, 'setback', 1)
+  check('still truncates to `limit` after re-ranking', truncated.length === 1 && truncated[0]!.path === 'setback.txt')
+
+  // ── .docx extraction (feature I) ──────────────────────────────────────────
+  console.log('\n## .docx extraction')
+  const mammothMod = await import('mammoth')
+  check('mammoth loads under tsx without a pdf-parse-style bundler workaround', typeof mammothMod.default.extractRawText === 'function')
+  check('.docx is now in EXTRACTABLE (isExtractable picks it up for free)', isExtractable('plan.docx'))
+  const notActuallyDocx = await extractForIndex('plan.docx', Buffer.from('not a real zip/docx'))
+  check('garbage bytes reported as a FAILURE, not embedded as content (same pattern as the PDF branch)', !notActuallyDocx.ok, notActuallyDocx.ok ? `returned text: ${notActuallyDocx.text.slice(0, 40)}` : notActuallyDocx.reason)
+  const stillMd = await extractForIndex('readme.md', Buffer.from('# hi'))
+  check('adding .docx did not affect other extensions', stillMd.ok && stillMd.text.includes('# hi'))
 
   console.log(`\n${pass} passed, ${fail} failed`)
   process.exitCode = fail ? 1 : 0

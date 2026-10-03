@@ -48,3 +48,15 @@ export function indexBylawsFile(
     collection: BYLAWS_COLLECTION, tracker, enabled: isBylawsIndexingEnabled(),
   })
 }
+
+/** Write a PENDING row before a fire-and-forget index kicks off, so a crash
+ * mid-flight leaves a real row to retry instead of silence — see
+ * app/api/cron/rag-retry/route.ts. */
+export async function markBylawsPending(organizationId: string, server: string, path: string): Promise<void> {
+  const key = { organizationId, server, path }
+  await prisma.bylawsIndexedFile.upsert({
+    where: { organizationId_server_path: key },
+    create: { ...key, status: 'PENDING', contentHash: '' },
+    update: { status: 'PENDING' },
+  })
+}

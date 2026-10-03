@@ -5,8 +5,8 @@ import { successResponse, errorResponse } from '@/lib/api-helpers'
 import { isNasEnabled, nasUpload } from '@/lib/nas/client'
 import { isBylawsPath } from '@/lib/nas/bylaws-crawl'
 import { getOrgId } from '@/lib/tenant-context'
-import { indexNasFile, isRagIndexingEnabled } from '@/lib/rag/index-nas-file'
-import { indexBylawsFile, isBylawsIndexingEnabled } from '@/lib/rag/index-bylaws-file'
+import { indexNasFile, isRagIndexingEnabled, markNasPending } from '@/lib/rag/index-nas-file'
+import { indexBylawsFile, isBylawsIndexingEnabled, markBylawsPending } from '@/lib/rag/index-bylaws-file'
 
 export const runtime = 'nodejs'
 // Allow large-ish uploads (drawings/PDFs). Next caps body at 4MB by default for
@@ -50,6 +50,10 @@ export async function POST(request: NextRequest) {
     }
     if (inBylawsFolder && isBylawsIndexingEnabled()) {
       const organizationId = getOrgId()
+      // Write a PENDING row BEFORE the detached chain starts: if Render
+      // restarts mid-index, this leaves a real row for the retry queue
+      // (app/api/cron/rag-retry) to pick up, instead of no row at all.
+      await markBylawsPending(organizationId, server, fullPath).catch(() => {})
       file
         .arrayBuffer()
         .then((buf) => indexBylawsFile(organizationId, server, fullPath, Buffer.from(buf)))
@@ -57,6 +61,7 @@ export async function POST(request: NextRequest) {
         .catch((e) => console.error('[bylaws-rag] indexing failed:', e))
     } else if (!inBylawsFolder && isRagIndexingEnabled()) {
       const organizationId = getOrgId()
+      await markNasPending(organizationId, server, fullPath).catch(() => {})
       // Fire-and-forget — don't make the uploader wait on embedding/indexing.
       file
         .arrayBuffer()

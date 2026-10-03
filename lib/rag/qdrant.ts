@@ -176,3 +176,67 @@ export async function searchChunks(
   })
   return res.map((r) => ({ ...(r.payload as unknown as ChunkPayload), score: r.score }))
 }
+
+export interface HybridChunkSearchHit extends ChunkSearchHit {
+  matchType: 'vector' | 'hybrid'
+}
+
+/** How much a keyword match can boost a passage's rank, relative to cosine
+ * score (both roughly 0-1 scale). Additive re-rank, not a replacement for
+ * the vector score — see searchChunksHybrid. */
+const KEYWORD_BOOST_WEIGHT = Number(process.env.RAG_KEYWORD_BOOST_WEIGHT ?? 0.15)
+
+const STOPWORDS = new Set(['the', 'a', 'an', 'of', 'to', 'in', 'on', 'for', 'and', 'or', 'is', 'are', 'what', 'how', 'must', 'shall'])
+
+function keywordTokens(text: string): string[] {
+  return Array.from(new Set(text.toLowerCase().match(/[a-z0-9]+/g) ?? [])).filter((t) => t.length > 2 && !STOPWORDS.has(t))
+}
+
+/**
+ * Pure re-ranking step, split out from searchChunksHybrid so it's testable
+ * on a synthetic candidate array without a live Qdrant (see scripts/test-rag.ts).
+ * Boosts candidates sharing query keywords, re-sorts, truncates to `limit`.
+ */
+export function rerankByKeyword<T extends { score: number; text: string }>(
+  candidates: T[],
+  queryText: string,
+  limit: number,
+): Array<T & { matchType: 'vector' | 'hybrid' }> {
+  const queryTokens = keywordTokens(queryText)
+  if (queryTokens.length === 0 || candidates.length === 0) {
+    return candidates.slice(0, limit).map((c) => ({ ...c, matchType: 'vector' as const }))
+  }
+
+  const scored = candidates.map((c) => {
+    const haystack = c.text.toLowerCase()
+    const matched = queryTokens.filter((t) => haystack.includes(t)).length
+    const keywordScore = matched / queryTokens.length
+    return { hit: c, keywordScore, combined: c.score + KEYWORD_BOOST_WEIGHT * keywordScore }
+  })
+  scored.sort((a, b) => b.combined - a.combined)
+
+  return scored.slice(0, limit).map((s) => ({ ...s.hit, matchType: s.keywordScore > 0 ? ('hybrid' as const) : ('vector' as const) }))
+}
+
+/**
+ * Vector search, then re-ranked with a keyword-overlap boost.
+ *
+ * Qdrant's MatchText filter is a boolean AND-gate, not a blended score, and
+ * genuine fused ranking (sparse + dense vectors, RRF) needs new point fields
+ * and a BM25 embedder — a real re-index, not a tweak. This is the lighter
+ * fix for the documented problem (paraphrases ranking below exact-keyword
+ * near-misses, since bge-small-en-v1.5's relevant/irrelevant score ranges
+ * overlap): fetch a larger vector-scored candidate pool (still MIN_SCORE-
+ * filtered — that junk filter is unchanged), boost candidates that share
+ * query keywords, re-sort, and return `limit`.
+ */
+export async function searchChunksHybrid(
+  organizationId: string,
+  vector: number[],
+  queryText: string,
+  limit = 8,
+  collection: string = COLLECTION,
+): Promise<HybridChunkSearchHit[]> {
+  const candidates = await searchChunks(organizationId, vector, limit * 4, collection)
+  return rerankByKeyword(candidates, queryText, limit)
+}

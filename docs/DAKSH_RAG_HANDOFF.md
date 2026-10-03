@@ -288,3 +288,97 @@ None of these were answered since 2 October:
 - **Never commit keys.** The HuggingFace key and the Qdrant key were both shared
   in chat. Both will be rotated after go-live, and you will get the new ones
   separately.
+
+---
+
+## 10. Addendum — 4 October 2026: C/D/J shipped, E/F/G/H/I/K this round
+
+C (large-PDF connector extraction), D (OCR fallback) and J (background
+backfill) shipped on this branch (commit `44bdd48`). This addendum covers the
+rest of the backlog from section 6: E, F, G, H, I and K. The offline suite
+(`npx tsx scripts/test-rag.ts`) now has more cases than the `35 passed, 0
+failed` quoted above — expect **49 passed**, plus 2 known-unrelated failures
+in the chunker's subprocess probe (an environment quirk with spawning `tsx`
+as a child process, confirmed present before any of this round's changes too
+— not a regression).
+
+**E — general-NAS backfill, scoped.** New `POST`/`GET /api/nas/reindex`,
+structurally identical to the bylaws backfill but iterating `NAS_INDEX_FOLDERS`
+(a new env var — comma-separated `server:/path` pairs) instead of
+auto-discovering a folder. Indexing the whole NAS is still not attempted —
+you opt specific folders in. Tracked via a new `NasReindexRun` model, a twin
+of `BylawsReindexRun`.
+
+**F — stale-index sweep.** New `POST /api/cron/rag-stale-sweep` (needs the
+same external-scheduler wiring as the other `app/api/cron/*` routes — see the
+note in section 6/K below, this still isn't actually scheduled anywhere).
+Mark-and-sweep, not a one-shot diff: added a nullable `lastSeenAt` column to
+both tracker tables, bumped on every file a live crawl actually confirms, and
+only prunes `INDEXED` rows not seen for `RAG_STALE_GRACE_HOURS` (default 48h)
+— a slow or partial crawl can't cause a false delete. Bylaws is swept in
+full; general NAS only within `NAS_INDEX_FOLDERS` (same scope E indexes) —
+nothing outside that scope is ever touched, so an ad-hoc Forge upload to some
+other folder is unaffected either way.
+
+**K — retry queue.** Found that `PENDING` was dead code — nothing ever wrote
+it, so a Render restart mid-index left no row at all, not a stuck `PENDING`
+one. Fixed by writing a real `PENDING` row (`markNasPending`/
+`markBylawsPending`) *before* the upload route's fire-and-forget index call
+starts. New `POST /api/cron/rag-retry` then retries `FAILED` rows and
+`PENDING` rows stuck past 10 minutes, capped at `RAG_RETRY_BATCH_SIZE`
+(default 20) per run.
+
+**H — hybrid search.** Qdrant's `MatchText` filter turned out to be a boolean
+AND-gate, not a blended score, and true fused ranking needs sparse-vector
+infra (new point fields, a BM25 embedder, a full re-index). Went with a
+lighter fix instead: `searchChunksHybrid` (`lib/rag/qdrant.ts`) fetches a
+larger vector-scored candidate pool, boosts results sharing query keywords
+(`RAG_KEYWORD_BOOST_WEIGHT`, default 0.15), re-sorts. Wired into all three
+call sites (`bylaws_search`, `nas_semantic_search`, the bylaws HTTP search
+route) — each result now also carries `matchType: 'vector' | 'hybrid'`.
+
+**I — `.docx` extraction.** Added via `mammoth` (confirmed it needs none of
+`pdf-parse`'s bundler workaround — a plain `import mammoth from 'mammoth'`
+builds fine).
+
+**G — Hindi/multilingual embeddings: the model recommended on 2 October was
+wrong, caught by testing live before writing it down as fact.**
+`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (and every
+other "should be a 384-dim drop-in" candidate — `multilingual-e5-small`,
+`multilingual-e5-base`, `bge-m3`, `LaBSE`, `distiluse-base-multilingual`,
+`use-cmlm-multilingual`) is **not actually served by HF's hf-inference
+provider for feature-extraction** right now — each either 404s or returns a
+`SentenceSimilarityPipeline` error, meaning HF hosts it for a different
+pipeline than embedding generation. The only multilingual model that
+actually worked when probed live: **`intfloat/multilingual-e5-large`** —
+but it's **1024-dim, not 384**, so switching IS a real Qdrant collection
+resize, not the free lunch originally assumed.
+
+Calibrated against the real HF API with a small English+Hindi
+relevant/near-miss/irrelevant set (same method as section 9's original
+0.50 calibration): this model's cosine scores run much higher overall
+(irrelevant passages scored 0.70-0.78, higher than bge-small's own relevant
+range), so **`RAG_MIN_SCORE` must come up to ~0.80** for it, not stay at
+0.50 — the highest cutoff keeping all relevant/near-miss while dropping all
+irrelevant in this sample. Also confirmed the actual point of this feature
+works: a Hindi query finds an English-indexed passage and vice versa
+(cross-lingual retrieval, not just same-language Hindi support).
+
+Flipped in **local `.env` only** (both local Qdrant collections were empty,
+so nothing was lost recreating them at 1024-dim) to prove this end-to-end.
+**Not changed in any production config** — switching the real deployment
+needs the same `HF_EMBEDDING_MODEL`/`HF_EMBEDDING_DIM`/`RAG_MIN_SCORE` values
+set wherever Render's env vars are configured, plus a full re-index
+afterward (new vectors aren't comparable to old ones, even where the
+dimension happens to match).
+
+**Still not done — needs infra access this round didn't have:**
+- TRIJYA-3 still needs the connector redeployed with `pymupdf`/`pytesseract`
+  (section 5/C — unchanged since 3 Oct).
+- `BylawsReindexRun` and now also `lastSeenAt`/`NasReindexRun` need creating
+  in whichever Postgres production actually runs on (only pushed to local
+  dev here).
+- Nothing currently triggers any `app/api/cron/*` route in production — only
+  `.github/workflows/keepalive.yml` exists, and it's a plain `/health` ping,
+  not a call to `rag-stale-sweep`/`rag-retry` with `CRON_SECRET`. Flagged in
+  `SECURITY_TODO.md` already; still open.
