@@ -890,3 +890,25 @@ model BylawsIndexedFile {
   @@unique([organizationId, server, path])
   @@index([organizationId])
 }
+
+enum ReindexRunStatus {
+  RUNNING
+  DONE
+  FAILED
+}
+
+// Tracks one run of POST /api/nas/bylaws/reindex, so a long-running backfill
+// (minutes, over hundreds of files) can report progress and a final result
+// through a separate status poll instead of one request that can time out.
+model BylawsReindexRun {
+  id             String           @id @default(cuid())
+  organizationId String           @default("trijya") // tenancy anchor (auto-scoped, see lib/db.ts)
+  status         ReindexRunStatus @default(RUNNING)
+  startedAt      DateTime         @default(now())
+  finishedAt     DateTime?
+  results        Json? // ServerResult[] — same shape the route used to return synchronously
+  error          String?
+  createdAt      DateTime         @default(now())
+
+  @@index([organizationId, startedAt])
+}

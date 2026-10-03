@@ -230,6 +230,49 @@ async function main() {
     noQdrant.status === 'failed' ? noQdrant.reason.slice(0, 60) : noQdrant.status)
   globalThis.fetch = realFetch
 
+  // ── Large/scanned PDFs: connector-side extraction (feature C/D) ───────────
+  // Qdrant is deliberately unconfigured in this suite (see file header), so a
+  // preExtracted job can't reach "indexed" here — it can only prove it skips
+  // the byte-size guard and extractForIndex entirely and reaches the SAME
+  // Qdrant-not-configured failure the bytes-based path hits (fixes 9-10
+  // above), rather than failing on size or extraction. The "indexed, with an
+  // OCR warning on the tracker row" result needs a live Qdrant to verify.
+  console.log('\n## Connector text extraction — large PDFs + OCR fallback')
+  globalThis.fetch = (async (_u: unknown, init: any) =>
+    new Response(JSON.stringify(JSON.parse(init.body).inputs.map(() => vec())), { status: 200 })) as typeof fetch
+  const preText = await indexFile({
+    ...base, path: '/utility data/By_Laws/NBC-vol-1.pdf', // listed size would be ~53 MB, well over MAX_INDEX_BYTES
+    preExtracted: { text: 'A real bylaw clause about setbacks and height limits.', truncated: false, method: 'text' },
+  })
+  check('preExtracted text skips the byte-size guard and extractForIndex entirely',
+    preText.status === 'failed' && /QDRANT_URL/.test(preText.reason),
+    `${preText.status}: ${preText.status === 'failed' ? preText.reason.slice(0, 50) : ''} (no bytes were ever checked, no "over the 1 MB")`)
+  const ocrOutcome = await indexFile({
+    ...base, path: '/utility data/By_Laws/scan.pdf',
+    preExtracted: { text: 'Recovered via OCR: setback shall be 4.5 metres.', truncated: false, method: 'ocr' },
+  })
+  check('OCR-recovered preExtracted text takes the same path, not reported as "needs OCR" again',
+    ocrOutcome.status === 'failed' && /QDRANT_URL/.test(ocrOutcome.reason), ocrOutcome.status === 'failed' ? ocrOutcome.reason.slice(0, 50) : ocrOutcome.status)
+  globalThis.fetch = realFetch
+
+  console.log('\n## nasExtractText — retries connector 5xx, gives up with a clear reason')
+  let extractCalls = 0
+  globalThis.fetch = (async () => { extractCalls++; return new Response('', { status: 503 }) }) as typeof fetch
+  const extractTimer = Date.now()
+  const gaveUpExtract = await asTrijya(() => client.nasExtractText('WD', '/big.pdf'))
+  check('503 is retried a few times, then fails with a readable reason (not a thrown exception)',
+    !gaveUpExtract.ok && /after 3 attempts/.test(gaveUpExtract.ok ? '' : gaveUpExtract.reason) && extractCalls === 3,
+    `${extractCalls} attempts in ${Date.now() - extractTimer} ms`)
+  extractCalls = 0
+  globalThis.fetch = (async () => { extractCalls++; return new Response(JSON.stringify({ ok: false, reason: 'only .pdf is supported by /extract' }), { status: 200 }) }) as typeof fetch
+  const notPdf = await asTrijya(() => client.nasExtractText('WD', '/x.docx'))
+  check('a connector-reported failure passes straight through, no retry wasted', !notPdf.ok && extractCalls === 1, notPdf.ok ? '' : notPdf.reason)
+  extractCalls = 0
+  globalThis.fetch = (async () => { extractCalls++; return new Response(JSON.stringify({ ok: true, text: 'Extracted text.', method: 'text', truncated: false }), { status: 200 }) }) as typeof fetch
+  const okExtract = await asTrijya(() => client.nasExtractText('WD', '/ok.pdf'))
+  check('a successful extraction is returned as-is', okExtract.ok && okExtract.text === 'Extracted text.' && okExtract.method === 'text')
+  globalThis.fetch = realFetch
+
   console.log(`\n${pass} passed, ${fail} failed`)
   process.exitCode = fail ? 1 : 0
 }

@@ -204,6 +204,59 @@ export async function nasFetchBytesStrict(server: string, path: string, maxBytes
   return Buffer.concat(parts, total)
 }
 
+export interface NasExtractResult {
+  ok: true
+  text: string
+  method: 'text' | 'ocr'
+  truncated: boolean
+}
+export interface NasExtractFailure {
+  ok: false
+  reason: string
+}
+
+const EXTRACT_RETRYABLE = new Set([502, 503, 504])
+const EXTRACT_MAX_ATTEMPTS = 3
+
+/**
+ * Ask the connector to extract a PDF's text itself (PyMuPDF, falling back to
+ * OCR for scanned pages) and return text, not bytes. For files too large to
+ * safely download and parse on Render (see MAX_INDEX_BYTES in
+ * lib/rag/index-core.ts) — the connector runs on TRIJYA-3, which isn't
+ * memory-constrained the way Render's free plan is.
+ *
+ * A 404 means the connector hasn't been redeployed with /extract yet — treat
+ * that like any other failure so callers fall back to their existing
+ * "too large to index" handling; it's safe to ship this before TRIJYA-3 is
+ * updated.
+ */
+export async function nasExtractText(server: string, path: string): Promise<NasExtractResult | NasExtractFailure> {
+  const timeout = Number(process.env.NAS_EXTRACT_TIMEOUT_MS ?? 180_000)
+  let lastError = ''
+  for (let attempt = 0; attempt < EXTRACT_MAX_ATTEMPTS; attempt++) {
+    let r: Response
+    try {
+      r = await nasFetch(
+        `/extract?server=${encodeURIComponent(server)}&path=${encodeURIComponent(path)}`,
+        { signal: AbortSignal.timeout(timeout) },
+      )
+    } catch (e) {
+      lastError = e instanceof Error ? e.message : 'network error'
+      if (attempt < EXTRACT_MAX_ATTEMPTS - 1) await new Promise((res) => setTimeout(res, 2000 * 2 ** attempt))
+      continue
+    }
+    if (EXTRACT_RETRYABLE.has(r.status)) {
+      await r.body?.cancel().catch(() => {})
+      lastError = `HTTP ${r.status}`
+      if (attempt < EXTRACT_MAX_ATTEMPTS - 1) await new Promise((res) => setTimeout(res, 2000 * 2 ** attempt))
+      continue
+    }
+    if (!r.ok) return { ok: false, reason: `connector extraction failed (${r.status})` }
+    return (await r.json()) as NasExtractResult | NasExtractFailure
+  }
+  return { ok: false, reason: `connector extraction unavailable after ${EXTRACT_MAX_ATTEMPTS} attempts (last: ${lastError})` }
+}
+
 export async function nasUpload(server: string, path: string, file: Blob, filename: string): Promise<{ ok: boolean; path: string }> {
   const form = new FormData()
   form.append('file', file, filename)

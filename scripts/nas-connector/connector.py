@@ -296,6 +296,93 @@ def download(server: str, path: str):
     )
 
 
+# ── Connector-side text extraction (large/scanned PDFs) ───────────────────────
+# Render (Forge's host) is memory-constrained (512 MB, free plan) and can't
+# safely download+parse the NBC/standards PDFs (50-120+ MB each). TRIJYA-3
+# isn't, so for those files Forge asks the connector to extract text itself
+# and send text, never raw bytes. Falls back to OCR when the PDF has no
+# selectable text at all (a scan) — capped at NAS_OCR_MAX_PAGES since OCR is
+# slow and this box already runs the local LLM.
+try:
+    import fitz  # PyMuPDF
+    _HAVE_FITZ = True
+except Exception:
+    _HAVE_FITZ = False
+
+try:
+    import pytesseract
+    from PIL import Image
+    _HAVE_OCR = True
+except Exception:
+    _HAVE_OCR = False
+
+OCR_MAX_PAGES = int(os.environ.get("NAS_OCR_MAX_PAGES", "60"))
+OCR_ZOOM = float(os.environ.get("NAS_OCR_ZOOM", "2.0"))  # ~144 DPI at 2x
+
+
+@app.get("/extract")
+def extract(server: str, path: str):
+    if not _HAVE_FITZ:
+        raise HTTPException(501, "PyMuPDF (pymupdf) is not installed on the connector")
+    if not path.lower().endswith(".pdf"):
+        return {"ok": False, "reason": "only .pdf is supported by /extract"}
+
+    conn, share = _connect(server)
+    tmp = tempfile.NamedTemporaryFile(delete=False)
+    try:
+        conn.retrieveFile(share, _norm(path), tmp)
+        tmp.flush()
+        tmp.close()
+    except Exception as e:
+        try:
+            os.unlink(tmp.name)
+        except Exception:
+            pass
+        raise HTTPException(404, f"cannot download '{path}': {type(e).__name__}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    try:
+        doc = fitz.open(tmp.name)
+    except Exception as e:
+        os.unlink(tmp.name)
+        return {"ok": False, "reason": f"PDF could not be opened: {type(e).__name__}"}
+
+    try:
+        text = "\n\n".join(page.get_text() for page in doc).strip()
+        if text:
+            return {"ok": True, "text": text, "method": "text", "truncated": False}
+
+        # No selectable text at all — almost always a scan. OCR page by page.
+        if not _HAVE_OCR:
+            return {
+                "ok": False,
+                "reason": "PDF has no selectable text (likely scanned images; needs OCR, "
+                          "but pytesseract is not installed on the connector)",
+            }
+
+        page_count = doc.page_count
+        limit = min(page_count, OCR_MAX_PAGES)
+        ocr_parts = []
+        for i in range(limit):
+            pix = doc[i].get_pixmap(matrix=fitz.Matrix(OCR_ZOOM, OCR_ZOOM))
+            img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+            ocr_parts.append(pytesseract.image_to_string(img))
+        ocr_text = "\n\n".join(ocr_parts).strip()
+        if not ocr_text:
+            return {"ok": False, "reason": "OCR found no readable text on this PDF"}
+        return {"ok": True, "text": ocr_text, "method": "ocr", "truncated": page_count > limit}
+    finally:
+        doc.close()
+        try:
+            os.unlink(tmp.name)
+        except Exception:
+            pass
+
+
 @app.post("/upload")
 async def upload(server: str, path: str, file: UploadFile = File(...)):
     conn, share = _connect(server)

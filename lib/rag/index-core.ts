@@ -42,8 +42,19 @@ export interface Tracker {
   }): Promise<void>
 }
 
+/** Text already extracted elsewhere (the NAS connector, for a PDF too large
+ * to fetch as raw bytes into Render's memory) — bypasses the byte-size check
+ * and extractForIndex entirely. `method` records how it was obtained; "ocr"
+ * surfaces as a tracker warning, same as the existing truncation warning. */
+export interface PreExtracted {
+  text: string
+  truncated: boolean
+  method: 'text' | 'ocr'
+}
+
 export interface IndexJob extends Key {
-  bytes: Buffer
+  bytes?: Buffer
+  preExtracted?: PreExtracted
   collection: string
   tracker: Tracker
   enabled: boolean
@@ -54,7 +65,7 @@ function fileName(path: string): string {
 }
 
 export async function indexFile(job: IndexJob): Promise<IndexOutcome> {
-  const { organizationId, server, path, bytes, collection, tracker } = job
+  const { organizationId, server, path, bytes, preExtracted, collection, tracker } = job
   const key: Key = { organizationId, server, path }
   const name = fileName(path)
 
@@ -71,16 +82,25 @@ export async function indexFile(job: IndexJob): Promise<IndexOutcome> {
   }
 
   try {
-    if (bytes.length > MAX_INDEX_BYTES) {
-      return await fail(`file is ${(bytes.length / 1_048_576).toFixed(1)} MB, over the ${(MAX_INDEX_BYTES / 1_048_576).toFixed(0)} MB indexing limit`)
-    }
+    let extracted: { text: string; truncated: boolean }
+    let ocrUsed = false
 
-    const extracted = await extractForIndex(name, bytes)
-    if (!extracted.ok) {
-      // The file as it is NOW cannot be read. Remove anything indexed from an
-      // older, readable version so stale content stops being searchable.
-      await pruneStaleChunks(organizationId, server, path, 0, collection).catch(() => {})
-      return await fail(extracted.reason)
+    if (preExtracted) {
+      extracted = preExtracted
+      ocrUsed = preExtracted.method === 'ocr'
+    } else {
+      if (!bytes) return await fail('no file bytes or pre-extracted text provided')
+      if (bytes.length > MAX_INDEX_BYTES) {
+        return await fail(`file is ${(bytes.length / 1_048_576).toFixed(1)} MB, over the ${(MAX_INDEX_BYTES / 1_048_576).toFixed(0)} MB indexing limit`)
+      }
+      const result = await extractForIndex(name, bytes)
+      if (!result.ok) {
+        // The file as it is NOW cannot be read. Remove anything indexed from an
+        // older, readable version so stale content stops being searchable.
+        await pruneStaleChunks(organizationId, server, path, 0, collection).catch(() => {})
+        return await fail(result.reason)
+      }
+      extracted = result
     }
 
     const contentHash = createHash('sha256').update(extracted.text).digest('hex')
@@ -106,9 +126,10 @@ export async function indexFile(job: IndexJob): Promise<IndexOutcome> {
     // A non-null `error` on an INDEXED row is a WARNING, used to make partial
     // indexing visible instead of silent — that silence is what hid the old
     // 12,000-character cap.
-    const warning = extracted.truncated
-      ? `only the first ${extracted.text.length.toLocaleString('en-US')} characters were indexed (RAG_MAX_TEXT_CHARS)`
-      : undefined
+    const warnings: string[] = []
+    if (extracted.truncated) warnings.push(`only the first ${extracted.text.length.toLocaleString('en-US')} characters were indexed (RAG_MAX_TEXT_CHARS)`)
+    if (ocrUsed) warnings.push('text was recovered via OCR (connector) — may contain recognition errors')
+    const warning = warnings.length ? warnings.join('; ') : undefined
     await tracker.save(key, { status: 'INDEXED', contentHash, chunkCount: chunks.length, error: warning ?? null, indexedAt: new Date() })
     return { status: 'indexed', chunks: chunks.length, ...(warning && { warning }) }
   } catch (e) {

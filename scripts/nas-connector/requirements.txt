@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+pysmb
+numpy
+pymupdf
+pytesseract
+Pillow
+
+# pytesseract also needs the tesseract-ocr system binary installed on the
+# host (TRIJYA-3), e.g. `apt install tesseract-ocr` — not a pip package.
