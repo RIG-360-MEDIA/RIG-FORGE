@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
+import { withoutOrgScope } from '@/lib/tenant-context'
 import { hashPassword } from '@/lib/auth'
 import { authenticateCapable } from '@/lib/authz'
 import { can } from '@/lib/permissions'
@@ -54,7 +55,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
 
     const normalizedEmail = email.toLowerCase().trim()
-    const existing = await prisma.user.findUnique({ where: { email: normalizedEmail } })
+    // Email is unique across EVERY company (it is the login identifier), so the
+    // check has to be global; a company-filtered lookup would miss an address
+    // used elsewhere and the insert would then fail on the unique index.
+    // Only a yes/no comes back — no other company's data is returned.
+    const existing = await withoutOrgScope(() =>
+      prisma.user.findUnique({ where: { email: normalizedEmail }, select: { id: true } }),
+    )
     if (existing) return errorResponse('Email already in use', 409)
 
     const temporaryPassword = generateSecurePassword()

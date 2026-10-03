@@ -12,6 +12,7 @@ import { type NextRequest } from 'next/server'
 import bcrypt from 'bcryptjs'
 
 import { prisma } from '@/lib/db'
+import { withoutOrgScope } from '@/lib/tenant-context'
 import { getTokenFromCookies, verifyToken } from '@/lib/auth'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
 
@@ -71,10 +72,14 @@ export async function POST(request: NextRequest) {
     }
 
     // Final uniqueness guard in case someone verified the same number meanwhile.
-    const clash = await prisma.user.findFirst({
+    // WhatsApp numbers are unique across EVERY company (inbound messages must
+    // resolve to exactly one user), so this check must be global — a company-
+    // filtered one let a number already used elsewhere through, and the save
+    // then failed on the unique index. Only a yes/no comes back.
+    const clash = await withoutOrgScope(() => prisma.user.findFirst({
       where: { whatsappNumber: me.waPendingNumber, id: { not: claims.userId } },
       select: { id: true },
-    })
+    }))
     if (clash) {
       return errorResponse('That WhatsApp number is already linked to another account.', 409)
     }
