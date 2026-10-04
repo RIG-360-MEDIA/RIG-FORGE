@@ -276,3 +276,78 @@ whenever — `nasExtractText` already treats a 404 on `/extract` as
 - **Production embedding model switch (G).** Local `.env` only. Switching the
   real deployment to `intfloat/multilingual-e5-large` needs the same env
   vars set on Render, plus a full re-index afterward.
+
+---
+
+## Round 4 — review fixes (4 October 2026, on top of `dcfb543`)
+
+Rounds 1–3 were reviewed. The design held up; these are the bugs found and
+fixed, one commit each. **Read this before building on the branch.** Several
+behaviours changed (extraction protocol, retry rules, sweep rules, scheduled
+crons).
+
+| Commit | What was wrong | What changed |
+|---|---|---|
+| `5d69227` | **Retry queue jammed.** Every upload got a PENDING row, but the indexer skips photos/DWGs/videos without writing, so those rows stayed PENDING forever. The cron took the 20 oldest each run, re-downloaded them and never got past them. Deleted files clogged it too, and real failures were retried every 15 min forever. | Uploads only track readable file types. Retry rules live in `lib/rag/retry-queue.ts`: each attempt is **claimed** first (optimistic on `retryCount`, so overlapping runs never double-process), **backoff** 15 m → 1 h → 4 h → 16 h → 24 h, gives up after `RAG_RETRY_MAX_ATTEMPTS` (row stays FAILED, visible). A file **confirmed gone** (folder lists, file absent) is pruned and its row deleted; an **unlistable** folder is not treated as gone. Per-run time budget. New columns `retryCount`, `nextRetryAt`. |
+| `2d5dbc9` | **A restart mid-backfill blocked every future backfill.** The run stayed RUNNING; every POST returned the dead run. | `lib/rag/reindex-runs.ts`: timer heartbeat every minute (`heartbeatAt`); a RUNNING run silent for `RAG_RUN_STALE_MINUTES` (10) is taken over as interrupted; check-and-create under a Postgres advisory lock (double clicks start one run); a taken-over job stops at its next file and cannot overwrite the FAILED status. |
+| `bfb08ce` | **Connector extraction could not work through Cloudflare.** It cuts a request at ~100 s; `/extract` did download + OCR inside one request, and a timeout was retried 3× while the connector kept working. **Small scanned PDFs never reached the connector** (only >20 MB did). **OCR was English-only.** **Connector text skipped `RAG_MAX_TEXT_CHARS`.** | Connector: `POST /extract/jobs` (returns at once) + `GET /extract/jobs/{id}`; one worker, same file → same job, results kept 1 h, 429 when the queue is full; worker never raises. Forge polls with short requests up to `NAS_EXTRACT_TIMEOUT_MS` (15 min); malformed replies fail fast. Scanned PDFs of any size go to the connector. OCR uses `eng+hin` when `tesseract-ocr-hin` is installed. Connector text is capped like local text. Runbook updated. |
+| `00b4f0c` | **Stale sweep pruned files it never reached** (past the listing cap) although its comment said it would not. Also: scope `/A` matched rows under sibling `/AB` (never confirmed → pruned while present); one scope's listing error aborted the run after others were pruned. | `listFilesRecursiveWithStatus` reports `complete`; partial scopes prune nothing (`incompleteScopes`). Path matching is folder-exact. Each scope stands alone (`failedScopes`). `lastSeenAt` updates chunked under Postgres' parameter limit. Chunks pruned before the row is deleted. Backfills report `listingComplete`. |
+| `27ea4fc` | **E5 models need `query: ` / `passage: ` prefixes** that were never added; the 0.80 `RAG_MIN_SCORE` was calibrated without them. | `inputPrefixes()` adds them for E5 (not `-instruct`, not BGE); `HF_QUERY_PREFIX` / `HF_PASSAGE_PREFIX` override. **Re-calibrated live** on English + Hindi bylaw passages: prefixes widen the relevant/irrelevant gap 0.043 → 0.072; **use `RAG_MIN_SCORE=0.79`** with multilingual-e5-large. |
+| `9d121e8` | **Keyword boost ignored Hindi** (`/[a-z0-9]+/` drops Devanagari). | Unicode letters + combining marks + digits, NFC-normalised both sides, a few Hindi stopwords. Offline tests for all of round 4's pure logic. |
+| `af8df0c` | **Merging the workflow switched on 4 cron jobs that never ran in production** (AI drafts, digests, notifications, hard delete of disappearing messages; default company only). | Only `rag-retry` and `rag-stale-sweep` are scheduled; the four older jobs are manual (Actions → Run workflow). Secret passed via env; a missing secret skips cleanly; concurrency group + timeout. |
+| `63df60b` | **Found by the end-to-end test:** pdf-parse's bundled 2018 pdf.js rejects some producers' PDFs outright ("bad XRef entry"); they were just FAILED. | Any PDF unreadable here (scanned **or** unparseable) is handed to the connector (PyMuPDF). |
+| `991c53c` | **Found by the end-to-end test:** a Qdrant collection dropped while the app runs (by hand, or a free-cluster reset) made every call fail "Not Found" until restart. | `withCollection()` recreates it once on a 404 and retries. |
+| `8b9d62a` | The backfill **status** endpoints hit the run tables even with RAG off (500 on a database without them). | 503 "not configured", like the rest. Both crons verified to make no DB/NAS call with RAG off. |
+
+### Considered and deliberately NOT changed
+
+Re-uploading an already-indexed file re-embeds it even if unchanged. Skipping
+that safely would need the upload to know the content hash up front; trusting
+the hash on a PENDING row could restore INDEXED over half-written chunks after
+a crash. Correctness over a few HF calls.
+
+### Verification
+
+- `npx tsx scripts/test-rag.ts`: **77/77** offline.
+- Connector job tests (FastAPI TestClient, SMB + tesseract faked): **16/16**.
+- Live, real Postgres + Qdrant + HuggingFace, fake NAS: retry queue 14/14,
+  backfill runs 10/10, stale-sweep route 13/13, text cap 3/3, vanished
+  collection 6/6, RAG-off crons 2/2.
+- **End-to-end on a production build** (real Postgres, Qdrant, HF; a fake
+  connector speaking the new job protocol): **25/25, twice in a row** —
+  uploads (photo not tracked, text indexed), bylaws backfill (text PDF,
+  small scan via OCR job, 1.6 MB PDF via connector, never downloaded),
+  search finds all three, rig360 refused, NAS-folder backfill, interrupted
+  run taken over, both crons.
+- `tsc --noEmit` clean, `next build` succeeds, schema has **zero drift**
+  against the new database.
+
+### New settings (all optional; see `.env.example`)
+
+Forge: `RAG_RETRY_MAX_ATTEMPTS` (6), `RAG_RETRY_STUCK_MINUTES` (30),
+`RAG_RETRY_TIME_BUDGET_SECONDS` (240), `RAG_RUN_STALE_MINUTES` (10),
+`NAS_EXTRACT_TIMEOUT_MS` (900000), `NAS_EXTRACT_POLL_MS` (5000),
+`HF_QUERY_PREFIX` / `HF_PASSAGE_PREFIX`.
+Connector: `NAS_EXTRACT_WORKERS` (1), `NAS_EXTRACT_MAX_QUEUED` (20),
+`NAS_EXTRACT_RESULT_TTL` (3600), `NAS_OCR_LANG`.
+
+### Schema (already applied to the new Supabase database)
+
+On top of `main` before this merge: enum `ReindexRunStatus`; tables
+`BylawsReindexRun`, `NasReindexRun` (with `heartbeatAt`); on both tracker
+tables `lastSeenAt`, `retryCount`, `nextRetryAt`. Production gets them with
+the database switch-over; nothing reads them while RAG is off.
+
+### Still open after round 4
+
+- **TRIJYA-3 connector redeploy** — runbook updated: now also
+  `tesseract-ocr-hin`, and the smoke test uses the job endpoints.
+- **`CRON_SECRET` GitHub secret** — only the two RAG jobs will run.
+- **The four older cron jobs** — need a decision before scheduling, and they
+  only process the default company today.
+- **Production embedding model switch (G)** — if wanted:
+  `intfloat/multilingual-e5-large`, `HF_EMBEDDING_DIM=1024`,
+  `RAG_MIN_SCORE=0.79`, recreate both collections, full re-index.
+- **Real-NAS test** — everything above ran against a fake connector. The
+  first real backfill should be watched: check the `failed` list and how many
+  bylaws came back `method: ocr`.
