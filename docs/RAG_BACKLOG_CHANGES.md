@@ -2,12 +2,17 @@
 
 **Date:** 4 October 2026
 **Branch:** `feature/nas-rag-content-search`
-**Commits:** `44bdd48` (large-PDF/OCR extraction, background bylaws backfill) and
-`ff0a24f` (scoped NAS backfill, stale-index sweep, retry queue, hybrid search,
-`.docx`, multilingual embeddings)
+**Commits:**
+- `44bdd48` — large-PDF/OCR extraction, background bylaws backfill (C, D, J)
+- `ff0a24f` — scoped NAS backfill, stale-index sweep, retry queue, hybrid
+  search, `.docx`, multilingual embeddings (E, F, G, H, I, K)
+- `80ea127` — this changes doc
+- `32a7587` — GitHub Actions workflow wiring all cron routes
+- `6a686c3` — TRIJYA-3 connector deploy runbook
 
 This covers every backlog item from `docs/NAS_RAG_REVIEW.md` / `docs/DAKSH_RAG_HANDOFF.md`
-that was picked up, in two rounds. Items are labeled C–K to match those docs.
+that was picked up, plus the two follow-on infra gaps closed after. Items are
+labeled C–K to match those docs.
 
 ---
 
@@ -209,20 +214,65 @@ backfill and F's general-NAS sweep so they always cover the exact same scope.
 - `pnpm db:push` applied to the local dev database (`forge_db_dev`) — not to
   any production database (no access from this environment).
 
+---
+
+## Round 3 — infra follow-ups (`32a7587`, `6a686c3`)
+
+Two gaps surfaced while summarizing the above, both closed as far as this
+environment is able to:
+
+### Cron scheduling was never wired, for ANY cron route
+
+Found that nothing triggers any `app/api/cron/*` route in production, not
+just the two added this session — the 4 pre-existing ones
+(`daily-log-drafts`, `standup-digest`, `project-health`,
+`disappearing-cleanup`) were never scheduled either. `.github/workflows/`
+only had a `/health` keepalive ping. Already flagged in `SECURITY_TODO.md`
+("confirm it's configured, or the jobs silently never fire") and described
+as a TODO in `docs/FORGIE_DEPLOYMENT.md` (Option B), but never actually added.
+
+**Fix:** new `.github/workflows/forgie-crons.yml` — one scheduled workflow
+triggering all six routes, matched by their exact cron string via
+`github.event.schedule` (same pattern the deployment doc already
+documented), plus a `workflow_dispatch` input to manually trigger any one of
+them for testing. Schedules: the 3 pre-existing routes keep their documented
+times, `disappearing-cleanup` every 4 hours, `rag-stale-sweep` daily
+(its grace window is 48h, so it doesn't need to run often), `rag-retry`
+every 15 minutes (just past its own 10-minute "stuck" threshold).
+
+**Needs one manual step this environment can't do:** add `CRON_SECRET` as a
+GitHub repository secret (Settings → Secrets and variables → Actions),
+matching the `CRON_SECRET` env var already set on Render. Without it every
+run in this workflow fails auth harmlessly (it just won't reach the app).
+
+### TRIJYA-3 connector still needs a human to deploy it
+
+Confirmed there's no SSH/VPN path to TRIJYA-3 from this environment
+(`TRIJYA_NAS_BASE_URL` is unset locally, no SSH config entry, no
+`cloudflared` installed), and no deploy script or service file exists
+anywhere in this repo for the connector — it's a fully manual process today.
+
+**Fix:** wrote `docs/TRIJYA_CONNECTOR_DEPLOY.md` — a step-by-step runbook
+for whoever has access to the box: pull the code, `pip install -r
+requirements.txt` (adds `pymupdf`/`pytesseract`, new this session) + the
+system `tesseract-ocr` binary, restart however the connector is currently
+run, smoke-test `/extract` against a real oversized bylaws PDF, then run the
+actual backfill. No code change was needed to make this safe to deploy
+whenever — `nasExtractText` already treats a 404 on `/extract` as
+"not available yet."
+
 ## Not done — needs infra access this environment doesn't have
 
-- **TRIJYA-3 connector redeploy.** `/extract` exists in the code but needs
-  `pymupdf`, `pytesseract`, `Pillow` (now in `scripts/nas-connector/requirements.txt`)
-  plus the system `tesseract-ocr` binary installed on TRIJYA-3, then a restart.
+- **TRIJYA-3 connector redeploy.** A runbook now exists
+  (`docs/TRIJYA_CONNECTOR_DEPLOY.md`), but someone with access to the box
+  still has to actually run it.
 - **Production database migration.** `BylawsReindexRun`, `NasReindexRun`, and
   the new `lastSeenAt` columns only exist in the local dev database. They
   need the same manual creation in production Postgres that
   `NasIndexedFile`/`BylawsIndexedFile` already got.
-- **Cron scheduling.** Nothing currently triggers `app/api/cron/rag-retry` or
-  `app/api/cron/rag-stale-sweep` (or the pre-existing cron routes) in
-  production — `.github/workflows/` only has a `/health` keepalive ping, not
-  a scheduled call with `CRON_SECRET`. Already flagged in `SECURITY_TODO.md`
-  before this work; still open.
+- **The `CRON_SECRET` GitHub repository secret.** The workflow that uses it
+  is written and pushed; the secret itself has to be added via the GitHub
+  web UI (Settings → Secrets and variables → Actions).
 - **Production embedding model switch (G).** Local `.env` only. Switching the
   real deployment to `intfloat/multilingual-e5-large` needs the same env
   vars set on Render, plus a full re-index afterward.
