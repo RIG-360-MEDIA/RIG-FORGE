@@ -47,7 +47,10 @@ export async function POST(request: NextRequest): Promise<NextResponse<ApiRespon
         prisma.dailyActivity.upsert({
           where: { userId_date: { userId: user.id, date: today } },
           update: { wasActive: true, lastSeenAt: new Date() },
-          create: { userId: user.id, date: today, wasActive: true, lastSeenAt: new Date() },
+          // organizationId set explicitly: login runs BEFORE any company is
+          // known, so without it the row fell back to the rig360 default — every
+          // Trijya login created a row filed under the wrong company (58 found).
+          create: { userId: user.id, organizationId: user.organizationId, date: today, wasActive: true, lastSeenAt: new Date() },
         }),
       ]).catch((err: unknown) => {
         const code = (err as { code?: string })?.code ?? 'UNKNOWN'
