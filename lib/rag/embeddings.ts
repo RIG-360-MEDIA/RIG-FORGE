@@ -137,8 +137,31 @@ async function embedBatch(texts: string[]): Promise<number[][]> {
   throw new Error(`HF embeddings failed after ${MAX_ATTEMPTS} attempts (last: ${lastError}) — likely rate limited; re-run to retry`)
 }
 
-/** Embed multiple texts, batching requests to stay within HF payload limits. */
-export async function embedTexts(texts: string[]): Promise<number[][]> {
+/**
+ * Text prefixes the model was trained with. The E5 family (e.g.
+ * intfloat/multilingual-e5-large, the multilingual option for Hindi bylaws)
+ * expects every input to start with "query: " or "passage: "; without them
+ * retrieval quality drops, and the scores shift, so RAG_MIN_SCORE calibrated
+ * one way is wrong the other way. Applied automatically for E5 models;
+ * HF_QUERY_PREFIX / HF_PASSAGE_PREFIX override (set both to "" to disable).
+ * The "-instruct" E5 variants use a different query format, so they are not
+ * auto-detected: configure them explicitly. BGE models are left alone on
+ * purpose: their optional query prefix made separation WORSE in calibration
+ * (see docs/NAS_RAG_REVIEW.md, fix 9).
+ *
+ * Changing the model or these prefixes changes every vector: re-index both
+ * collections and re-calibrate RAG_MIN_SCORE.
+ */
+export function inputPrefixes(model = MODEL): { query: string; passage: string } {
+  const q = process.env.HF_QUERY_PREFIX
+  const p = process.env.HF_PASSAGE_PREFIX
+  if (q !== undefined || p !== undefined) return { query: q ?? '', passage: p ?? '' }
+  if (/(^|\/)(multilingual-)?e5-(small|base|large)(-v2)?$/i.test(model)) return { query: 'query: ', passage: 'passage: ' }
+  return { query: '', passage: '' }
+}
+const PREFIX = inputPrefixes()
+
+async function embedRaw(texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return []
   const out: number[][] = []
   for (let i = 0; i < texts.length; i += BATCH_SIZE) {
@@ -148,9 +171,15 @@ export async function embedTexts(texts: string[]): Promise<number[][]> {
   return out
 }
 
-/** Embed a single query string. */
+/** Embed document passages (for indexing), batching requests to stay within
+ * HF payload limits. */
+export async function embedTexts(texts: string[]): Promise<number[][]> {
+  return embedRaw(PREFIX.passage ? texts.map((t) => PREFIX.passage + t) : texts)
+}
+
+/** Embed a single search query. */
 export async function embedQuery(text: string): Promise<number[]> {
-  const [vec] = await embedTexts([text])
+  const [vec] = await embedRaw([PREFIX.query + text])
   if (!vec) throw new Error('HF embeddings returned no vector')
   return vec
 }
