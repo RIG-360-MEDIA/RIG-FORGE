@@ -80,9 +80,11 @@ export const INDEX_MAX_TEXT = Number(process.env.RAG_MAX_TEXT_CHARS ?? 1_000_000
 
 export type IndexExtraction =
   | { ok: true; text: string; truncated: boolean }
-  /** `scanned`: a PDF that parsed but has no text layer. The connector can
-   * OCR it (lib/rag/fetch-and-index.ts), unlike a corrupt file. */
-  | { ok: false; reason: string; scanned?: true }
+  /** `connector`: a PDF this parser could not read: scanned (no text layer),
+   * or a PDF the bundled pdf.js cannot open (it rejects some producers' files
+   * outright). The NAS connector's PyMuPDF + OCR may still read it; see
+   * lib/rag/fetch-and-index.ts. */
+  | { ok: false; reason: string; connector?: true }
 
 export async function extractForIndex(name: string, buf: Buffer): Promise<IndexExtraction> {
   const x = fileExt(name)
@@ -101,13 +103,13 @@ export async function extractForIndex(name: string, buf: Buffer): Promise<IndexE
       const pdfParse = (mod.default ?? mod) as (b: Buffer) => Promise<{ text: string }>
       data = await pdfParse(buf)
     } catch (e) {
-      return { ok: false, reason: `PDF could not be parsed: ${e instanceof Error ? e.message.slice(0, 120) : 'error'}` }
+      return { ok: false, reason: `PDF could not be parsed: ${e instanceof Error ? e.message.slice(0, 120) : 'error'}`, connector: true }
     }
     const result = cap(data.text || '')
     // A PDF that parses but yields no text is almost always a scan (images of
     // pages). Name that explicitly — it is common for government bylaws and is
     // fixable later with OCR, unlike a corrupt file.
-    if (!result.ok) return { ok: false, reason: 'PDF has no selectable text (likely scanned images; needs OCR)', scanned: true }
+    if (!result.ok) return { ok: false, reason: 'PDF has no selectable text (likely scanned images; needs OCR)', connector: true }
     return result
   }
 

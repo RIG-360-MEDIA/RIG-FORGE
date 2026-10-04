@@ -26,8 +26,9 @@ export type IndexOutcome =
   | { status: 'indexed'; chunks: number; warning?: string }
   | { status: 'unchanged' }
   | { status: 'skipped'; reason: string }
-  /** `scanned`: the PDF has no text layer; worth sending to the connector for OCR. */
-  | { status: 'failed'; reason: string; scanned?: true }
+  /** `connector`: a PDF that could not be read here (scanned, or unparseable
+   * by pdf.js); worth sending to the NAS connector (PyMuPDF + OCR). */
+  | { status: 'failed'; reason: string; connector?: true }
 
 interface Key { organizationId: string; server: string; path: string }
 
@@ -80,11 +81,11 @@ export async function indexFile(job: IndexJob): Promise<IndexOutcome> {
 
   // Record a failure so it is VISIBLE in the tracking table. Previously some
   // failures were swallowed and others were stored as if they had succeeded.
-  const fail = async (reason: string, contentHash = '', scanned = false): Promise<IndexOutcome> => {
+  const fail = async (reason: string, contentHash = '', connector = false): Promise<IndexOutcome> => {
     await tracker
       .save(key, { status: 'FAILED', contentHash, chunkCount: 0, error: reason.slice(0, 500), indexedAt: null })
       .catch(() => {}) // best-effort — never throw out of ingestion
-    return scanned ? { status: 'failed', reason, scanned: true } : { status: 'failed', reason }
+    return connector ? { status: 'failed', reason, connector: true } : { status: 'failed', reason }
   }
 
   try {
@@ -107,7 +108,7 @@ export async function indexFile(job: IndexJob): Promise<IndexOutcome> {
         // The file as it is NOW cannot be read. Remove anything indexed from an
         // older, readable version so stale content stops being searchable.
         await pruneStaleChunks(organizationId, server, path, 0, collection).catch(() => {})
-        return await fail(result.reason, '', result.scanned === true)
+        return await fail(result.reason, '', result.connector === true)
       }
       extracted = result
     }

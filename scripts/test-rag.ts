@@ -355,7 +355,7 @@ async function main() {
 
   // A small scanned PDF: parses here but has no text, so only the connector can OCR it.
   fakeIndexerCalls.length = 0
-  indexerReplies = [{ status: 'failed', reason: 'PDF has no selectable text (likely scanned images; needs OCR)', scanned: true }]
+  indexerReplies = [{ status: 'failed', reason: 'PDF has no selectable text (likely scanned images; needs OCR)', connector: true }]
   let step = 0
   globalThis.fetch = (async () => (step++ === 0 ? bytesReply() : job('done', { ok: true, text: 'setback 4.5 m', method: 'ocr', truncated: false })())) as typeof fetch
   const smallScan = await asTrijya(() => fetchAndIndexFile({ organizationId: 'trijya', server: 'WD', path: '/scan.pdf', size: 10, indexer: fakeIndexer }))
@@ -364,17 +364,27 @@ async function main() {
     smallScan.status === 'indexed' && fakeIndexerCalls.length === 2 && second?.method === 'ocr' && second.text === 'setback 4.5 m')
 
   fakeIndexerCalls.length = 0
-  indexerReplies = [{ status: 'failed', reason: 'PDF could not be parsed: bad xref' }]
-  globalThis.fetch = (async () => bytesReply()) as typeof fetch
-  const corruptSmall = await asTrijya(() => fetchAndIndexFile({ organizationId: 'trijya', server: 'WD', path: '/corrupt.pdf', size: 10, indexer: fakeIndexer }))
-  check('a corrupt (not scanned) PDF is NOT sent for OCR', corruptSmall.status === 'failed' && fakeIndexerCalls.length === 1)
+  indexerReplies = [{ status: 'failed', reason: 'PDF could not be parsed: bad XRef entry', connector: true }]
+  step = 0
+  globalThis.fetch = (async () => (step++ === 0 ? bytesReply() : job('done', { ok: true, text: 'read by PyMuPDF', method: 'text', truncated: false })())) as typeof fetch
+  const unparseable = await asTrijya(() => fetchAndIndexFile({ organizationId: 'trijya', server: 'WD', path: '/odd-producer.pdf', size: 10, indexer: fakeIndexer }))
+  check('a PDF the local parser rejects -> read by the connector instead, then indexed',
+    unparseable.status === 'indexed' && (fakeIndexerCalls[1]?.bytesOrText as { text?: string })?.text === 'read by PyMuPDF')
+  const localBad = await (await import('../lib/nas/extract')).extractForIndex('x.pdf', Buffer.from('%PDF-1.4 garbage'))
+  check('local PDF parse failure is flagged for the connector', !localBad.ok && localBad.connector === true)
 
   fakeIndexerCalls.length = 0
-  indexerReplies = [{ status: 'failed', reason: 'PDF has no selectable text (likely scanned images; needs OCR)', scanned: true }]
+  indexerReplies = [{ status: 'failed', reason: 'Qdrant is not configured (QDRANT_URL)' }]
+  globalThis.fetch = (async () => bytesReply()) as typeof fetch
+  const corruptSmall = await asTrijya(() => fetchAndIndexFile({ organizationId: 'trijya', server: 'WD', path: '/corrupt.pdf', size: 10, indexer: fakeIndexer }))
+  check('a failure that is not about reading the PDF (e.g. Qdrant down) is NOT sent to the connector', corruptSmall.status === 'failed' && fakeIndexerCalls.length === 1)
+
+  fakeIndexerCalls.length = 0
+  indexerReplies = [{ status: 'failed', reason: 'PDF has no selectable text (likely scanned images; needs OCR)', connector: true }]
   step = 0
   globalThis.fetch = (async () => (step++ === 0 ? bytesReply() : job('done', { ok: false, reason: 'OCR found no readable text on this PDF' })())) as typeof fetch
   const scanFail = await asTrijya(() => fetchAndIndexFile({ organizationId: 'trijya', server: 'WD', path: '/blank-scan.pdf', size: 10, indexer: fakeIndexer }))
-  check('scan whose OCR also fails -> failed, reason names both', scanFail.status === 'failed' && /needs OCR/.test(scanFail.reason) && /OCR found no readable text/.test(scanFail.reason))
+  check('scan the connector cannot read either -> failed, reason names both', scanFail.status === 'failed' && /needs OCR/.test(scanFail.reason) && /OCR found no readable text/.test(scanFail.reason))
   globalThis.fetch = realFetch
 
   // ── searchChunksHybrid's re-ranking — pure, no live Qdrant needed ─────────

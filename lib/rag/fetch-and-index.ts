@@ -7,9 +7,11 @@
  *
  * The connector is used for two kinds of PDF:
  *  - too large to download into Render's memory (over RAG_MAX_FILE_MB);
- *  - small, but scanned: it downloads and parses fine here, has no text
- *    layer, and needs OCR, which only the connector can do. Most scanned
- *    bylaws are a few MB, so without this they would never get OCR at all.
+ *  - small, but unreadable HERE: scanned (no text layer: needs OCR, which
+ *    only the connector can do; most scanned bylaws are a few MB, so without
+ *    this they would never get OCR at all), or a PDF the bundled pdf.js
+ *    rejects outright (it fails on some producers' files that PyMuPDF on the
+ *    connector reads fine).
  */
 import { nasFetchBytesStrict, nasExtractText, FileTooLargeError } from '@/lib/nas/client'
 import { INDEX_MAX_TEXT } from '@/lib/nas/extract'
@@ -68,12 +70,13 @@ export async function fetchAndIndexFile(opts: FetchAndIndexOpts): Promise<FetchA
     return { status: 'failed', reason: e instanceof Error ? e.message : 'download failed' }
   }
 
-  // A scanned PDF: the indexer already recorded FAILED ("needs OCR"). Ask the
-  // connector to OCR it; success overwrites that row with INDEXED.
-  if (outcome.status === 'failed' && outcome.scanned && isPdf(path)) {
+  // A PDF this server could not read (scanned, or rejected by pdf.js): the
+  // indexer already recorded FAILED. Ask the connector; success overwrites
+  // that row with INDEXED.
+  if (outcome.status === 'failed' && outcome.connector && isPdf(path)) {
     const r = await viaConnector()
     if (r.ok) return r.outcome
-    return { status: 'failed', reason: `${outcome.reason}; connector OCR also failed: ${r.reason}` }
+    return { status: 'failed', reason: `${outcome.reason}; the connector could not read it either: ${r.reason}` }
   }
   return outcome
 }
