@@ -3,13 +3,13 @@ import { type NextRequest, NextResponse } from 'next/server'
 import { isAdminRole } from '@/lib/auth'
 import { authenticateActive } from '@/lib/authz'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
-import { prisma } from '@/lib/db'
 import { getOrgId } from '@/lib/tenant-context'
 import { isNasEnabled, nasServers } from '@/lib/nas/client'
 import { findBylawsFolder, listFilesRecursive } from '@/lib/nas/bylaws-crawl'
 import { isExtractable } from '@/lib/nas/extract'
 import { indexBylawsFile, isBylawsIndexingEnabled } from '@/lib/rag/index-bylaws-file'
 import { fetchAndIndexFile } from '@/lib/rag/fetch-and-index'
+import { getRun, runView, startRun, trackRun } from '@/lib/rag/reindex-runs'
 
 export const runtime = 'nodejs'
 
@@ -27,6 +27,9 @@ interface ServerResult {
 }
 
 async function runBackfill(runId: string, organizationId: string): Promise<void> {
+  // Heart-beats while the job runs; cancelled() turns true if this run was
+  // taken over as interrupted (see lib/rag/reindex-runs.ts), and then we stop.
+  const run = trackRun('bylaws', runId, organizationId)
   try {
     const servers = await nasServers()
     const results: ServerResult[] = []
@@ -46,6 +49,7 @@ async function runBackfill(runId: string, organizationId: string): Promise<void>
       }
 
       for (const file of files) {
+        if (run.cancelled()) { run.stop(); return }
         const name = file.path.split('/').filter(Boolean).pop() || file.path
         if (!isExtractable(name)) {
           result.skippedNotExtractable++
@@ -72,19 +76,13 @@ async function runBackfill(runId: string, organizationId: string): Promise<void>
 
       // Persist after each server so a mid-run poll sees real progress
       // instead of nothing until the whole backfill finishes.
-      await prisma.bylawsReindexRun.update({ where: { id: runId }, data: { results } }).catch(() => {})
+      await run.progress(results)
     }
 
-    await prisma.bylawsReindexRun.update({
-      where: { id: runId },
-      data: { status: 'DONE', finishedAt: new Date(), results },
-    })
+    await run.finish('DONE', { results })
   } catch (error) {
     console.error('[bylaws-reindex]', error)
-    await prisma.bylawsReindexRun.update({
-      where: { id: runId },
-      data: { status: 'FAILED', finishedAt: new Date(), error: error instanceof Error ? error.message : 'backfill failed' },
-    }).catch(() => {})
+    await run.finish('FAILED', { error: error instanceof Error ? error.message : 'backfill failed' })
   }
 }
 
@@ -108,15 +106,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     const organizationId = getOrgId()
 
-    const inProgress = await prisma.bylawsReindexRun.findFirst({
-      where: { organizationId, status: 'RUNNING' },
-      orderBy: { startedAt: 'desc' },
-    })
-    if (inProgress) {
-      return successResponse({ runId: inProgress.id, status: 'running', startedAt: inProgress.startedAt })
-    }
-
-    const run = await prisma.bylawsReindexRun.create({ data: { organizationId } })
+    // One run at a time per org. A run interrupted by a restart no longer
+    // blocks this forever (lib/rag/reindex-runs.ts).
+    const { run, started } = await startRun('bylaws', organizationId)
+    if (!started) return successResponse({ runId: run.id, status: 'running', startedAt: run.startedAt })
     void runBackfill(run.id, organizationId)
 
     return successResponse({ runId: run.id, status: 'running', startedAt: run.startedAt }, 202)
@@ -137,20 +130,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     const organizationId = getOrgId()
     const runId = request.nextUrl.searchParams.get('runId')
 
-    const run = runId
-      ? await prisma.bylawsReindexRun.findUnique({ where: { id: runId } })
-      : await prisma.bylawsReindexRun.findFirst({ where: { organizationId }, orderBy: { startedAt: 'desc' } })
-
-    if (!run || run.organizationId !== organizationId) return errorResponse('Run not found', 404)
-
-    return successResponse({
-      runId: run.id,
-      status: run.status.toLowerCase(),
-      startedAt: run.startedAt,
-      finishedAt: run.finishedAt,
-      results: run.results ?? [],
-      error: run.error,
-    })
+    const run = await getRun('bylaws', organizationId, runId)
+    if (!run) return errorResponse('Run not found', 404)
+    return successResponse(runView(run))
   } catch (error) {
     console.error('[GET /api/nas/bylaws/reindex]', error)
     return errorResponse('Server error', 500)
