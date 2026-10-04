@@ -5,7 +5,7 @@ import { authenticateActive } from '@/lib/authz'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
 import { getOrgId } from '@/lib/tenant-context'
 import { isNasEnabled } from '@/lib/nas/client'
-import { listFilesRecursive } from '@/lib/nas/bylaws-crawl'
+import { listFilesRecursiveWithStatus } from '@/lib/nas/bylaws-crawl'
 import { isExtractable } from '@/lib/nas/extract'
 import { parseIndexFolders, INDEX_FOLDER_MAX_FILES } from '@/lib/nas/index-folders'
 import { indexNasFile, isRagIndexingEnabled } from '@/lib/rag/index-nas-file'
@@ -18,6 +18,8 @@ interface FolderResult {
   server: string
   folder: string
   filesFound: number
+  /** False when the file cap stopped the listing: some files were not reached. */
+  listingComplete: boolean
   indexed: number
   unchanged: number
   skippedNotExtractable: number
@@ -35,9 +37,9 @@ async function runBackfill(runId: string, organizationId: string): Promise<void>
     const results: FolderResult[] = []
 
     for (const scope of folders) {
-      const files = await listFilesRecursive(scope.server, scope.path, INDEX_FOLDER_MAX_FILES)
+      const { files, complete } = await listFilesRecursiveWithStatus(scope.server, scope.path, INDEX_FOLDER_MAX_FILES)
       const result: FolderResult = {
-        server: scope.server, folder: scope.path, filesFound: files.length,
+        server: scope.server, folder: scope.path, filesFound: files.length, listingComplete: complete,
         indexed: 0, unchanged: 0, skippedNotExtractable: 0, skippedTooLarge: 0, failed: 0, failures: [],
       }
       const noteFailure = (path: string, reason: string) => {

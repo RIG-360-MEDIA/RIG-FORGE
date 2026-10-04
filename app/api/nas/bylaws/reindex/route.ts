@@ -5,7 +5,7 @@ import { authenticateActive } from '@/lib/authz'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
 import { getOrgId } from '@/lib/tenant-context'
 import { isNasEnabled, nasServers } from '@/lib/nas/client'
-import { findBylawsFolder, listFilesRecursive } from '@/lib/nas/bylaws-crawl'
+import { findBylawsFolder, listFilesRecursiveWithStatus } from '@/lib/nas/bylaws-crawl'
 import { isExtractable } from '@/lib/nas/extract'
 import { indexBylawsFile, isBylawsIndexingEnabled } from '@/lib/rag/index-bylaws-file'
 import { fetchAndIndexFile } from '@/lib/rag/fetch-and-index'
@@ -17,6 +17,8 @@ interface ServerResult {
   server: string
   folder: string
   filesFound: number
+  /** False when the file cap stopped the listing: some files were not reached. */
+  listingComplete: boolean
   indexed: number
   unchanged: number
   skippedNotExtractable: number
@@ -38,9 +40,9 @@ async function runBackfill(runId: string, organizationId: string): Promise<void>
       const folder = await findBylawsFolder(s.label)
       if (!folder) continue
 
-      const files = await listFilesRecursive(s.label, folder)
+      const { files, complete } = await listFilesRecursiveWithStatus(s.label, folder)
       const result: ServerResult = {
-        server: s.label, folder, filesFound: files.length,
+        server: s.label, folder, filesFound: files.length, listingComplete: complete,
         indexed: 0, unchanged: 0, skippedNotExtractable: 0, skippedTooLarge: 0, failed: 0, failures: [],
       }
       const noteFailure = (path: string, reason: string) => {

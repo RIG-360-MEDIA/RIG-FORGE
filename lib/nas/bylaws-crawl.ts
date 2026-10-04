@@ -69,9 +69,25 @@ export interface NasFileEntry {
 
 /** Recursively list every file (not folder) under `folder` on `server`. */
 export async function listFilesRecursive(server: string, folder: string, maxFiles = 2000): Promise<NasFileEntry[]> {
+  return (await listFilesRecursiveWithStatus(server, folder, maxFiles)).files
+}
+
+/**
+ * Same crawl, plus whether it reached the end. `complete` is false when the
+ * maxFiles cap stopped it with folders still unvisited: anything not listed
+ * may still exist, so a caller must not treat "not listed" as "deleted".
+ * A listing error throws (never a silently partial result).
+ */
+export async function listFilesRecursiveWithStatus(
+  server: string,
+  folder: string,
+  maxFiles = 2000,
+): Promise<{ files: NasFileEntry[]; complete: boolean }> {
   const files: NasFileEntry[] = []
   const queue: string[] = [folder]
-  while (queue.length > 0 && files.length < maxFiles) {
+  let complete = true
+  while (queue.length > 0) {
+    if (files.length >= maxFiles) { complete = false; break }
     const dir = queue.shift()!
     const { items } = await nasList(server, dir)
     for (const item of items) {
@@ -80,5 +96,8 @@ export async function listFilesRecursive(server: string, folder: string, maxFile
       else files.push({ path: itemPath, size: Number(item.size) || 0 })
     }
   }
-  return files
+  // The last folder listed can push past the cap; anything past it is not
+  // returned, so the crawl did not cover everything.
+  if (files.length > maxFiles) { files.length = maxFiles; complete = false }
+  return { files, complete }
 }
