@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db'
+import { runWithOrg } from '@/lib/tenant-context'
 import { sendMessage, type SendAttachment } from '@/lib/assistant/tools/gmail'
 
 // Developer inbox that receives every new issue. Overridable via env so it can
@@ -30,13 +31,13 @@ const GMAIL_SEND_RE = /gmail\.send|gmail\.modify|gmail\.compose|mail\.google\.co
  * developer's own account first, then most-recently-used (its refresh token is
  * the most likely to still be valid).
  */
-async function resolveSenderCandidates(): Promise<string[]> {
-  const rows = await prisma.$queryRaw<{ id: string; scopes: string; is_pref: boolean }[]>`
-    SELECT u.id, g.scopes, (u.email = ${PREFERRED_SENDER_EMAIL}) AS is_pref
+async function resolveSenderCandidates(): Promise<Array<{ id: string; org: string }>> {
+  const rows = await prisma.$queryRaw<{ id: string; org: string; scopes: string; is_pref: boolean }[]>`
+    SELECT u.id, g."organizationId" AS org, g.scopes, (u.email = ${PREFERRED_SENDER_EMAIL}) AS is_pref
     FROM "User" u
     JOIN "GoogleIntegration" g ON g."userId" = u.id
     ORDER BY (u.email = ${PREFERRED_SENDER_EMAIL}) DESC, g."lastUsedAt" DESC NULLS LAST`
-  return rows.filter((r) => GMAIL_SEND_RE.test(r.scopes ?? '')).map((r) => r.id)
+  return rows.filter((r) => GMAIL_SEND_RE.test(r.scopes ?? '')).map((r) => ({ id: r.id, org: r.org }))
 }
 
 /**
@@ -72,14 +73,20 @@ export async function notifyIssueByEmail(
     // Try each candidate until one send succeeds — a single account's refresh
     // token may have gone stale, so we fall back to the next healthiest one.
     const errors: string[] = []
-    for (const senderId of senders) {
+    for (const sender of senders) {
       try {
-        await sendMessage(senderId, {
+        // Send AS the sender's company. The reporter's request is filtered to
+        // the reporter's company, and lookups by unique key are now filtered
+        // too (lib/db.ts), so without this a sender in another company would
+        // look as if they had never connected Google. sendMessage only reads
+        // and updates the sender's own GoogleIntegration row, so the company
+        // that row is filed under is the right one to act as.
+        await runWithOrg(sender.org, () => sendMessage(sender.id, {
           to: NOTIFY_TO,
           subject: `[Forge issue] ${input.title}`,
           body,
           attachments: input.image ? [input.image] : undefined,
-        })
+        }))
         return { sent: true }
       } catch (e) {
         errors.push(e instanceof Error ? e.message : 'send failed')

@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client'
 
-import { getOrgId } from '@/lib/tenant-context'
+import { getOrgId, getRequestOrgId, isOrgScopeDisabled } from '@/lib/tenant-context'
 
 /**
  * Every table that carries an organizationId (the 30 tenant tables). Queries on
@@ -87,12 +87,26 @@ function makePrisma() {
       // The org comes from lib/tenant-context (set by verifyToken per request);
       // outside a request it defaults to the single-org "rig360".
       //
-      // Scoped: list/aggregate/bulk + inserts. NOT scoped: findUnique / update /
-      // delete / upsert lookups keyed by a unique field — those resolve by the
-      // global cuid id (unguessable). Inserts also get organizationId from the DB
-      // column default, so nested writes are covered even though this extension
-      // only injects at the top level. Per-org unique constraints + org-at-login
-      // are the remaining step for when a 2nd org is onboarded.
+      // Scoped: list/aggregate/bulk + inserts, and — when the caller's company is
+      // KNOWN (a verified login token, or runWithOrg) — every lookup by unique
+      // key too: findUnique / findUniqueOrThrow / update / delete / upsert.
+      //
+      // Lookups by unique key used to be left unscoped on the theory that cuid
+      // ids are unguessable. They are not secret, though: they appear in URLs,
+      // links, notifications and API responses. Leaving them unscoped let a
+      // signed-in user of one company read another company's project — name,
+      // description, members, links — by its id (confirmed on production,
+      // 2026-10-03; 184 such call sites across 64 files). Filtering here closes
+      // all of them at once, and any added later.
+      //
+      // When the company is NOT known (login, webhooks, crons) those lookups stay
+      // unscoped, exactly as before: login finds a user by email before their
+      // company is known, and filtering it to the rig360 default would lock out
+      // every other company. Those paths are gated by their own secrets.
+      //
+      // Prisma 5 allows a non-unique field (organizationId) alongside the unique
+      // key in these `where` clauses. A record in another company is then simply
+      // not found: findUnique returns null, update/delete throw P2025.
       name: 'org-scope',
       query: {
         $allModels: {
@@ -100,6 +114,8 @@ function makePrisma() {
           async $allOperations({ model, operation, args, query }: any) {
             if (!TENANT_MODELS.has(model)) return query(args)
             const org = getOrgId()
+            const reqOrg = getRequestOrgId()     // undefined → don't filter unique lookups
+            const unscoped = isOrgScopeDisabled() // withoutOrgScope(): global read-only checks
             const a = args ?? {}
             switch (operation) {
               case 'create':
@@ -120,6 +136,7 @@ function makePrisma() {
                 if (a.create && a.create.organizationId === undefined) {
                   a.create = { ...a.create, organizationId: org }
                 }
+                if (reqOrg) a.where = { ...(a.where ?? {}), organizationId: a.where?.organizationId ?? reqOrg }
                 break
               case 'findMany':
               case 'findFirst':
@@ -129,11 +146,15 @@ function makePrisma() {
               case 'groupBy':
               case 'updateMany':
               case 'deleteMany':
-                a.where = { ...(a.where ?? {}), organizationId: a.where?.organizationId ?? org }
+                if (!unscoped) a.where = { ...(a.where ?? {}), organizationId: a.where?.organizationId ?? org }
+                break
+              case 'findUnique':
+              case 'findUniqueOrThrow':
+              case 'update':
+              case 'delete':
+                if (reqOrg) a.where = { ...(a.where ?? {}), organizationId: a.where?.organizationId ?? reqOrg }
                 break
               default:
-                // findUnique / findUniqueOrThrow / update / delete: keyed by a
-                // unique field (the cuid id). Left unscoped for now.
                 break
             }
             return query(a)

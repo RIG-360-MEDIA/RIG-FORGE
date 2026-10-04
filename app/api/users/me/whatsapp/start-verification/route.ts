@@ -18,6 +18,7 @@ import crypto from 'crypto'
 import bcrypt from 'bcryptjs'
 
 import { prisma } from '@/lib/db'
+import { withoutOrgScope } from '@/lib/tenant-context'
 import { getTokenFromCookies, verifyToken } from '@/lib/auth'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
 import { normalizeWhatsappNumber, maskWhatsappNumber } from '@/lib/whatsapp/number'
@@ -53,10 +54,14 @@ export async function POST(request: NextRequest) {
 
     // The number must map to exactly one user. Block if another account already
     // owns it (verified or not — we compare against the resolvable column).
-    const clash = await prisma.user.findFirst({
+    // WhatsApp numbers are unique across EVERY company (inbound messages must
+    // resolve to exactly one user), so this check must be global — a company-
+    // filtered one let a number already used elsewhere through, and the save
+    // then failed on the unique index. Only a yes/no comes back.
+    const clash = await withoutOrgScope(() => prisma.user.findFirst({
       where: { whatsappNumber: normalized, id: { not: claims.userId } },
       select: { id: true },
-    })
+    }))
     if (clash) {
       return errorResponse('That WhatsApp number is already linked to another account.', 409)
     }
