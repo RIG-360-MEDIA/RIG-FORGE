@@ -301,10 +301,26 @@ def download(server: str, path: str):
 # safely download+parse the NBC/standards PDFs (50-120+ MB each). TRIJYA-3
 # isn't, so for those files Forge asks the connector to extract text itself
 # and send text, never raw bytes. Falls back to OCR when the PDF has no
-# selectable text at all (a scan) — capped at NAS_OCR_MAX_PAGES since OCR is
-# slow and this box already runs the local LLM.
+# selectable text at all (a scan).
+#
+# Runs as a background JOB, not inside one request: Forge reaches this box
+# through Cloudflare, which cuts any request off at ~100 s, and OCR of a big
+# scan takes minutes. Forge starts a job (POST /extract/jobs, returns at once)
+# and polls GET /extract/jobs/{id} with short requests until it is done.
+#   - One worker by default (NAS_EXTRACT_WORKERS): this box also runs the
+#     local LLM, so extraction must never fan out.
+#   - A request for a file that already has a queued, running or recently
+#     finished job returns THAT job, so a retry after a Forge-side timeout
+#     reuses the work instead of OCR-ing the same file again.
+#   - Finished results are kept for NAS_EXTRACT_RESULT_TTL seconds (1 h).
+#   - Too many queued jobs -> 429, so callers back off instead of piling up.
 try:
-    import fitz  # PyMuPDF
+    # PyMuPDF. `import pymupdf` is the current name; the old `fitz` alias is
+    # deprecated and slated for removal, but older installs only have that.
+    try:
+        import pymupdf as fitz
+    except ImportError:
+        import fitz
     _HAVE_FITZ = True
 except Exception:
     _HAVE_FITZ = False
@@ -316,71 +332,176 @@ try:
 except Exception:
     _HAVE_OCR = False
 
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+
 OCR_MAX_PAGES = int(os.environ.get("NAS_OCR_MAX_PAGES", "60"))
 OCR_ZOOM = float(os.environ.get("NAS_OCR_ZOOM", "2.0"))  # ~144 DPI at 2x
+EXTRACT_WORKERS = max(1, int(os.environ.get("NAS_EXTRACT_WORKERS", "1")))
+EXTRACT_RESULT_TTL = int(os.environ.get("NAS_EXTRACT_RESULT_TTL", "3600"))
+EXTRACT_MAX_QUEUED = int(os.environ.get("NAS_EXTRACT_MAX_QUEUED", "20"))
+EXTRACT_DEFAULT_MAX_CHARS = 1_000_000
+
+_extract_pool = ThreadPoolExecutor(max_workers=EXTRACT_WORKERS, thread_name_prefix="extract")
+_jobs = {}  # id -> dict(state, key, created, finished, result)
+_jobs_lock = threading.Lock()
+_ocr_lang_cache = None
 
 
-@app.get("/extract")
-def extract(server: str, path: str):
-    if not _HAVE_FITZ:
-        raise HTTPException(501, "PyMuPDF (pymupdf) is not installed on the connector")
-    if not path.lower().endswith(".pdf"):
-        return {"ok": False, "reason": "only .pdf is supported by /extract"}
+def _ocr_lang() -> str:
+    """eng+hin when the Hindi language pack is installed (many bylaws are
+    Hindi government orders), else eng. NAS_OCR_LANG overrides."""
+    global _ocr_lang_cache
+    if _ocr_lang_cache is None:
+        forced = os.environ.get("NAS_OCR_LANG", "").strip()
+        if forced:
+            _ocr_lang_cache = forced
+        else:
+            try:
+                langs = set(pytesseract.get_languages(config=""))
+            except Exception:
+                langs = set()
+            _ocr_lang_cache = "eng+hin" if "hin" in langs else "eng"
+    return _ocr_lang_cache
 
-    conn, share = _connect(server)
+
+def _unlink(p: str):
+    try:
+        os.unlink(p)
+    except Exception:
+        pass
+
+
+def _extract_pdf(server: str, path: str, max_chars: int) -> dict:
+    """Never raises: every outcome is a result dict."""
+    try:
+        conn, share = _connect(server)
+    except HTTPException as e:
+        return {"ok": False, "reason": f"connector could not reach {server}: {e.detail}"}
     tmp = tempfile.NamedTemporaryFile(delete=False)
     try:
-        conn.retrieveFile(share, _norm(path), tmp)
-        tmp.flush()
-        tmp.close()
+        try:
+            conn.retrieveFile(share, _norm(path), tmp)
+        finally:
+            tmp.close()
+            try:
+                conn.close()
+            except Exception:
+                pass
     except Exception as e:
-        try:
-            os.unlink(tmp.name)
-        except Exception:
-            pass
-        raise HTTPException(404, f"cannot download '{path}': {type(e).__name__}")
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        _unlink(tmp.name)
+        return {"ok": False, "reason": f"cannot download '{path}': {type(e).__name__}"}
 
     try:
-        doc = fitz.open(tmp.name)
-    except Exception as e:
-        os.unlink(tmp.name)
-        return {"ok": False, "reason": f"PDF could not be opened: {type(e).__name__}"}
-
-    try:
-        text = "\n\n".join(page.get_text() for page in doc).strip()
-        if text:
-            return {"ok": True, "text": text, "method": "text", "truncated": False}
-
-        # No selectable text at all — almost always a scan. OCR page by page.
-        if not _HAVE_OCR:
-            return {
-                "ok": False,
-                "reason": "PDF has no selectable text (likely scanned images; needs OCR, "
-                          "but pytesseract is not installed on the connector)",
-            }
-
-        page_count = doc.page_count
-        limit = min(page_count, OCR_MAX_PAGES)
-        ocr_parts = []
-        for i in range(limit):
-            pix = doc[i].get_pixmap(matrix=fitz.Matrix(OCR_ZOOM, OCR_ZOOM))
-            img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-            ocr_parts.append(pytesseract.image_to_string(img))
-        ocr_text = "\n\n".join(ocr_parts).strip()
-        if not ocr_text:
-            return {"ok": False, "reason": "OCR found no readable text on this PDF"}
-        return {"ok": True, "text": ocr_text, "method": "ocr", "truncated": page_count > limit}
-    finally:
-        doc.close()
         try:
-            os.unlink(tmp.name)
-        except Exception:
-            pass
+            doc = fitz.open(tmp.name)
+        except Exception as e:
+            return {"ok": False, "reason": f"PDF could not be opened: {type(e).__name__}"}
+        try:
+            # Text layer first. Stop reading pages once past the cap.
+            parts, size = [], 0
+            for page in doc:
+                t = page.get_text()
+                parts.append(t)
+                size += len(t)
+                if size > max_chars:
+                    break
+            text = "\n\n".join(parts).strip()
+            if text:
+                return {"ok": True, "text": text[:max_chars], "method": "text",
+                        "truncated": len(text) > max_chars}
+
+            # No selectable text at all: almost always a scan. OCR page by page.
+            if not _HAVE_OCR:
+                return {"ok": False, "reason": "PDF has no selectable text (likely scanned images; needs OCR, "
+                                               "but pytesseract is not installed on the connector)"}
+            lang = _ocr_lang()
+            limit = min(doc.page_count, OCR_MAX_PAGES)
+            parts, size = [], 0
+            for i in range(limit):
+                pix = doc[i].get_pixmap(matrix=fitz.Matrix(OCR_ZOOM, OCR_ZOOM))
+                img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                t = pytesseract.image_to_string(img, lang=lang)
+                parts.append(t)
+                size += len(t)
+                if size > max_chars:
+                    break
+            ocr_text = "\n\n".join(parts).strip()
+            if not ocr_text:
+                return {"ok": False, "reason": "OCR found no readable text on this PDF"}
+            return {"ok": True, "text": ocr_text[:max_chars], "method": "ocr", "lang": lang,
+                    "truncated": doc.page_count > limit or len(ocr_text) > max_chars}
+        finally:
+            doc.close()
+    except Exception as e:  # last resort: a worker must never die silently
+        return {"ok": False, "reason": f"extraction failed: {type(e).__name__}: {str(e)[:200]}"}
+    finally:
+        _unlink(tmp.name)
+
+
+def _run_job(job_id: str, server: str, path: str, max_chars: int):
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            return
+        job["state"] = "running"
+    try:
+        result = _extract_pdf(server, path, max_chars)
+    except Exception as e:  # _extract_pdf should never raise; belt and braces
+        result = {"ok": False, "reason": f"extraction failed: {type(e).__name__}"}
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job is not None:
+            job.update(state="done", finished=time.time(), result=result)
+
+
+def _prune_jobs():
+    """Drop finished jobs past their TTL. Caller holds _jobs_lock."""
+    now = time.time()
+    for jid in [j for j, v in _jobs.items() if v["state"] == "done" and now - v["finished"] > EXTRACT_RESULT_TTL]:
+        del _jobs[jid]
+
+
+def _job_view(job_id: str, job: dict) -> dict:
+    out = {"id": job_id, "state": job["state"]}
+    if job["state"] == "done":
+        out["result"] = job["result"]
+    return out
+
+
+@app.post("/extract/jobs")
+def start_extract(server: str, path: str, max_chars: int = EXTRACT_DEFAULT_MAX_CHARS):
+    if not _HAVE_FITZ:
+        raise HTTPException(501, "PyMuPDF (pymupdf) is not installed on the connector")
+    if server not in SERVERS:
+        raise HTTPException(404, f"unknown server '{server}'")
+    if not path.lower().endswith(".pdf"):
+        raise HTTPException(400, "only .pdf is supported by /extract/jobs")
+    max_chars = max(1, min(int(max_chars), 5_000_000))
+    key = (server, _norm(path), max_chars)
+    with _jobs_lock:
+        _prune_jobs()
+        for jid, job in _jobs.items():
+            if job["key"] == key:  # queued, running, or finished within the TTL
+                return _job_view(jid, job)
+        queued = sum(1 for j in _jobs.values() if j["state"] in ("queued", "running"))
+        if queued >= EXTRACT_MAX_QUEUED:
+            raise HTTPException(429, f"{queued} extractions already queued; try again later")
+        job_id = uuid.uuid4().hex
+        _jobs[job_id] = {"state": "queued", "key": key, "created": time.time(), "finished": None, "result": None}
+    _extract_pool.submit(_run_job, job_id, server, path, max_chars)
+    return {"id": job_id, "state": "queued"}
+
+
+@app.get("/extract/jobs/{job_id}")
+def extract_status(job_id: str):
+    with _jobs_lock:
+        _prune_jobs()
+        job = _jobs.get(job_id)
+        if job is None:
+            # Unknown: expired, or the connector restarted (jobs live in memory).
+            raise HTTPException(404, "no such extraction job")
+        return _job_view(job_id, job)
 
 
 @app.post("/upload")

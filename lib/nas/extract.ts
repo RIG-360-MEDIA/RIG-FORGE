@@ -76,11 +76,13 @@ export async function extractText(name: string, buf: Buffer): Promise<string> {
 
 /** Upper bound on indexed characters per file (~300 pages of dense text).
  * Bounded so one enormous file cannot dominate embedding time and cost. */
-const INDEX_MAX_TEXT = Number(process.env.RAG_MAX_TEXT_CHARS ?? 1_000_000)
+export const INDEX_MAX_TEXT = Number(process.env.RAG_MAX_TEXT_CHARS ?? 1_000_000)
 
 export type IndexExtraction =
   | { ok: true; text: string; truncated: boolean }
-  | { ok: false; reason: string }
+  /** `scanned`: a PDF that parsed but has no text layer. The connector can
+   * OCR it (lib/rag/fetch-and-index.ts), unlike a corrupt file. */
+  | { ok: false; reason: string; scanned?: true }
 
 export async function extractForIndex(name: string, buf: Buffer): Promise<IndexExtraction> {
   const x = fileExt(name)
@@ -105,7 +107,7 @@ export async function extractForIndex(name: string, buf: Buffer): Promise<IndexE
     // A PDF that parses but yields no text is almost always a scan (images of
     // pages). Name that explicitly — it is common for government bylaws and is
     // fixable later with OCR, unlike a corrupt file.
-    if (!result.ok) return { ok: false, reason: 'PDF has no selectable text (likely scanned images; needs OCR)' }
+    if (!result.ok) return { ok: false, reason: 'PDF has no selectable text (likely scanned images; needs OCR)', scanned: true }
     return result
   }
 

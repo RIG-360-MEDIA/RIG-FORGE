@@ -10,7 +10,7 @@
  */
 import { createHash } from 'crypto'
 
-import { extractForIndex, isExtractable } from '@/lib/nas/extract'
+import { extractForIndex, isExtractable, INDEX_MAX_TEXT } from '@/lib/nas/extract'
 import { chunkText } from './chunk'
 import { embedTexts } from './embeddings'
 import { pruneStaleChunks, upsertChunks } from './qdrant'
@@ -26,7 +26,8 @@ export type IndexOutcome =
   | { status: 'indexed'; chunks: number; warning?: string }
   | { status: 'unchanged' }
   | { status: 'skipped'; reason: string }
-  | { status: 'failed'; reason: string }
+  /** `scanned`: the PDF has no text layer; worth sending to the connector for OCR. */
+  | { status: 'failed'; reason: string; scanned?: true }
 
 interface Key { organizationId: string; server: string; path: string }
 
@@ -79,11 +80,11 @@ export async function indexFile(job: IndexJob): Promise<IndexOutcome> {
 
   // Record a failure so it is VISIBLE in the tracking table. Previously some
   // failures were swallowed and others were stored as if they had succeeded.
-  const fail = async (reason: string, contentHash = ''): Promise<IndexOutcome> => {
+  const fail = async (reason: string, contentHash = '', scanned = false): Promise<IndexOutcome> => {
     await tracker
       .save(key, { status: 'FAILED', contentHash, chunkCount: 0, error: reason.slice(0, 500), indexedAt: null })
       .catch(() => {}) // best-effort — never throw out of ingestion
-    return { status: 'failed', reason }
+    return scanned ? { status: 'failed', reason, scanned: true } : { status: 'failed', reason }
   }
 
   try {
@@ -91,7 +92,10 @@ export async function indexFile(job: IndexJob): Promise<IndexOutcome> {
     let ocrUsed = false
 
     if (preExtracted) {
-      extracted = preExtracted
+      // Same cap as local extraction (RAG_MAX_TEXT_CHARS): text from the
+      // connector must not bypass the bound on embedding time and cost.
+      const over = preExtracted.text.length > INDEX_MAX_TEXT
+      extracted = { text: over ? preExtracted.text.slice(0, INDEX_MAX_TEXT) : preExtracted.text, truncated: preExtracted.truncated || over }
       ocrUsed = preExtracted.method === 'ocr'
     } else {
       if (!bytes) return await fail('no file bytes or pre-extracted text provided')
@@ -103,7 +107,7 @@ export async function indexFile(job: IndexJob): Promise<IndexOutcome> {
         // The file as it is NOW cannot be read. Remove anything indexed from an
         // older, readable version so stale content stops being searchable.
         await pruneStaleChunks(organizationId, server, path, 0, collection).catch(() => {})
-        return await fail(result.reason)
+        return await fail(result.reason, '', result.scanned === true)
       }
       extracted = result
     }

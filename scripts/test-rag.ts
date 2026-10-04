@@ -28,6 +28,9 @@ delete process.env.QDRANT_URL               // Qdrant unreachable on purpose her
 // import that pulls it in (bylaws-crawl does).
 process.env.TRIJYA_NAS_BASE_URL = 'http://fake-connector'
 process.env.NAS_ORG_ID = 'trijya'
+// Extraction jobs are polled; keep the fake connector's polling fast.
+process.env.NAS_EXTRACT_POLL_MS = '5'
+process.env.NAS_EXTRACT_TIMEOUT_MS = '200'
 
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
@@ -255,35 +258,82 @@ async function main() {
     ocrOutcome.status === 'failed' && /QDRANT_URL/.test(ocrOutcome.reason), ocrOutcome.status === 'failed' ? ocrOutcome.reason.slice(0, 50) : ocrOutcome.status)
   globalThis.fetch = realFetch
 
-  console.log('\n## nasExtractText — retries connector 5xx, gives up with a clear reason')
-  let extractCalls = 0
-  globalThis.fetch = (async () => { extractCalls++; return new Response('', { status: 503 }) }) as typeof fetch
-  const extractTimer = Date.now()
-  const gaveUpExtract = await asTrijya(() => client.nasExtractText('WD', '/big.pdf'))
-  check('503 is retried a few times, then fails with a readable reason (not a thrown exception)',
-    !gaveUpExtract.ok && /after 3 attempts/.test(gaveUpExtract.ok ? '' : gaveUpExtract.reason) && extractCalls === 3,
-    `${extractCalls} attempts in ${Date.now() - extractTimer} ms`)
-  extractCalls = 0
-  globalThis.fetch = (async () => { extractCalls++; return new Response(JSON.stringify({ ok: false, reason: 'only .pdf is supported by /extract' }), { status: 200 }) }) as typeof fetch
-  const notPdf = await asTrijya(() => client.nasExtractText('WD', '/x.docx'))
-  check('a connector-reported failure passes straight through, no retry wasted', !notPdf.ok && extractCalls === 1, notPdf.ok ? '' : notPdf.reason)
-  extractCalls = 0
-  globalThis.fetch = (async () => { extractCalls++; return new Response(JSON.stringify({ ok: true, text: 'Extracted text.', method: 'text', truncated: false }), { status: 200 }) }) as typeof fetch
-  const okExtract = await asTrijya(() => client.nasExtractText('WD', '/ok.pdf'))
-  check('a successful extraction is returned as-is', okExtract.ok && okExtract.text === 'Extracted text.' && okExtract.method === 'text')
+  console.log('\n## nasExtractText — job-based: start, poll, and every way it can go wrong')
+  // Fake connector for the job protocol: POST /extract/jobs starts (or joins)
+  // a job, GET /extract/jobs/{id} reports it. `script` lists the replies in order.
+  let extractCalls: string[] = []
+  const connector = (script: Array<() => Response>) => {
+    let i = 0
+    return (async (u: unknown, init?: RequestInit) => {
+      extractCalls.push(`${init?.method ?? 'GET'} ${new URL(String(u)).pathname}`)
+      const next = script[Math.min(i++, script.length - 1)]!
+      return next()
+    }) as typeof fetch
+  }
+  const json = (body: unknown, status = 200) => () => new Response(JSON.stringify(body), { status })
+  const job = (state: string, result?: unknown) => json({ id: 'j1', state, ...(result !== undefined && { result }) })
+
+  extractCalls = []
+  globalThis.fetch = connector([() => new Response('', { status: 503 })])
+  const startGaveUp = await asTrijya(() => client.nasExtractText('WD', '/big.pdf'))
+  check('start: 503 retried 3 times, then a readable failure (never a thrown exception)',
+    !startGaveUp.ok && /after 3 attempts/.test(startGaveUp.reason) && extractCalls.length === 3, `${extractCalls.length} calls`)
+
+  extractCalls = []
+  globalThis.fetch = connector([json({ detail: 'Not Found' }, 404)])
+  const oldConnector = await asTrijya(() => client.nasExtractText('WD', '/big.pdf'))
+  check('connector without job support (404): clear "update the connector" reason, no retries',
+    !oldConnector.ok && /update the connector/.test(oldConnector.reason) && extractCalls.length === 1)
+
+  extractCalls = []
+  globalThis.fetch = connector([job('done', { ok: false, reason: 'PDF could not be opened: FileDataError' })])
+  const reported = await asTrijya(() => client.nasExtractText('WD', '/bad.pdf'))
+  check('a connector-reported failure passes straight through, one request',
+    !reported.ok && /could not be opened/.test(reported.reason) && extractCalls.length === 1)
+
+  extractCalls = []
+  globalThis.fetch = connector([job('queued'), job('running'), job('done', { ok: true, text: 'Extracted text.', method: 'ocr', truncated: true })])
+  const polled = await asTrijya(() => client.nasExtractText('WD', '/scan.pdf'))
+  check('queued -> running -> done: polled with short requests, result returned',
+    polled.ok && polled.text === 'Extracted text.' && polled.method === 'ocr' && polled.truncated === true
+      && extractCalls.join() === 'POST /extract/jobs,GET /extract/jobs/j1,GET /extract/jobs/j1', extractCalls.join())
+
+  extractCalls = []
+  globalThis.fetch = connector([json({ ok: true, text: 'old-style direct reply', method: 'text', truncated: false })])
+  const malformed = await asTrijya(() => client.nasExtractText('WD', '/x.pdf'))
+  check('a reply that is not a job fails FAST (no polling until the deadline)',
+    !malformed.ok && /unexpected reply/.test(malformed.reason) && extractCalls.length === 1)
+
+  extractCalls = []
+  globalThis.fetch = connector([job('running'), json({ detail: 'no such extraction job' }, 404)])
+  const lost = await asTrijya(() => client.nasExtractText('WD', '/x.pdf'))
+  check('job vanished (connector restarted): reported, a later retry starts again', !lost.ok && /was lost/.test(lost.reason))
+
+  extractCalls = []
+  globalThis.fetch = connector([job('running')])
+  const slow = await asTrijya(() => client.nasExtractText('WD', '/huge-scan.pdf'))
+  check('still running at the deadline: gives up with "a later retry will pick up the result"',
+    !slow.ok && /still running/.test(slow.reason), `${extractCalls.length} calls`)
+
+  extractCalls = []
+  globalThis.fetch = connector([job('running'), () => new Response('', { status: 502 })])
+  const flaky = await asTrijya(() => client.nasExtractText('WD', '/x.pdf'))
+  check('5 failed polls in a row: stops with "lost contact"', !flaky.ok && /lost contact/.test(flaky.reason) && extractCalls.length === 6, `${extractCalls.length} calls`)
   globalThis.fetch = realFetch
 
   // ── fetchAndIndexFile — branch selection (K/E/F's shared helper) ──────────
-  console.log('\n## fetchAndIndexFile — size-based branch selection')
+  console.log('\n## fetchAndIndexFile — size-based branch selection, and OCR for small scans')
   const { fetchAndIndexFile } = await import('../lib/rag/fetch-and-index')
   const fakeIndexerCalls: Array<{ bytesOrText: unknown }> = []
+  let indexerReplies: Array<Record<string, unknown>> = []
   const fakeIndexer = async (_org: string, _server: string, _path: string, bytesOrText: unknown) => {
     fakeIndexerCalls.push({ bytesOrText })
-    return { status: 'indexed' as const, chunks: 1 }
+    return (indexerReplies.shift() ?? { status: 'indexed', chunks: 1 }) as { status: 'indexed'; chunks: number }
   }
+  const bytesReply = () => new Response(new Uint8Array(10), { status: 200, headers: { 'content-length': '10' } })
 
   fakeIndexerCalls.length = 0
-  globalThis.fetch = (async () => new Response(new Uint8Array(10), { status: 200, headers: { 'content-length': '10' } })) as typeof fetch
+  globalThis.fetch = (async () => bytesReply()) as typeof fetch
   const smallFile = await asTrijya(() => fetchAndIndexFile({ organizationId: 'trijya', server: 'WD', path: '/small.txt', size: 10, indexer: fakeIndexer }))
   check('under the size limit -> fetches bytes, calls the indexer with a Buffer', smallFile.status === 'indexed' && Buffer.isBuffer(fakeIndexerCalls[0]?.bytesOrText))
 
@@ -292,16 +342,39 @@ async function main() {
   check('over the limit, not a PDF -> skipped as too large, indexer never called', bigNonPdf.status === 'skipped' && 'tooLarge' in bigNonPdf && fakeIndexerCalls.length === 0, bigNonPdf.status)
 
   fakeIndexerCalls.length = 0
-  globalThis.fetch = (async () => new Response(JSON.stringify({ ok: true, text: 'extracted text', method: 'text', truncated: false }), { status: 200 })) as typeof fetch
+  globalThis.fetch = connector([job('done', { ok: true, text: 'extracted text', method: 'text', truncated: false })])
   const bigPdfOk = await asTrijya(() => fetchAndIndexFile({ organizationId: 'trijya', server: 'WD', path: '/big.pdf', size: 5_000_000, indexer: fakeIndexer }))
   check('over the limit, PDF, connector extraction succeeds -> indexer called with preExtracted text (no bytes fetched)',
     bigPdfOk.status === 'indexed' && !Buffer.isBuffer(fakeIndexerCalls[0]?.bytesOrText) && (fakeIndexerCalls[0]?.bytesOrText as { text: string })?.text === 'extracted text')
 
   fakeIndexerCalls.length = 0
-  globalThis.fetch = (async () => new Response(JSON.stringify({ ok: false, reason: 'connector not deployed' }), { status: 200 })) as typeof fetch
+  globalThis.fetch = connector([job('done', { ok: false, reason: 'pymupdf missing' })])
   const bigPdfFail = await asTrijya(() => fetchAndIndexFile({ organizationId: 'trijya', server: 'WD', path: '/big.pdf', size: 5_000_000, indexer: fakeIndexer }))
   check('over the limit, PDF, connector extraction fails -> falls back to skippedTooLarge, reason mentions why',
-    bigPdfFail.status === 'skipped' && 'tooLarge' in bigPdfFail && /connector not deployed/.test(bigPdfFail.reason) && fakeIndexerCalls.length === 0)
+    bigPdfFail.status === 'skipped' && 'tooLarge' in bigPdfFail && /pymupdf missing/.test(bigPdfFail.reason) && fakeIndexerCalls.length === 0)
+
+  // A small scanned PDF: parses here but has no text, so only the connector can OCR it.
+  fakeIndexerCalls.length = 0
+  indexerReplies = [{ status: 'failed', reason: 'PDF has no selectable text (likely scanned images; needs OCR)', scanned: true }]
+  let step = 0
+  globalThis.fetch = (async () => (step++ === 0 ? bytesReply() : job('done', { ok: true, text: 'setback 4.5 m', method: 'ocr', truncated: false })())) as typeof fetch
+  const smallScan = await asTrijya(() => fetchAndIndexFile({ organizationId: 'trijya', server: 'WD', path: '/scan.pdf', size: 10, indexer: fakeIndexer }))
+  const second = fakeIndexerCalls[1]?.bytesOrText as { text?: string; method?: string } | undefined
+  check('small scanned PDF -> sent to the connector for OCR, then indexed from the OCR text',
+    smallScan.status === 'indexed' && fakeIndexerCalls.length === 2 && second?.method === 'ocr' && second.text === 'setback 4.5 m')
+
+  fakeIndexerCalls.length = 0
+  indexerReplies = [{ status: 'failed', reason: 'PDF could not be parsed: bad xref' }]
+  globalThis.fetch = (async () => bytesReply()) as typeof fetch
+  const corruptSmall = await asTrijya(() => fetchAndIndexFile({ organizationId: 'trijya', server: 'WD', path: '/corrupt.pdf', size: 10, indexer: fakeIndexer }))
+  check('a corrupt (not scanned) PDF is NOT sent for OCR', corruptSmall.status === 'failed' && fakeIndexerCalls.length === 1)
+
+  fakeIndexerCalls.length = 0
+  indexerReplies = [{ status: 'failed', reason: 'PDF has no selectable text (likely scanned images; needs OCR)', scanned: true }]
+  step = 0
+  globalThis.fetch = (async () => (step++ === 0 ? bytesReply() : job('done', { ok: false, reason: 'OCR found no readable text on this PDF' })())) as typeof fetch
+  const scanFail = await asTrijya(() => fetchAndIndexFile({ organizationId: 'trijya', server: 'WD', path: '/blank-scan.pdf', size: 10, indexer: fakeIndexer }))
+  check('scan whose OCR also fails -> failed, reason names both', scanFail.status === 'failed' && /needs OCR/.test(scanFail.reason) && /OCR found no readable text/.test(scanFail.reason))
   globalThis.fetch = realFetch
 
   // ── searchChunksHybrid's re-ranking — pure, no live Qdrant needed ─────────

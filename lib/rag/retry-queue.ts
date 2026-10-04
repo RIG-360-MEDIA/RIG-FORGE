@@ -172,8 +172,12 @@ async function retryOne(t: Table, row: RetryRow, tally: RetryTally): Promise<voi
   })
   if (outcome.status === 'indexed') tally.indexed++
   else if (outcome.status === 'unchanged') tally.unchanged++
-  else if (outcome.status === 'failed') tally.failed++
-  else {
+  else if (outcome.status === 'failed') {
+    tally.failed++
+    // The returned reason can be fuller than what the indexer stored (e.g. a
+    // scanned PDF whose connector OCR also failed), so keep the row's in step.
+    await t.markFailed(row.id, outcome.reason)
+  } else {
     // skipped (e.g. too large and the connector could not extract it): the
     // indexer never wrote, so record why here. Backoff is already applied.
     tally.skipped++

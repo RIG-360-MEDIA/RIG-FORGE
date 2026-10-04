@@ -1,11 +1,18 @@
 /**
  * Fetch one file from the NAS and index it — shared by every backfill/retry
  * path (bylaws reindex, the general-NAS reindex, and the retry queue) so the
- * "oversized PDF -> ask the connector to extract text instead" fallback only
- * lives once. Previously inlined in app/api/nas/bylaws/reindex/route.ts;
- * extracted so E and K don't copy it a third time.
+ * "ask the connector to extract text instead" fallback only lives once.
+ * Previously inlined in app/api/nas/bylaws/reindex/route.ts; extracted so E
+ * and K don't copy it a third time.
+ *
+ * The connector is used for two kinds of PDF:
+ *  - too large to download into Render's memory (over RAG_MAX_FILE_MB);
+ *  - small, but scanned: it downloads and parses fine here, has no text
+ *    layer, and needs OCR, which only the connector can do. Most scanned
+ *    bylaws are a few MB, so without this they would never get OCR at all.
  */
 import { nasFetchBytesStrict, nasExtractText, FileTooLargeError } from '@/lib/nas/client'
+import { INDEX_MAX_TEXT } from '@/lib/nas/extract'
 import { MAX_INDEX_BYTES, type IndexOutcome, type PreExtracted } from './index-core'
 
 export interface FetchAndIndexOpts {
@@ -25,33 +32,48 @@ export interface FetchAndIndexOpts {
  * without resorting to matching on the reason string. */
 export type FetchAndIndexOutcome = IndexOutcome | { status: 'skipped'; reason: string; tooLarge: true }
 
+const isPdf = (path: string) => path.toLowerCase().endsWith('.pdf')
+
 export async function fetchAndIndexFile(opts: FetchAndIndexOpts): Promise<FetchAndIndexOutcome> {
   const { organizationId, server, path, size, indexer } = opts
+  const viaConnector = async () => {
+    const extracted = await nasExtractText(server, path, INDEX_MAX_TEXT)
+    return extracted.ok
+      ? { ok: true as const, outcome: await indexer(organizationId, server, path, { text: extracted.text, truncated: extracted.truncated, method: extracted.method }) }
+      : { ok: false as const, reason: extracted.reason }
+  }
+  const mb = (n: number) => (n / 1_048_576).toFixed(1)
 
   if (size > MAX_INDEX_BYTES) {
-    if (path.toLowerCase().endsWith('.pdf')) {
-      const extracted = await nasExtractText(server, path)
-      if (extracted.ok) {
-        return indexer(organizationId, server, path, {
-          text: extracted.text, truncated: extracted.truncated, method: extracted.method,
-        })
-      }
+    if (isPdf(path)) {
+      const r = await viaConnector()
+      if (r.ok) return r.outcome
       return {
         status: 'skipped', tooLarge: true,
-        reason: `${(size / 1_048_576).toFixed(1)} MB, over the ${(MAX_INDEX_BYTES / 1_048_576).toFixed(0)} MB limit — connector extraction also failed: ${extracted.reason}`,
+        reason: `${mb(size)} MB, over the ${(MAX_INDEX_BYTES / 1_048_576).toFixed(0)} MB limit — connector extraction also failed: ${r.reason}`,
       }
     }
     return {
       status: 'skipped', tooLarge: true,
-      reason: `${(size / 1_048_576).toFixed(1)} MB, over the ${(MAX_INDEX_BYTES / 1_048_576).toFixed(0)} MB limit (RAG_MAX_FILE_MB)`,
+      reason: `${mb(size)} MB, over the ${(MAX_INDEX_BYTES / 1_048_576).toFixed(0)} MB limit (RAG_MAX_FILE_MB)`,
     }
   }
 
+  let outcome: IndexOutcome
   try {
     const bytes = await nasFetchBytesStrict(server, path, MAX_INDEX_BYTES)
-    return await indexer(organizationId, server, path, bytes)
+    outcome = await indexer(organizationId, server, path, bytes)
   } catch (e) {
     if (e instanceof FileTooLargeError) return { status: 'skipped', tooLarge: true, reason: e.message }
     return { status: 'failed', reason: e instanceof Error ? e.message : 'download failed' }
   }
+
+  // A scanned PDF: the indexer already recorded FAILED ("needs OCR"). Ask the
+  // connector to OCR it; success overwrites that row with INDEXED.
+  if (outcome.status === 'failed' && outcome.scanned && isPdf(path)) {
+    const r = await viaConnector()
+    if (r.ok) return r.outcome
+    return { status: 'failed', reason: `${outcome.reason}; connector OCR also failed: ${r.reason}` }
+  }
+  return outcome
 }

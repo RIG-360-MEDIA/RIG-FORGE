@@ -221,46 +221,102 @@ export interface NasExtractFailure {
   reason: string
 }
 
-const EXTRACT_RETRYABLE = new Set([502, 503, 504])
-const EXTRACT_MAX_ATTEMPTS = 3
+const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms))
+const EXTRACT_TRANSIENT = new Set([429, 502, 503, 504, 520, 521, 522, 523, 524])
+
+type ExtractJob = { id: string; state: 'queued' | 'running' | 'done'; result?: unknown }
+
+/** A job as the connector reports it, or null if the reply is not one. A
+ * malformed reply must fail fast, not be polled until the deadline. */
+function parseJob(raw: unknown): ExtractJob | null {
+  const j = raw as { id?: unknown; state?: unknown; result?: unknown } | null
+  if (!j || typeof j.id !== 'string' || !j.id) return null
+  if (j.state !== 'queued' && j.state !== 'running' && j.state !== 'done') return null
+  return { id: j.id, state: j.state, result: j.result }
+}
+
+function toResult(raw: unknown): NasExtractResult | NasExtractFailure {
+  const r = raw as { ok?: unknown; text?: unknown; method?: unknown; truncated?: unknown; reason?: unknown } | null
+  if (r && r.ok === true && typeof r.text === 'string') {
+    return { ok: true, text: r.text, method: r.method === 'ocr' ? 'ocr' : 'text', truncated: r.truncated === true }
+  }
+  if (r && r.ok === false) return { ok: false, reason: String(r.reason ?? 'extraction failed') }
+  return { ok: false, reason: 'connector returned an unexpected extraction result' }
+}
 
 /**
  * Ask the connector to extract a PDF's text itself (PyMuPDF, falling back to
  * OCR for scanned pages) and return text, not bytes. For files too large to
  * safely download and parse on Render (see MAX_INDEX_BYTES in
- * lib/rag/index-core.ts) — the connector runs on TRIJYA-3, which isn't
- * memory-constrained the way Render's free plan is.
+ * lib/rag/index-core.ts).
  *
- * A 404 means the connector hasn't been redeployed with /extract yet — treat
- * that like any other failure so callers fall back to their existing
- * "too large to index" handling; it's safe to ship this before TRIJYA-3 is
- * updated.
+ * Job-based, because the connector sits behind Cloudflare, which cuts any one
+ * request off at ~100 s, and OCR of a large scan takes minutes. We start a job
+ * (returns at once) and poll it with short requests until it finishes or
+ * NAS_EXTRACT_TIMEOUT_MS passes. Giving up here does not waste the work: the
+ * connector keeps the finished result for an hour and returns the same job
+ * when the file is asked for again, so the retry queue picks it up later.
+ *
+ * Never throws: every outcome is a result, so callers record a reason.
  */
-export async function nasExtractText(server: string, path: string): Promise<NasExtractResult | NasExtractFailure> {
-  const timeout = Number(process.env.NAS_EXTRACT_TIMEOUT_MS ?? 180_000)
+export async function nasExtractText(
+  server: string,
+  path: string,
+  maxChars = 1_000_000,
+): Promise<NasExtractResult | NasExtractFailure> {
+  const timeoutMs = Number(process.env.NAS_EXTRACT_TIMEOUT_MS ?? 15 * 60_000)
+  const pollMs = Number(process.env.NAS_EXTRACT_POLL_MS ?? 5_000)
+  const deadline = Date.now() + timeoutMs
+  const qs = `server=${encodeURIComponent(server)}&path=${encodeURIComponent(path)}&max_chars=${Math.max(1, Math.floor(maxChars))}`
+
+  // 1. Start (or join) the job. Short requests; a few retries on transient errors.
+  let job: ExtractJob | null = null
   let lastError = ''
-  for (let attempt = 0; attempt < EXTRACT_MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await sleep(2000 * 2 ** (attempt - 1))
     let r: Response
     try {
-      r = await nasFetch(
-        `/extract?server=${encodeURIComponent(server)}&path=${encodeURIComponent(path)}`,
-        { signal: AbortSignal.timeout(timeout) },
-      )
+      r = await nasFetch(`/extract/jobs?${qs}`, { method: 'POST' })
     } catch (e) {
       lastError = e instanceof Error ? e.message : 'network error'
-      if (attempt < EXTRACT_MAX_ATTEMPTS - 1) await new Promise((res) => setTimeout(res, 2000 * 2 ** attempt))
       continue
     }
-    if (EXTRACT_RETRYABLE.has(r.status)) {
-      await r.body?.cancel().catch(() => {})
-      lastError = `HTTP ${r.status}`
-      if (attempt < EXTRACT_MAX_ATTEMPTS - 1) await new Promise((res) => setTimeout(res, 2000 * 2 ** attempt))
-      continue
+    if (r.ok) {
+      job = parseJob(await r.json().catch(() => null))
+      if (!job) return { ok: false, reason: 'connector returned an unexpected reply to an extraction request' }
+      break
     }
-    if (!r.ok) return { ok: false, reason: `connector extraction failed (${r.status})` }
-    return (await r.json()) as NasExtractResult | NasExtractFailure
+    const detail = await r.text().catch(() => '')
+    if (EXTRACT_TRANSIENT.has(r.status)) { lastError = `HTTP ${r.status}`; continue }
+    if (r.status === 404 || r.status === 405) {
+      return { ok: false, reason: `connector does not support extraction jobs (HTTP ${r.status}); update the connector on TRIJYA-3` }
+    }
+    return { ok: false, reason: `connector refused extraction (HTTP ${r.status})${detail ? ': ' + detail.slice(0, 200) : ''}` }
   }
-  return { ok: false, reason: `connector extraction unavailable after ${EXTRACT_MAX_ATTEMPTS} attempts (last: ${lastError})` }
+  if (!job) return { ok: false, reason: `connector extraction unavailable after 3 attempts (last: ${lastError})` }
+
+  // 2. Poll until done. A few transient poll errors in a row are tolerated.
+  let consecutiveErrors = 0
+  while (job.state !== 'done') {
+    if (Date.now() + pollMs > deadline) {
+      return { ok: false, reason: `extraction still running on the connector after ${Math.round(timeoutMs / 60_000)} min; a later retry will pick up the result` }
+    }
+    await sleep(pollMs)
+    try {
+      const r = await nasFetch(`/extract/jobs/${encodeURIComponent(job.id)}`)
+      if (r.status === 404) return { ok: false, reason: 'extraction job was lost (the connector restarted); a later retry will start it again' }
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const next = parseJob(await r.json().catch(() => null))
+      if (!next) return { ok: false, reason: 'connector returned an unexpected reply while extracting' }
+      job = next
+      consecutiveErrors = 0
+    } catch (e) {
+      if (++consecutiveErrors >= 5) {
+        return { ok: false, reason: `lost contact with the connector while extracting (${e instanceof Error ? e.message : 'error'})` }
+      }
+    }
+  }
+  return toResult(job.result)
 }
 
 export async function nasUpload(server: string, path: string, file: Blob, filename: string): Promise<{ ok: boolean; path: string }> {
