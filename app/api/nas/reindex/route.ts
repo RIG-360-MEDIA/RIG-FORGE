@@ -121,6 +121,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     const payload = await authenticateActive(request)
     if (!payload) return errorResponse('Authentication required', 401)
     if (!isAdminRole(payload.role)) return errorResponse('Admin access required', 403)
+    // Same switch as POST: until RAG is configured there is nothing to report
+    // (and the run table may not exist yet on this database).
+    if (!isRagIndexingEnabled()) return errorResponse('NAS content search is not configured (HF_API_KEY/QDRANT_URL unset)', 503)
 
     const organizationId = getOrgId()
     const runId = request.nextUrl.searchParams.get('runId')
