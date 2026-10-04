@@ -13,6 +13,12 @@ const BASE = process.env.TRIJYA_NAS_BASE_URL?.trim().replace(/\/$/, '')
 const NAS_ORG_ID = process.env.NAS_ORG_ID?.trim() || 'trijya'
 const TIMEOUT_MS = Number(process.env.NAS_TIMEOUT_MS ?? 25_000)
 
+/** The one org that owns the NAS. Background jobs (crons) have no request to
+ * take an org from, so they run as this org explicitly. */
+export function nasOrgId(): string {
+  return NAS_ORG_ID
+}
+
 /** True when the NAS connector is configured AND the caller's org owns it. */
 export function isNasEnabled(): boolean {
   return !!BASE && getOrgId() === NAS_ORG_ID

@@ -60,6 +60,10 @@ export async function markNasPending(organizationId: string, server: string, pat
   await prisma.nasIndexedFile.upsert({
     where: { organizationId_server_path: key },
     create: { ...key, status: 'PENDING', contentHash: '' },
-    update: { status: 'PENDING' }, // a fresh upload is about to re-index it — its old status is stale either way
+    // A fresh upload is about to re-index it: its old status is stale either
+    // way, and it starts a new retry budget. contentHash is left alone on
+    // purpose: index-core only trusts a hash on an INDEXED row, so a PENDING
+    // row always re-embeds, never "unchanged" against half-written chunks.
+    update: { status: 'PENDING', retryCount: 0, nextRetryAt: null },
   })
 }

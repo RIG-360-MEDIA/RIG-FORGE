@@ -39,6 +39,11 @@ export interface Tracker {
     chunkCount: number
     error: string | null
     indexedAt: Date | null
+    /** Sent only with INDEXED: a success clears the retry backoff (see
+     * app/api/cron/rag-retry). A failure leaves it to the retry route, which
+     * owns the attempt count. */
+    retryCount?: number
+    nextRetryAt?: Date | null
   }): Promise<void>
 }
 
@@ -130,7 +135,10 @@ export async function indexFile(job: IndexJob): Promise<IndexOutcome> {
     if (extracted.truncated) warnings.push(`only the first ${extracted.text.length.toLocaleString('en-US')} characters were indexed (RAG_MAX_TEXT_CHARS)`)
     if (ocrUsed) warnings.push('text was recovered via OCR (connector) — may contain recognition errors')
     const warning = warnings.length ? warnings.join('; ') : undefined
-    await tracker.save(key, { status: 'INDEXED', contentHash, chunkCount: chunks.length, error: warning ?? null, indexedAt: new Date() })
+    await tracker.save(key, {
+      status: 'INDEXED', contentHash, chunkCount: chunks.length, error: warning ?? null, indexedAt: new Date(),
+      retryCount: 0, nextRetryAt: null,
+    })
     return { status: 'indexed', chunks: chunks.length, ...(warning && { warning }) }
   } catch (e) {
     return await fail(e instanceof Error ? e.message : 'indexing failed')

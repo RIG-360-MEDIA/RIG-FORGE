@@ -868,6 +868,13 @@ model NasIndexedFile {
   // (RAG_STALE_GRACE_HOURS) tolerates one slow/partial crawl without a false
   // prune — see lib/rag/stale-sweep.ts.
   lastSeenAt     DateTime?
+  // Retry bookkeeping for app/api/cron/rag-retry. retryCount counts attempts
+  // since the last success; nextRetryAt is when the row may be tried again
+  // (exponential backoff), so a file that can never succeed stops being
+  // retried instead of being re-downloaded every run forever. Both reset on
+  // a successful index and on a fresh upload.
+  retryCount     Int            @default(0)
+  nextRetryAt    DateTime?
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 
@@ -891,6 +898,8 @@ model BylawsIndexedFile {
   error          String?
   indexedAt      DateTime?
   lastSeenAt     DateTime? // see NasIndexedFile.lastSeenAt — same stale-sweep mechanism
+  retryCount     Int            @default(0) // see NasIndexedFile.retryCount — same retry backoff
+  nextRetryAt    DateTime?
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 
@@ -916,6 +925,10 @@ model BylawsReindexRun {
   results        Json? // ServerResult[] — same shape the route used to return synchronously
   error          String?
   createdAt      DateTime         @default(now())
+  // Bumped while the background job is making progress. A RUNNING run whose
+  // heartbeat has gone stale was interrupted (e.g. Render restarted) and must
+  // not block new runs forever.
+  heartbeatAt    DateTime         @default(now())
 
   @@index([organizationId, startedAt])
 }
@@ -934,6 +947,10 @@ model NasReindexRun {
   results        Json?
   error          String?
   createdAt      DateTime         @default(now())
+  // Bumped while the background job is making progress. A RUNNING run whose
+  // heartbeat has gone stale was interrupted (e.g. Render restarted) and must
+  // not block new runs forever.
+  heartbeatAt    DateTime         @default(now())
 
   @@index([organizationId, startedAt])
 }

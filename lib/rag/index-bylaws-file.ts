@@ -57,6 +57,6 @@ export async function markBylawsPending(organizationId: string, server: string, 
   await prisma.bylawsIndexedFile.upsert({
     where: { organizationId_server_path: key },
     create: { ...key, status: 'PENDING', contentHash: '' },
-    update: { status: 'PENDING' },
+    update: { status: 'PENDING', retryCount: 0, nextRetryAt: null }, // same as markNasPending
   })
 }
