@@ -1,28 +1,33 @@
 name: Forgie crons
 
 # Render's free tier runs no cron internally, so every app/api/cron/* route
-# needs an external trigger. This was the documented plan (Option B in
-# docs/FORGIE_DEPLOYMENT.md "Wire the cron jobs") but was never actually
-# added — SECURITY_TODO.md flagged exactly this ("confirm it's configured,
-# or the jobs silently never fire"). All six existing cron routes are wired
-# here in one workflow, same pattern as the doc's own example.
+# needs an external trigger. Documented as Option B in
+# docs/FORGIE_DEPLOYMENT.md ("Wire the cron jobs"); SECURITY_TODO.md flagged
+# that it was never set up ("confirm it's configured, or the jobs silently
+# never fire").
 #
-# Each entry below is matched by its EXACT cron string via
-# github.event.schedule, so every schedule must stay textually unique even
-# when two happen to fire around the same wall-clock time.
+# SCHEDULED: only the two RAG jobs. They do nothing at all until RAG is
+# configured on Render (HF_API_KEY + QDRANT_URL), so this is safe to have
+# running before the feature is switched on.
+#
+# MANUAL ONLY (Actions tab -> "Run workflow"): the four older jobs. They have
+# never run in production, they act on real data (daily-log-draft AI quota,
+# the standup digest, health notifications, and the HARD DELETE of expired
+# disappearing chat messages), and they run as the default company only. Do
+# not add them to the schedule until that is decided and checked. To schedule
+# one: add its cron line below AND its case in "Pick endpoint".
+#
+# Each schedule is matched by its EXACT cron string via github.event.schedule,
+# so every schedule must stay textually unique.
 #
 # Requires a CRON_SECRET repository secret (Settings → Secrets and
 # variables → Actions) matching the CRON_SECRET env var set on Render.
 
 on:
   schedule:
-    - cron: '30 12 * * *'   # daily-log-drafts    — 6:00pm IST
-    - cron: '30 3 * * *'    # standup-digest       — 9:00am IST
-    - cron: '0 4 * * *'     # project-health       — 9:30am IST
-    - cron: '0 */4 * * *'   # disappearing-cleanup — every 4 hours
-    - cron: '30 20 * * *'   # rag-stale-sweep      — 2:00am IST (low-traffic; a 48h grace window means this doesn't need to run often)
-    - cron: '*/15 * * * *'  # rag-retry            — every 15 min (just past the retry route's own 10-min "stuck" threshold)
-  workflow_dispatch:         # allow manual "Run workflow" from the Actions tab, e.g. to test one endpoint
+    - cron: '30 20 * * *'   # rag-stale-sweep — 2:00am IST (low traffic; its 48 h grace window means daily is plenty)
+    - cron: '*/15 * * * *'  # rag-retry       — every 15 min (each row has its own backoff; most runs find nothing due)
+  workflow_dispatch:         # manual "Run workflow" from the Actions tab
     inputs:
       endpoint:
         description: 'Cron route to trigger (path under /api/cron/)'
@@ -30,35 +35,43 @@ on:
         default: 'rag-retry'
         type: choice
         options:
+          - rag-retry
+          - rag-stale-sweep
           - daily-log-drafts
           - standup-digest
           - project-health
           - disappearing-cleanup
-          - rag-stale-sweep
-          - rag-retry
+
+# Never let two runs of the same job overlap (the app also guards against it).
+concurrency:
+  group: forgie-cron-${{ github.event.schedule || github.event.inputs.endpoint }}
+  cancel-in-progress: false
 
 jobs:
   trigger:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Pick endpoint for this schedule
         if: github.event_name == 'schedule'
         id: pick
         run: |
           case "${{ github.event.schedule }}" in
-            '30 12 * * *')  echo "path=daily-log-drafts" >> "$GITHUB_OUTPUT" ;;
-            '30 3 * * *')   echo "path=standup-digest" >> "$GITHUB_OUTPUT" ;;
-            '0 4 * * *')    echo "path=project-health" >> "$GITHUB_OUTPUT" ;;
-            '0 */4 * * *')  echo "path=disappearing-cleanup" >> "$GITHUB_OUTPUT" ;;
             '30 20 * * *')  echo "path=rag-stale-sweep" >> "$GITHUB_OUTPUT" ;;
             '*/15 * * * *') echo "path=rag-retry" >> "$GITHUB_OUTPUT" ;;
             *) echo "No endpoint mapped for schedule '${{ github.event.schedule }}'" >&2; exit 1 ;;
           esac
 
       - name: POST to the cron endpoint
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          ENDPOINT: ${{ github.event.inputs.endpoint || steps.pick.outputs.path }}
         run: |
-          ENDPOINT="${{ github.event.inputs.endpoint || steps.pick.outputs.path }}"
+          if [ -z "$CRON_SECRET" ]; then
+            echo "CRON_SECRET repository secret is not set; skipping." >&2
+            exit 0
+          fi
           echo "Triggering /api/cron/$ENDPOINT"
-          curl -sf -X POST \
-            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+          curl -sS --fail-with-body --max-time 600 -X POST \
+            -H "x-cron-secret: $CRON_SECRET" \
             "https://rig-forge.onrender.com/api/cron/$ENDPOINT"
