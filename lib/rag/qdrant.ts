@@ -70,6 +70,30 @@ export function ensureCollection(collection: string = COLLECTION): Promise<void>
   return ready
 }
 
+/** Qdrant answers 404 when the collection itself does not exist. */
+function isMissingCollection(e: unknown): boolean {
+  return (e as { status?: number } | null)?.status === 404
+}
+
+/**
+ * Run an operation against a collection, recreating the collection once if it
+ * vanished while the app was running. ensureCollection() remembers a collection
+ * it has set up, so without this a collection dropped by hand, or wiped when a
+ * free Qdrant Cloud cluster is reset after inactivity, made every index and
+ * search fail with "Not Found" until the server restarted.
+ */
+async function withCollection<T>(collection: string, op: () => Promise<T>): Promise<T> {
+  await ensureCollection(collection)
+  try {
+    return await op()
+  } catch (e) {
+    if (!isMissingCollection(e)) throw e
+    collectionReady.delete(collection)
+    await ensureCollection(collection)
+    return op()
+  }
+}
+
 /** Deterministic point id so re-indexing the same chunk overwrites in place. */
 function pointId(organizationId: string, server: string, path: string, chunkIndex: number): string {
   const hash = createHash('sha256').update(`${organizationId}:${server}:${path}:${chunkIndex}`).digest('hex')
@@ -90,9 +114,7 @@ export async function upsertChunks(
   collection: string = COLLECTION,
 ): Promise<void> {
   if (chunks.length === 0) return
-  await ensureCollection(collection)
-  const c = getClient()
-  await c.upsert(collection, {
+  await withCollection(collection, () => getClient().upsert(collection, {
     wait: true,
     points: chunks.map((chunk) => ({
       id: pointId(chunk.organizationId, chunk.server, chunk.path, chunk.chunkIndex),
@@ -106,7 +128,7 @@ export async function upsertChunks(
         text: chunk.text,
       },
     })),
-  })
+  }))
 }
 
 /**
@@ -127,8 +149,7 @@ export async function pruneStaleChunks(
   keepCount: number,
   collection: string = COLLECTION,
 ): Promise<void> {
-  await ensureCollection(collection)
-  await getClient().delete(collection, {
+  await withCollection(collection, () => getClient().delete(collection, {
     wait: true,
     filter: {
       must: [
@@ -138,7 +159,7 @@ export async function pruneStaleChunks(
         { key: 'chunkIndex', range: { gte: keepCount } },
       ],
     },
-  })
+  }))
 }
 
 export interface ChunkSearchHit extends ChunkPayload {
@@ -165,15 +186,13 @@ export async function searchChunks(
   limit = 8,
   collection: string = COLLECTION,
 ): Promise<ChunkSearchHit[]> {
-  await ensureCollection(collection)
-  const c = getClient()
-  const res = await c.search(collection, {
+  const res = await withCollection(collection, () => getClient().search(collection, {
     vector,
     limit,
     filter: { must: [{ key: 'organizationId', match: { value: organizationId } }] },
     with_payload: true,
     score_threshold: MIN_SCORE,
-  })
+  }))
   return res.map((r) => ({ ...(r.payload as unknown as ChunkPayload), score: r.score }))
 }
 
