@@ -392,6 +392,76 @@ async function main() {
   const truncated = rerankByKeyword(synthetic, 'setback', 1)
   check('still truncates to `limit` after re-ranking', truncated.length === 1 && truncated[0]!.path === 'setback.txt')
 
+  // ── Review fixes (round 4) — the pure parts; the database parts were
+  // tested live against Postgres, see docs/RAG_BACKLOG_CHANGES.md ──────────
+  console.log('\n## Round 4 — keyword boost works for Hindi too')
+  const hindi = [
+    { score: 0.60, text: 'अधिकतम भवन ऊंचाई 15 मीटर होगी।', path: 'height-hi.txt' },
+    { score: 0.55, text: 'सड़क सीमा से न्यूनतम अग्र सेटबैक 6 मीटर होगा।', path: 'setback-hi.txt' },
+  ]
+  const hiBoost = rerankByKeyword(hindi, 'सड़क सेटबैक', 2)
+  check('a Hindi query boosts the Hindi passage that shares its words (was ignored: /[a-z0-9]+/ dropped all Hindi)',
+    hiBoost[0]!.path === 'setback-hi.txt' && hiBoost[0]!.matchType === 'hybrid', hiBoost.map((h) => `${h.path}:${h.matchType}`).join(', '))
+  const decomposed = 'सड़क'.normalize('NFD')
+  check('Unicode normalisation: the same word typed in decomposed form still matches',
+    rerankByKeyword(hindi, `${decomposed} सेटबैक`, 2)[0]!.path === 'setback-hi.txt')
+  check('English re-ranking unchanged', rerankByKeyword(synthetic, 'setback road boundary', 3)[0]!.path === 'setback.txt')
+
+  console.log('\n## Round 4 — E5 input prefixes')
+  const { inputPrefixes } = await import('../lib/rag/embeddings')
+  check('multilingual-e5-large gets "query: " / "passage: "',
+    JSON.stringify(inputPrefixes('intfloat/multilingual-e5-large')) === JSON.stringify({ query: 'query: ', passage: 'passage: ' }))
+  check('bge-small (the production model) still gets no prefix',
+    JSON.stringify(inputPrefixes('BAAI/bge-small-en-v1.5')) === JSON.stringify({ query: '', passage: '' }))
+  check('-instruct E5 variants are not auto-prefixed (different query format)',
+    inputPrefixes('intfloat/multilingual-e5-large-instruct').query === '')
+  let sentInputs: string[] = []
+  globalThis.fetch = (async (_u: unknown, init: any) => {
+    sentInputs = JSON.parse(init.body).inputs
+    return new Response(JSON.stringify(sentInputs.map(() => vec())), { status: 200 })
+  }) as typeof fetch
+  await embedQuery('front setback')
+  check('with the default model, a query is sent exactly as typed', sentInputs[0] === 'front setback', JSON.stringify(sentInputs))
+  globalThis.fetch = realFetch
+
+  console.log('\n## Round 4 — retry backoff and stale backfill runs')
+  const { retryDelayMs } = await import('../lib/rag/retry-queue')
+  check('retry backoff: 15 min, 1 h, 4 h, 16 h, then capped at 24 h',
+    [1, 2, 3, 4, 5, 10].map((n) => retryDelayMs(n) / 60_000).join() === '15,60,240,960,1440,1440')
+  const { isStale, runView, RUN_STALE_MS } = await import('../lib/rag/reindex-runs')
+  const now = Date.now()
+  const runRow = (status: 'RUNNING' | 'DONE', ageMs: number) => ({
+    id: 'r', organizationId: 'trijya', status, startedAt: new Date(now - ageMs), finishedAt: null,
+    heartbeatAt: new Date(now - ageMs), results: null, error: null,
+  })
+  check('a RUNNING run with a recent heartbeat is live', !isStale(runRow('RUNNING', 30_000), now))
+  check('a RUNNING run silent past the stale window is interrupted', isStale(runRow('RUNNING', RUN_STALE_MS + 1000), now))
+  check('a finished run is never "stale"', !isStale(runRow('DONE', 10 * RUN_STALE_MS), now))
+  check('the admin sees an interrupted run as "interrupted", with what to do', runView(runRow('RUNNING', RUN_STALE_MS + 1000)).status === 'interrupted'
+    && /Start the backfill again/.test(String(runView(runRow('RUNNING', RUN_STALE_MS + 1000)).error)))
+
+  console.log('\n## Round 4 — the crawl reports whether it reached the end')
+  const { listFilesRecursiveWithStatus } = await import('../lib/nas/bylaws-crawl')
+  const crawlTree: Record<string, Array<{ name: string; isDir: boolean; size: number }>> = {
+    '/A': [{ name: '1.txt', isDir: false, size: 1 }, { name: 'sub', isDir: true, size: 0 }],
+    '/A/sub': [{ name: '2.txt', isDir: false, size: 1 }, { name: '3.txt', isDir: false, size: 1 }],
+  }
+  globalThis.fetch = (async (u: unknown) => {
+    const p = new URL(String(u)).searchParams.get('path')!
+    return new Response(JSON.stringify({ path: p, items: (crawlTree[p] ?? []).map((i) => ({ ...i, mtime: 0 })) }), { status: 200 })
+  }) as typeof fetch
+  const whole = await asTrijya(() => listFilesRecursiveWithStatus('WD', '/A', 10))
+  check('small folder: every file, complete', whole.complete && whole.files.length === 3)
+  const capped = await asTrijya(() => listFilesRecursiveWithStatus('WD', '/A', 2))
+  check('over the cap: exactly the cap returned and complete=false (so nothing gets pruned)', !capped.complete && capped.files.length === 2)
+  const exact = await asTrijya(() => listFilesRecursiveWithStatus('WD', '/A/sub', 2))
+  check('exactly at the cap with nothing left to visit: still complete', exact.complete && exact.files.length === 2)
+  globalThis.fetch = (async () => new Response('', { status: 500 })) as typeof fetch
+  let crawlThrew = false
+  try { await asTrijya(() => listFilesRecursiveWithStatus('WD', '/A', 10)) } catch { crawlThrew = true }
+  check('a listing error throws (never a silently partial list)', crawlThrew)
+  globalThis.fetch = realFetch
+
   // ── .docx extraction (feature I) ──────────────────────────────────────────
   console.log('\n## .docx extraction')
   const mammothMod = await import('mammoth')

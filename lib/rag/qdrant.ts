@@ -186,10 +186,22 @@ export interface HybridChunkSearchHit extends ChunkSearchHit {
  * the vector score — see searchChunksHybrid. */
 const KEYWORD_BOOST_WEIGHT = Number(process.env.RAG_KEYWORD_BOOST_WEIGHT ?? 0.15)
 
-const STOPWORDS = new Set(['the', 'a', 'an', 'of', 'to', 'in', 'on', 'for', 'and', 'or', 'is', 'are', 'what', 'how', 'must', 'shall'])
+const STOPWORDS = new Set([
+  'the', 'a', 'an', 'of', 'to', 'in', 'on', 'for', 'and', 'or', 'is', 'are', 'what', 'how', 'must', 'shall',
+  // Common Hindi function words long enough to pass the length filter.
+  'लिए', 'होगा', 'होगी', 'होंगे', 'करना', 'किया', 'गया', 'कितनी', 'कितना', 'क्या', 'कैसे', 'चाहिए', 'वाले', 'वाली',
+])
 
+/** Lower-cased, Unicode-normalised text. Comparing NFC on both sides keeps a
+ * Devanagari word typed one way matching the same word stored another way. */
+const fold = (text: string) => text.normalize('NFC').toLowerCase()
+
+/** Word tokens in any script. Letters (\p{L}), combining marks (\p{M}, e.g.
+ * Devanagari vowel signs, without which Hindi words split mid-word) and
+ * digits. The old /[a-z0-9]+/ dropped every Hindi word, so a Hindi query
+ * never got a keyword boost. */
 function keywordTokens(text: string): string[] {
-  return Array.from(new Set(text.toLowerCase().match(/[a-z0-9]+/g) ?? [])).filter((t) => t.length > 2 && !STOPWORDS.has(t))
+  return Array.from(new Set(fold(text).match(/[\p{L}\p{M}\p{N}]+/gu) ?? [])).filter((t) => t.length > 2 && !STOPWORDS.has(t))
 }
 
 /**
@@ -208,7 +220,7 @@ export function rerankByKeyword<T extends { score: number; text: string }>(
   }
 
   const scored = candidates.map((c) => {
-    const haystack = c.text.toLowerCase()
+    const haystack = fold(c.text)
     const matched = queryTokens.filter((t) => haystack.includes(t)).length
     const keywordScore = matched / queryTokens.length
     return { hit: c, keywordScore, combined: c.score + KEYWORD_BOOST_WEIGHT * keywordScore }
