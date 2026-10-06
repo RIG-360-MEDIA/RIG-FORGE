@@ -332,6 +332,7 @@ try:
 except Exception:
     _HAVE_OCR = False
 
+import shutil
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
@@ -360,9 +361,22 @@ def _ocr_lang() -> str:
             try:
                 langs = set(pytesseract.get_languages(config=""))
             except Exception:
-                langs = set()
+                # tesseract missing or failing: answer "eng" but do NOT cache
+                # it, so installing tesseract (and the Hindi pack) later takes
+                # effect without restarting the connector.
+                return "eng"
             _ocr_lang_cache = "eng+hin" if "hin" in langs else "eng"
     return _ocr_lang_cache
+
+
+def _tesseract_available() -> bool:
+    """pytesseract is only a wrapper: the tesseract program itself is a system
+    package (apt install tesseract-ocr). Checked per call, so installing it
+    takes effect without a restart."""
+    if not _HAVE_OCR:
+        return False
+    cmd = getattr(getattr(pytesseract, "pytesseract", None), "tesseract_cmd", "tesseract")
+    return bool(shutil.which(cmd))
 
 
 def _unlink(p: str):
@@ -415,6 +429,10 @@ def _extract_pdf(server: str, path: str, max_chars: int) -> dict:
             if not _HAVE_OCR:
                 return {"ok": False, "reason": "PDF has no selectable text (likely scanned images; needs OCR, "
                                                "but pytesseract is not installed on the connector)"}
+            if not _tesseract_available():
+                return {"ok": False, "reason": "PDF has no selectable text (likely scanned images; needs OCR, "
+                                               "but the tesseract program is not installed on the connector: "
+                                               "sudo apt-get install -y tesseract-ocr tesseract-ocr-hin)"}
             lang = _ocr_lang()
             limit = min(doc.page_count, OCR_MAX_PAGES)
             parts, size = [], 0
