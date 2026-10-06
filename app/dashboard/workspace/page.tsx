@@ -21,9 +21,27 @@ const TABS = [
 ] as const
 
 type TabKey = (typeof TABS)[number]['key']
+const isTabKey = (v: string | null): v is TabKey => TABS.some((t) => t.key === v)
+
+/** The open tab lives in the URL (?tab=files), so Back from elsewhere, a
+ * refresh, or a link returns to the same tab instead of always Mail. Clicking
+ * a tab adds a history entry, so Back returns to exactly where the user was
+ * (e.g. the Files folder they left); automatic corrections replace instead.
+ * The Files panel's own ?server / ?path go when another tab is chosen. */
+function urlForTab(key: TabKey): string {
+  const u = new URL(window.location.href)
+  u.searchParams.set('tab', key)
+  if (key !== 'files') { u.searchParams.delete('server'); u.searchParams.delete('path') }
+  return u.pathname + u.search + u.hash
+}
 
 export default function WorkspacePage() {
-  const [tab, setTab] = useState<TabKey>('mail')
+  const [tab, setTabState] = useState<TabKey>('mail')
+  const setTab = (key: TabKey, opts: { replace?: boolean } = {}) => {
+    setTabState(key)
+    if (opts.replace) window.history.replaceState({ ...(window.history.state ?? {}) }, '', urlForTab(key))
+    else if (key !== tab) window.history.pushState({}, '', urlForTab(key))
+  }
   // GitHub is owned by a single org; others (e.g. Trijya) don't get it. Hide
   // the Code tab entirely for them. Starts hidden until confirmed to avoid a
   // show-then-remove flicker.
@@ -31,6 +49,8 @@ export default function WorkspacePage() {
   // NAS (Files) is the inverse — only the org that owns the NAS (Trijya) gets
   // it. Hidden until confirmed.
   const [nasEnabled, setNasEnabled] = useState(false)
+  const [githubChecked, setGithubChecked] = useState(false)
+  const [nasChecked, setNasChecked] = useState(false)
 
   useEffect(() => {
     let alive = true
@@ -38,10 +58,12 @@ export default function WorkspacePage() {
       .then((r) => r.json())
       .then((j) => { if (alive) setGithubEnabled(!!j?.data?.enabled) })
       .catch(() => { if (alive) setGithubEnabled(false) })
+      .finally(() => { if (alive) setGithubChecked(true) })
     fetch('/api/nas/servers', { credentials: 'include' })
       .then((r) => r.json())
       .then((j) => { if (alive) setNasEnabled(!!j?.data?.enabled) })
       .catch(() => { if (alive) setNasEnabled(false) })
+      .finally(() => { if (alive) setNasChecked(true) })
     return () => { alive = false }
   }, [])
 
@@ -52,10 +74,30 @@ export default function WorkspacePage() {
       (t.key !== 'bylaws' || nasEnabled), // bylaws RAG is NAS-org-scoped, same gate as Files
   )
 
-  // An invite link (?call=<room>) drops the user straight onto the Meet tab.
+  // An invite link (?call=<room>) drops the user straight onto the Meet tab;
+  // otherwise open the tab named in the URL. Back/Forward across Files folder
+  // entries keep the Files tab; an entry from another tab restores that tab.
   useEffect(() => {
-    if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('call')) setTab('meet')
+    const fromUrl = () => {
+      const qs = new URLSearchParams(window.location.search)
+      if (qs.get('call')) return 'meet' as const
+      const t = qs.get('tab')
+      return isTabKey(t) ? t : null
+    }
+    const initial = fromUrl()
+    if (initial) setTabState(initial)
+    const onPop = () => { const t = fromUrl(); setTabState(t ?? 'mail') }
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
   }, [])
+
+  // A tab the user cannot see (e.g. ?tab=files for a company without the NAS,
+  // once that is known) falls back to Mail instead of an empty panel.
+  useEffect(() => {
+    if ((tab === 'code' && githubChecked && !githubEnabled) || ((tab === 'files' || tab === 'bylaws') && nasChecked && !nasEnabled)) {
+      setTab('mail', { replace: true })
+    }
+  }, [tab, githubEnabled, nasEnabled, githubChecked, nasChecked])
 
   return (
     <div className="p-4 sm:p-6 max-w-[1400px] mx-auto">

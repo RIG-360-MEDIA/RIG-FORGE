@@ -36,6 +36,45 @@ function icon(e: { isDir: boolean; name: string }): string {
 const joinPath = (dir: string, name: string) => (dir.endsWith('/') ? dir : dir + '/') + name
 const parentOf = (p: string) => '/' + p.split('/').filter(Boolean).slice(0, -1).join('/')
 
+// ── Browser-history navigation ──────────────────────────────────────────────
+// Every folder visit is a real browser history entry, with the folder in the
+// URL (?tab=files&server=WD&path=/a/b). So the browser Back/Forward buttons,
+// the mouse's side buttons and Alt+Left/Right step through folders the way
+// they do in Windows Explorer, instead of leaving the Files page and dropping
+// the user back at the top. A refresh or a shared link reopens the same
+// folder. The history state is a plain object: Next.js copies its own router
+// fields onto it (14.1+), so its popstate handling restores in place without
+// a reload.
+interface FilesHistState { server: string; path: string; idx: number }
+const STATE_KEY = 'rfFiles'
+
+function readFilesState(state: unknown): FilesHistState | null {
+  const s = (state as Record<string, unknown> | null)?.[STATE_KEY] as Partial<FilesHistState> | undefined
+  return s && typeof s.server === 'string' && typeof s.path === 'string' && typeof s.idx === 'number'
+    ? { server: s.server, path: s.path, idx: s.idx }
+    : null
+}
+
+function filesUrl(server: string, path: string): string {
+  const u = new URL(window.location.href)
+  u.searchParams.set('tab', 'files')
+  u.searchParams.set('server', server)
+  if (path && path !== '/') u.searchParams.set('path', path)
+  else u.searchParams.delete('path')
+  return u.pathname + u.search + u.hash
+}
+
+/** Normalise a folder path from the URL: always leading "/", no trailing "/",
+ * no empty segments. */
+function cleanPath(p: string | null): string {
+  return '/' + (p ?? '').split('/').filter(Boolean).join('/')
+}
+
+const isTyping = (t: EventTarget | null) => {
+  const el = t as HTMLElement | null
+  return !!el && (el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName))
+}
+
 export default function FilesPanel() {
   const [servers, setServers] = useState<string[] | null>(null)
   // NAS is configured for the org but its server / tunnel isn't responding.
@@ -53,10 +92,13 @@ export default function FilesPanel() {
   const [toast, setToast] = useState<string | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
 
-  // Browse history (back/forward). `histIdx` points at the current entry.
-  const [hist, setHist] = useState<string[]>(['/'])
+  // Current folder, and where this entry sits in the browser history since the
+  // panel opened: idx 0 is the entry the panel started on, so in-panel Back is
+  // only offered when there is a folder to go back to. maxIdx is the furthest
+  // entry visited, for the in-panel Forward button.
+  const [path, setPath] = useState('/')
   const [histIdx, setHistIdx] = useState(0)
-  const path = hist[histIdx] ?? '/'
+  const [maxIdx, setMaxIdx] = useState(0)
 
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(null), 2500) }
 
@@ -68,10 +110,39 @@ export default function FilesPanel() {
         setUnreachable(false)
         const labels = (r.servers || []).map((s) => s.label)
         setServers(labels)
-        if (labels[0]) setServer(labels[0])
+        if (labels.length === 0) return
+        // Open the folder named in the URL (refresh, shared link, or coming
+        // back to this page), else the first drive's top level. Record it on
+        // the current history entry without adding a new one.
+        const qs = new URLSearchParams(window.location.search)
+        const fromState = readFilesState(window.history.state)
+        const want = fromState?.server ?? qs.get('server')
+        const srv = want && labels.includes(want) ? want : labels[0]!
+        const p = srv === want ? fromState?.path ?? cleanPath(qs.get('path')) : '/'
+        const idx = srv === want ? fromState?.idx ?? 0 : 0
+        window.history.replaceState({ ...(window.history.state ?? {}), [STATE_KEY]: { server: srv, path: p, idx } }, '', filesUrl(srv, p))
+        setServer(srv); setPath(p); setHistIdx(idx); setMaxIdx(idx)
       } catch { setUnreachable(true); setServers([]) }
     })()
   }, [reloadKey])
+
+  // Browser Back/Forward (button, mouse side buttons, Alt+Left/Right) land
+  // here. An entry without our state (e.g. one from before a refresh that
+  // lost it) falls back to the folder in its URL.
+  useEffect(() => {
+    const onPop = (e: PopStateEvent) => {
+      const s = readFilesState(e.state)
+      const qs = new URLSearchParams(window.location.search)
+      if (!s && qs.get('tab') !== 'files') return // left the Files tab; the page handles that
+      setHits(null)
+      setServer(s?.server ?? qs.get('server') ?? '')
+      setPath(s?.path ?? cleanPath(qs.get('path')))
+      setHistIdx(s?.idx ?? 0)
+      setMaxIdx((m) => Math.max(m, s?.idx ?? 0))
+    }
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
 
   const fetchList = useCallback(async (srv: string, p: string) => {
     if (!srv) return
@@ -85,19 +156,37 @@ export default function FilesPanel() {
     finally { setLoading(false) }
   }, [])
 
-  // Navigate to a folder = push onto history (truncating any forward entries).
-  const goto = useCallback((p: string) => {
-    setHist((h) => [...h.slice(0, histIdx + 1), p])
-    setHistIdx((i) => i + 1)
-  }, [histIdx])
+  // Opening a folder (or another drive) = a new browser history entry. Going
+  // somewhere new from the middle of the history drops the forward entries,
+  // as in any browser.
+  const goto = useCallback((p: string, srv: string = server) => {
+    const target = cleanPath(p)
+    if (!srv || (srv === server && target === path)) return
+    const idx = histIdx + 1
+    window.history.pushState({ [STATE_KEY]: { server: srv, path: target, idx } }, '', filesUrl(srv, target))
+    setHits(null)
+    setServer(srv); setPath(target); setHistIdx(idx); setMaxIdx(idx)
+  }, [server, path, histIdx])
 
-  const back = () => { if (histIdx > 0) setHistIdx(histIdx - 1) }
-  const forward = () => { if (histIdx < hist.length - 1) setHistIdx(histIdx + 1) }
-  const up = () => { if (path !== '/') goto(parentOf(path)) }
+  // In-panel Back/Forward drive the real browser history, so they and the
+  // browser's own buttons can never disagree.
+  const back = () => { if (histIdx > 0) window.history.back() }
+  const forward = () => { if (histIdx < maxIdx) window.history.forward() }
+  const up = useCallback(() => { if (path !== '/') goto(parentOf(path)) }, [path, goto])
 
-  // Reset history when the server changes.
-  useEffect(() => { if (server) { setHist(['/']); setHistIdx(0) } }, [server])
-  // Load whenever the current path changes.
+  // Windows Explorer keys: Alt+Up = up one folder, Backspace = back. Not while
+  // typing (search box, email dialog), and never when a modal is open.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (emailFor || isTyping(e.target)) return
+      if (e.altKey && e.key === 'ArrowUp') { e.preventDefault(); up() }
+      else if (e.key === 'Backspace' && !e.altKey && !e.ctrlKey && !e.metaKey && histIdx > 0) { e.preventDefault(); window.history.back() }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [up, histIdx, emailFor])
+
+  // Load whenever the current folder changes.
   useEffect(() => { if (server) void fetchList(server, path) }, [server, path, fetchList])
 
   const runSearch = useCallback(async () => {
@@ -190,7 +279,7 @@ export default function FilesPanel() {
       {/* Server tabs */}
       <div className="flex flex-wrap items-center gap-2">
         {servers.map((s) => (
-          <button key={s} onClick={() => { setServer(s); setQ(''); setHits(null) }}
+          <button key={s} onClick={() => { setQ(''); goto('/', s) }}
             className={`px-3 py-1 text-sm font-mono rounded border ${server === s ? 'border-accent-ink text-text-primary bg-surface-raised' : 'border-border-default text-text-secondary'}`}>
             🗄️ {s}
           </button>
@@ -218,7 +307,7 @@ export default function FilesPanel() {
       {!hits && (
         <div className="flex items-center gap-2 text-sm font-mono text-text-secondary">
           <button onClick={back} disabled={histIdx === 0} className="px-2 py-0.5 rounded border border-border-default disabled:opacity-40" title="Back">◀</button>
-          <button onClick={forward} disabled={histIdx >= hist.length - 1} className="px-2 py-0.5 rounded border border-border-default disabled:opacity-40" title="Forward">▶</button>
+          <button onClick={forward} disabled={histIdx >= maxIdx} className="px-2 py-0.5 rounded border border-border-default disabled:opacity-40" title="Forward">▶</button>
           <button onClick={up} disabled={path === '/'} className="px-2 py-0.5 rounded border border-border-default disabled:opacity-40" title="Up one folder">▲ Up</button>
           <div className="flex items-center gap-1 flex-wrap overflow-hidden">
             <button onClick={() => goto('/')} className="hover:text-text-primary">{server}</button>
