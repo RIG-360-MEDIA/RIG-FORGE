@@ -109,26 +109,36 @@ export interface ChunkPayload {
   text: string
 }
 
+/** Points per upsert request. Qdrant rejects a request body over 32 MB; at
+ * 384 dims plus ~1.2 KB of text a point is ~5 KB of JSON, so a whole large
+ * document (5,000+ chunks) in one request gets close to that. 256 points is
+ * ~1.3 MB, comfortably under it at any dimension we use (1024 for e5-large). */
+const UPSERT_BATCH = 256
+
 export async function upsertChunks(
   chunks: Array<ChunkPayload & { vector: number[] }>,
   collection: string = COLLECTION,
 ): Promise<void> {
-  if (chunks.length === 0) return
-  await withCollection(collection, () => getClient().upsert(collection, {
-    wait: true,
-    points: chunks.map((chunk) => ({
-      id: pointId(chunk.organizationId, chunk.server, chunk.path, chunk.chunkIndex),
-      vector: chunk.vector,
-      payload: {
-        organizationId: chunk.organizationId,
-        server: chunk.server,
-        path: chunk.path,
-        fileName: chunk.fileName,
-        chunkIndex: chunk.chunkIndex,
-        text: chunk.text,
-      },
-    })),
-  }))
+  // In order, one batch at a time. Point ids are deterministic, so if a later
+  // batch fails, re-indexing the file simply overwrites what was written.
+  for (let i = 0; i < chunks.length; i += UPSERT_BATCH) {
+    const batch = chunks.slice(i, i + UPSERT_BATCH)
+    await withCollection(collection, () => getClient().upsert(collection, {
+      wait: true,
+      points: batch.map((chunk) => ({
+        id: pointId(chunk.organizationId, chunk.server, chunk.path, chunk.chunkIndex),
+        vector: chunk.vector,
+        payload: {
+          organizationId: chunk.organizationId,
+          server: chunk.server,
+          path: chunk.path,
+          fileName: chunk.fileName,
+          chunkIndex: chunk.chunkIndex,
+          text: chunk.text,
+        },
+      })),
+    }))
+  }
 }
 
 /**

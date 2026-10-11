@@ -74,9 +74,13 @@ export async function extractText(name: string, buf: Buffer): Promise<string> {
 // extractForIndex uses a far larger cap and reports failure as a structured
 // result, so a failed file is recorded as FAILED with the real reason.
 
-/** Upper bound on indexed characters per file (~300 pages of dense text).
- * Bounded so one enormous file cannot dominate embedding time and cost. */
-export const INDEX_MAX_TEXT = Number(process.env.RAG_MAX_TEXT_CHARS ?? 1_000_000)
+/** Upper bound on indexed characters per file (~1,500 pages of dense text).
+ * Sized for Trijya's largest references, measured on the real NAS: NBC 2016
+ * Vol 1 is 4.3 M characters, Time-Saver Standards 4.6 M. At the old 1 M only
+ * the first quarter of the NBC was searchable. Still bounded, so one enormous
+ * file cannot dominate embedding time and cost; the connector caps at the same
+ * 5 M. */
+export const INDEX_MAX_TEXT = Number(process.env.RAG_MAX_TEXT_CHARS ?? 5_000_000)
 
 export type IndexExtraction =
   | { ok: true; text: string; truncated: boolean }
