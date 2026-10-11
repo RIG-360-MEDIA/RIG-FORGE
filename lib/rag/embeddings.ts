@@ -1,11 +1,20 @@
 /**
- * Text embeddings via Hugging Face's "Inference Providers" router, using the
- * hf-inference provider (their own serverless infra — the successor to the
- * old standalone api-inference.huggingface.co, which is decommissioned).
- * Default model is a sentence-transformers model (BAAI/bge-small-en-v1.5),
- * for which the feature-extraction endpoint already returns one pooled
- * vector per input — no manual mean-pooling needed. Kept provider-agnostic
- * behind embedTexts() so swapping providers later only touches this file.
+ * Text embeddings, from two providers serving the SAME model
+ * (BAAI/bge-small-en-v1.5 by default):
+ *
+ *  1. The NAS connector on TRIJYA-3 (POST /embed; scripts/nas-connector/
+ *     rag_embed.py), used first whenever TRIJYA_NAS_BASE_URL is set. It runs
+ *     the model's official ONNX export with its published sentence-transformers
+ *     settings; checked against vectors the API produced for 128 stored
+ *     passages: cosine 1.000000, max difference 3e-7. So results from either
+ *     provider can be mixed in one index.
+ *  2. Hugging Face's "Inference Providers" router (hf-inference provider), as
+ *     the fallback. The free tier has a small monthly allowance: in October
+ *     2026 the first bylaws backfill used it up, and from then on every
+ *     search failed with HTTP 402 until it reset. That is why the connector
+ *     goes first.
+ *
+ * Kept behind embedTexts()/embedQuery() so callers never know which served it.
  */
 const HF_API_KEY = process.env.HF_API_KEY?.trim()
 const MODEL = process.env.HF_EMBEDDING_MODEL?.trim() || 'BAAI/bge-small-en-v1.5'
@@ -14,8 +23,15 @@ export const EMBEDDING_DIM = Number(process.env.HF_EMBEDDING_DIM ?? 384)
 const ENDPOINT = `https://router.huggingface.co/hf-inference/models/${MODEL}`
 const BATCH_SIZE = 16
 
+/** The connector's base URL when it should serve embeddings, else null.
+ * Read per call (RAG_EMBED_VIA_CONNECTOR=false turns it off). */
+function connectorBase(): string | null {
+  if ((process.env.RAG_EMBED_VIA_CONNECTOR ?? '').trim().toLowerCase() === 'false') return null
+  return process.env.TRIJYA_NAS_BASE_URL?.trim().replace(/\/$/, '') || null
+}
+
 export function isEmbeddingConfigured(): boolean {
-  return !!HF_API_KEY
+  return !!HF_API_KEY || !!connectorBase()
 }
 
 // HF's feature-extraction response is either already-pooled (number[][], one
@@ -119,7 +135,7 @@ async function attemptOnce(texts: string[]): Promise<Attempt> {
 }
 
 async function embedBatch(texts: string[]): Promise<number[][]> {
-  if (!HF_API_KEY) throw new Error('HF_API_KEY is not configured')
+  if (!HF_API_KEY) throw new Error(connectorBase() ? 'the NAS connector could not embed and HF_API_KEY is not configured' : 'HF_API_KEY is not configured')
   let lastError = ''
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     // Hold a concurrency slot ONLY for the request itself, never for the
@@ -161,12 +177,74 @@ export function inputPrefixes(model = MODEL): { query: string; passage: string }
 }
 const PREFIX = inputPrefixes()
 
+// ── Connector (primary) ──────────────────────────────────────────────────────
+// Larger batches than the API: each request crosses the Cloudflare tunnel, and
+// 64 passages take well under a second on TRIJYA-3's CPU.
+const CONNECTOR_BATCH = 64
+const CONNECTOR_TIMEOUT_MS = 90_000 // under Cloudflare's ~100 s request cap
+// After a failure the connector is skipped for a while, so a box that is down
+// costs one timeout, not one per batch. A refusal that will not fix itself
+// soon (wrong model, endpoint missing) pauses it longer.
+const PAUSE_MS = 60_000
+const LONG_PAUSE_MS = 10 * 60_000
+let connectorPausedUntil = 0
+
+/** For tests: forget a previous connector failure. */
+export function resetEmbeddingConnectorPause(): void {
+  connectorPausedUntil = 0
+}
+
+function pauseConnector(ms: number, why: string): void {
+  if (Date.now() >= connectorPausedUntil) {
+    console.warn(`[embeddings] connector unavailable (${why}); using the HuggingFace API for the next ${Math.round(ms / 60_000)} min`)
+  }
+  connectorPausedUntil = Date.now() + ms
+}
+
+function connectorHeaders(): Record<string, string> {
+  const id = process.env.CF_ACCESS_CLIENT_ID?.trim()
+  const secret = process.env.CF_ACCESS_CLIENT_SECRET?.trim()
+  return id && secret ? { 'CF-Access-Client-Id': id, 'CF-Access-Client-Secret': secret } : {}
+}
+
+/** Vectors from the connector, or null if it could not provide them (the
+ * caller then uses the API). Never throws. */
+async function embedViaConnector(base: string, texts: string[]): Promise<number[][] | null> {
+  if (Date.now() < connectorPausedUntil) return null
+  try {
+    const res = await withSlot(() => fetch(`${base}/embed`, {
+      method: 'POST',
+      headers: { ...connectorHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: MODEL, texts }),
+      signal: AbortSignal.timeout(CONNECTOR_TIMEOUT_MS),
+    }))
+    if (!res.ok) {
+      const body = await res.text().catch(() => '')
+      pauseConnector([400, 404, 405, 501].includes(res.status) ? LONG_PAUSE_MS : PAUSE_MS, `HTTP ${res.status} ${body.slice(0, 120)}`)
+      return null
+    }
+    const j = (await res.json()) as { vectors?: unknown }
+    return normalize(j.vectors ?? [], texts.length) // also checks count and dimension
+  } catch (e) {
+    pauseConnector(PAUSE_MS, e instanceof Error ? e.message : 'request failed')
+    return null
+  }
+}
+
+async function embedViaApi(texts: string[]): Promise<number[][]> {
+  const out: number[][] = []
+  for (let i = 0; i < texts.length; i += BATCH_SIZE) out.push(...(await embedBatch(texts.slice(i, i + BATCH_SIZE))))
+  return out
+}
+
 async function embedRaw(texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return []
+  const base = connectorBase()
+  if (!base) return embedViaApi(texts)
   const out: number[][] = []
-  for (let i = 0; i < texts.length; i += BATCH_SIZE) {
-    const batch = texts.slice(i, i + BATCH_SIZE)
-    out.push(...(await embedBatch(batch)))
+  for (let i = 0; i < texts.length; i += CONNECTOR_BATCH) {
+    const batch = texts.slice(i, i + CONNECTOR_BATCH)
+    out.push(...((await embedViaConnector(base, batch)) ?? (await embedViaApi(batch))))
   }
   return out
 }

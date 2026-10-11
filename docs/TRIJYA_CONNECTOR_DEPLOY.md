@@ -36,6 +36,14 @@ there's no existing deploy script or service file in this repo to go on).
    government orders); without it, Hindi scans come out as garbage. Check
    with `tesseract --list-langs` (should list `eng` and `hin`).
 
+   The connector also serves **embeddings** for Forge's search (`POST /embed`,
+   `scripts/nas-connector/rag_embed.py`): the same model as the HuggingFace API
+   (`BAAI/bge-small-en-v1.5`), run on CPU through ONNX Runtime, with identical
+   vectors. Its packages (`onnxruntime`, `tokenizers`, `huggingface_hub`) are in
+   `requirements.txt`; the model downloads from huggingface.co on first use
+   (~130 MB, cached). Copy `rag_embed.py` next to `connector.py`. Settings:
+   `NAS_RAG_EMBED_THREADS` (4, CPU threads used), `NAS_RAG_EMBED_MODEL`.
+
    Optional connector settings (environment variables, all have defaults):
    `NAS_EXTRACT_WORKERS` (1 — extraction never fans out on this box, which
    also runs the local LLM), `NAS_EXTRACT_MAX_QUEUED` (20), `NAS_EXTRACT_RESULT_TTL`

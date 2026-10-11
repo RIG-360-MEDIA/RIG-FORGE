@@ -522,6 +522,38 @@ def extract_status(job_id: str):
         return _job_view(job_id, job)
 
 
+# ── Embeddings for Forge's RAG (see rag_embed.py) ────────────────────────────
+# Forge sends {"model": "...", "texts": [...]} and gets one vector per text.
+# It names the model it expects; a different model here is refused (400), so
+# vectors from two different models can never be mixed in one index. Any
+# failure is an HTTP error, and Forge then falls back to the HuggingFace API.
+@app.get("/embed/info")
+def embed_info():
+    try:
+        import rag_embed
+    except Exception as e:
+        raise HTTPException(501, f"embedding support not installed: {type(e).__name__}")
+    return rag_embed.info()
+
+
+@app.post("/embed")
+def embed(body: dict):
+    try:
+        import rag_embed
+    except Exception as e:
+        raise HTTPException(501, f"embedding support not installed: {type(e).__name__}")
+    model = body.get("model")
+    if model and model != rag_embed.MODEL_ID:
+        raise HTTPException(400, f"this connector serves {rag_embed.MODEL_ID}, not {model}")
+    try:
+        vectors = rag_embed.embed(body.get("texts"))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(503, f"embedding failed: {type(e).__name__}: {str(e)[:200]}")
+    return {"model": rag_embed.MODEL_ID, "dim": len(vectors[0]), "vectors": vectors}
+
+
 @app.post("/upload")
 async def upload(server: str, path: str, file: UploadFile = File(...)):
     conn, share = _connect(server)

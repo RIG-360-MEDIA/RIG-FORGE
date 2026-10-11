@@ -5,6 +5,11 @@ numpy
 pymupdf
 pytesseract
 Pillow
+# Embeddings for Forge's RAG (rag_embed.py): the official ONNX export of the
+# model, run on CPU. Downloads the model from huggingface.co on first use.
+onnxruntime
+tokenizers
+huggingface_hub
 
 # pytesseract also needs the tesseract-ocr system binary installed on the
 # host (TRIJYA-3), e.g. `apt install tesseract-ocr` — not a pip package.

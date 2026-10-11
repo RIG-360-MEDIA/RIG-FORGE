@@ -28,6 +28,10 @@ delete process.env.QDRANT_URL               // Qdrant unreachable on purpose her
 // import that pulls it in (bylaws-crawl does).
 process.env.TRIJYA_NAS_BASE_URL = 'http://fake-connector'
 process.env.NAS_ORG_ID = 'trijya'
+// TRIJYA_NAS_BASE_URL is set above, which would send embeddings to the
+// connector first; the API-based checks below expect the API, and the
+// connector checks switch this on themselves.
+process.env.RAG_EMBED_VIA_CONNECTOR = 'false'
 // Extraction jobs are polled; keep the fake connector's polling fast.
 process.env.NAS_EXTRACT_POLL_MS = '5'
 process.env.NAS_EXTRACT_TIMEOUT_MS = '200'
@@ -471,6 +475,61 @@ async function main() {
   try { await asTrijya(() => listFilesRecursiveWithStatus('WD', '/A', 10)) } catch { crawlThrew = true }
   check('a listing error throws (never a silently partial list)', crawlThrew)
   globalThis.fetch = realFetch
+
+  // ── Embeddings: NAS connector first, HuggingFace API as the fallback ──────
+  console.log('\n## Embeddings — connector first, API fallback')
+  {
+    const emb = await import('../lib/rag/embeddings')
+    process.env.RAG_EMBED_VIA_CONNECTOR = 'true'
+    const calls: Array<{ host: string; n: number }> = []
+    let connectorReply: (texts: string[]) => Response = (texts) =>
+      new Response(JSON.stringify({ model: 'BAAI/bge-small-en-v1.5', dim: 384, vectors: texts.map(() => vec()) }), { status: 200 })
+    globalThis.fetch = (async (u: unknown, init: any) => {
+      const url = String(u), body = JSON.parse(init.body)
+      if (url.endsWith('/embed')) { calls.push({ host: 'connector', n: body.texts.length }); return connectorReply(body.texts) }
+      calls.push({ host: 'api', n: body.inputs.length })
+      return new Response(JSON.stringify(body.inputs.map(() => vec())), { status: 200 })
+    }) as typeof fetch
+
+    emb.resetEmbeddingConnectorPause(); calls.length = 0
+    const v100 = await emb.embedTexts(Array.from({ length: 100 }, (_, i) => `passage ${i}`))
+    check('100 passages: 2 connector requests (64 + 36), the API never called',
+      v100.length === 100 && calls.map((c) => `${c.host}:${c.n}`).join() === 'connector:64,connector:36', calls.map((c) => `${c.host}:${c.n}`).join())
+
+    let sentModel = ''
+    connectorReply = (texts) => new Response(JSON.stringify({ vectors: texts.map(() => vec()) }), { status: 200 })
+    const realFetch2 = globalThis.fetch
+    globalThis.fetch = (async (u: unknown, init: any) => { if (String(u).endsWith('/embed')) sentModel = JSON.parse(init.body).model; return realFetch2(u as string, init) }) as typeof fetch
+    await emb.embedQuery('front setback')
+    check('the connector is told which model Forge expects', sentModel === 'BAAI/bge-small-en-v1.5', sentModel)
+    globalThis.fetch = realFetch2
+
+    emb.resetEmbeddingConnectorPause(); calls.length = 0
+    connectorReply = () => new Response('busy', { status: 503 })
+    const fb = await emb.embedTexts(Array.from({ length: 20 }, (_, i) => `p${i}`))
+    check('connector error: that batch goes to the API instead (in API-sized batches)',
+      fb.length === 20 && calls.map((c) => `${c.host}:${c.n}`).join() === 'connector:20,api:16,api:4', calls.map((c) => `${c.host}:${c.n}`).join())
+    calls.length = 0
+    await emb.embedQuery('q')
+    check('...and the connector is skipped for a while, not retried on every request', calls.map((c) => c.host).join() === 'api')
+
+    emb.resetEmbeddingConnectorPause(); calls.length = 0
+    connectorReply = () => new Response('this connector serves X, not Y', { status: 400 })
+    await emb.embedQuery('q')
+    check('wrong model on the connector: refused, API used', calls.map((c) => c.host).join() === 'connector,api')
+
+    emb.resetEmbeddingConnectorPause(); calls.length = 0
+    connectorReply = (texts) => new Response(JSON.stringify({ vectors: texts.map(() => vec(768)) }), { status: 200 })
+    const dimSafe = await emb.embedQuery('q')
+    check('wrong-sized vectors from the connector are never used', dimSafe.length === 384 && calls.map((c) => c.host).join() === 'connector,api')
+
+    emb.resetEmbeddingConnectorPause(); calls.length = 0
+    process.env.RAG_EMBED_VIA_CONNECTOR = 'false'
+    await emb.embedQuery('q')
+    check('RAG_EMBED_VIA_CONNECTOR=false: API only', calls.map((c) => c.host).join() === 'api')
+    emb.resetEmbeddingConnectorPause()
+    globalThis.fetch = realFetch
+  }
 
   // ── .docx extraction (feature I) ──────────────────────────────────────────
   console.log('\n## .docx extraction')
