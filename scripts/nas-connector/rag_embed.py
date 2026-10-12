@@ -29,6 +29,12 @@ MODEL_ID = MODELS[0]  # the default
 THREADS = max(1, int(os.environ.get("NAS_RAG_EMBED_THREADS", "4")))
 MICROBATCH = max(1, int(os.environ.get("NAS_RAG_EMBED_MICROBATCH", "16")))
 MAX_BATCH = 128
+# Each model is downloaded into its own plain folder (real files, side by
+# side). Not the HuggingFace cache: it stores files as symlinks into a shared
+# blobs folder, and ONNX Runtime refuses a model whose separate weights file
+# (onnx/model.onnx_data, used by large models) resolves outside the model's
+# own directory ("External data path escapes model directory").
+MODEL_DIR = os.path.expanduser(os.environ.get("NAS_RAG_MODEL_DIR", "~/.cache/rag-models"))
 
 _lock = threading.Lock()
 _states = {}  # model id -> dict(session, tokenizer, pooling, normalize, inputs)
@@ -40,7 +46,8 @@ def _load(model_id):
     from huggingface_hub import hf_hub_download
     from tokenizers import Tokenizer
 
-    get = lambda f: hf_hub_download(model_id, f)  # cached under ~/.cache/huggingface after the first run
+    local = os.path.join(MODEL_DIR, model_id.replace("/", "__"))
+    get = lambda f: hf_hub_download(model_id, f, local_dir=local)  # downloaded once, then reused
     model_path = get("onnx/model.onnx")
     try:
         # Large models keep their weights in a separate file next to the
