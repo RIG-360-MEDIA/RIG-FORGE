@@ -593,16 +593,14 @@ def embed(body: dict):
         import rag_embed
     except Exception as e:
         raise HTTPException(501, f"embedding support not installed: {type(e).__name__}")
-    model = body.get("model")
-    if model and model != rag_embed.MODEL_ID:
-        raise HTTPException(400, f"this connector serves {rag_embed.MODEL_ID}, not {model}")
+    model = body.get("model") or rag_embed.MODEL_ID
     try:
-        vectors = rag_embed.embed(body.get("texts"))
-    except ValueError as e:
+        vectors = rag_embed.embed(body.get("texts"), model)
+    except (ValueError, LookupError) as e:  # bad input, or a model this box does not serve
         raise HTTPException(400, str(e))
     except Exception as e:
         raise HTTPException(503, f"embedding failed: {type(e).__name__}: {str(e)[:200]}")
-    return {"model": rag_embed.MODEL_ID, "dim": len(vectors[0]), "vectors": vectors}
+    return {"model": model, "dim": len(vectors[0]), "vectors": vectors}
 
 
 @app.post("/upload")

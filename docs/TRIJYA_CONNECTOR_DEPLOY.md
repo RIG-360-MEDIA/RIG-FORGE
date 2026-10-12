@@ -97,3 +97,32 @@ yet" and those files are recorded as skipped/failed with that reason, so
 Forge's side is safe to ship ahead of this. Once the connector is updated,
 the retry cron (`/api/cron/rag-retry`) picks the failed files up again on its
 own; or just re-run the backfill.
+
+## OCR without sudo (what TRIJYA-3 actually uses)
+
+There is no passwordless sudo on TRIJYA-3, so tesseract is installed in the
+user's home instead of with apt: `micromamba` (single binary, in
+`~/.local/micromamba`) created `~/ocr` from conda-forge (`tesseract` 5.5.3,
+all language packs including Hindi, ~500 MB). `start-nas.sh` puts it on the
+connector's PATH (`export PATH="$HOME/ocr/bin:$PATH"`). Remove by deleting
+`~/ocr` and that line.
+
+## Switching the embedding model (e.g. to multilingual-e5-large for Hindi)
+
+No downtime: build the new index next to the live one, then point Forge at it.
+
+1. Serve both models: `NAS_RAG_EMBED_MODELS="BAAI/bge-small-en-v1.5,intfloat/multilingual-e5-large"`
+   in `start-nas.sh`, restart the connector. The new model loads only when first used.
+2. Re-embed every stored passage into new collections (no NAS reads, no OCR;
+   the text is already in Qdrant). Resumable; runs at nice 10:
+   ```bash
+   QDRANT_URL=... QDRANT_API_KEY=... NAS_RAG_EMBED_MODELS=intfloat/multilingual-e5-large NAS_RAG_EMBED_THREADS=8 \n     .venv/bin/python rag_migrate.py --src trijya_bylaws --dst trijya_bylaws_e5 \n     --model intfloat/multilingual-e5-large --passage-prefix "passage: " --prune
+   ```
+   (and the same for `nas_documents` -> `nas_documents_e5`). Re-run once right
+   before the switch to catch anything re-indexed meanwhile.
+3. On Render (`rig-forge`): `HF_EMBEDDING_MODEL=intfloat/multilingual-e5-large`,
+   `HF_EMBEDDING_DIM=1024`, `QDRANT_BYLAWS_COLLECTION=trijya_bylaws_e5`,
+   `QDRANT_COLLECTION=nas_documents_e5`, `RAG_MIN_SCORE=0.79` (calibrated for
+   e5-large with its prefixes). Forge adds the `query: ` / `passage: ` prefixes itself.
+4. Keep the old collections until the new search is confirmed; rolling back is
+   restoring those five settings.
