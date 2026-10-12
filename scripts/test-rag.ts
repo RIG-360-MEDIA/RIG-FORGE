@@ -309,6 +309,11 @@ async function main() {
     !malformed.ok && /unexpected reply/.test(malformed.reason) && extractCalls.length === 1)
 
   extractCalls = []
+  globalThis.fetch = connector([job('queued'), () => new Response('{"id":"j1","state":"do', { status: 200 }), job('done', { ok: true, text: 'Big OCR text.', method: 'ocr', truncated: false })])
+  const cutOff = await asTrijya(() => client.nasExtractText('WD', '/big-scan.pdf'))
+  check('a final reply cut off mid-download is fetched again, not reported as failed', cutOff.ok && cutOff.text === 'Big OCR text.' && extractCalls.length === 3, extractCalls.join())
+
+  extractCalls = []
   globalThis.fetch = connector([job('running'), json({ detail: 'no such extraction job' }, 404)])
   const lost = await asTrijya(() => client.nasExtractText('WD', '/x.pdf'))
   check('job vanished (connector restarted): reported, a later retry starts again', !lost.ok && /was lost/.test(lost.reason))

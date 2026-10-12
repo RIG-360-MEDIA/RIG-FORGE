@@ -224,6 +224,7 @@ export interface NasExtractFailure {
 }
 
 const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms))
+const EXTRACT_POLL_TIMEOUT_MS = Number(process.env.NAS_EXTRACT_POLL_TIMEOUT_MS ?? 180_000)
 const EXTRACT_TRANSIENT = new Set([429, 502, 503, 504, 520, 521, 522, 523, 524])
 
 type ExtractJob = { id: string; state: 'queued' | 'running' | 'done'; result?: unknown }
@@ -307,10 +308,23 @@ export async function nasExtractText(
     }
     await sleep(pollMs)
     try {
-      const r = await nasFetch(`/extract/jobs/${encodeURIComponent(job.id)}`)
+      // Generous timeout: while a job runs the reply is tiny, but the final one
+      // carries the whole extracted text (several MB for a 300-page OCR) up
+      // through Cloudflare from TRIJYA-3. The default 25 s cut that download
+      // off and the job was reported as failed.
+      const r = await nasFetch(`/extract/jobs/${encodeURIComponent(job.id)}`, { signal: AbortSignal.timeout(EXTRACT_POLL_TIMEOUT_MS) })
       if (r.status === 404) return { ok: false, reason: 'extraction job was lost (the connector restarted); a later retry will start it again' }
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
-      const next = parseJob(await r.json().catch(() => null))
+      let raw: unknown
+      try {
+        raw = await r.json()
+      } catch (e) {
+        // The body was cut off or unreadable: a transfer problem, not a bad
+        // job. Counted with the other poll errors and fetched again (the
+        // connector keeps a finished result for an hour).
+        throw new Error(`reply could not be read (${e instanceof Error ? e.message : 'error'})`)
+      }
+      const next = parseJob(raw)
       if (!next) return { ok: false, reason: 'connector returned an unexpected reply while extracting' }
       job = next
       consecutiveErrors = 0
