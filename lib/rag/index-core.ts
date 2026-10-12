@@ -57,6 +57,8 @@ export interface PreExtracted {
   text: string
   truncated: boolean
   method: 'text' | 'ocr'
+  /** From the connector, e.g. how many unreadable pages were left out. */
+  note?: string
 }
 
 export interface IndexJob extends Key {
@@ -139,6 +141,7 @@ export async function indexFile(job: IndexJob): Promise<IndexOutcome> {
     const warnings: string[] = []
     if (extracted.truncated) warnings.push(`only the first ${extracted.text.length.toLocaleString('en-US')} characters were indexed (RAG_MAX_TEXT_CHARS)`)
     if (ocrUsed) warnings.push('text was recovered via OCR (connector) — may contain recognition errors')
+    if (preExtracted?.note) warnings.push(preExtracted.note)
     const warning = warnings.length ? warnings.join('; ') : undefined
     await tracker.save(key, {
       status: 'INDEXED', contentHash, chunkCount: chunks.length, error: warning ?? null, indexedAt: new Date(),

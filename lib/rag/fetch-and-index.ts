@@ -41,7 +41,7 @@ export async function fetchAndIndexFile(opts: FetchAndIndexOpts): Promise<FetchA
   const viaConnector = async () => {
     const extracted = await nasExtractText(server, path, INDEX_MAX_TEXT)
     return extracted.ok
-      ? { ok: true as const, outcome: await indexer(organizationId, server, path, { text: extracted.text, truncated: extracted.truncated, method: extracted.method }) }
+      ? { ok: true as const, outcome: await indexer(organizationId, server, path, { text: extracted.text, truncated: extracted.truncated, method: extracted.method, note: extracted.note }) }
       : { ok: false as const, reason: extracted.reason }
   }
   const mb = (n: number) => (n / 1_048_576).toFixed(1)

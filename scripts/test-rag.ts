@@ -531,6 +531,34 @@ async function main() {
     globalThis.fetch = realFetch
   }
 
+  // ── Broken text layers (legacy Hindi fonts, glyphs with no character map) ─
+  console.log('\n## Readability — garbage text layers are not indexed as text')
+  {
+    const { readableText, unreadableShare, UNREADABLE_DOC_SHARE } = await import('../lib/nas/readability')
+    // Real samples from Trijya's bylaws index, October 2026.
+    const english = 'The minimum front setback for plots above 500 square metres shall be 6 metres from the road boundary, and the side setback shall be 3 metres.'
+    const kruti = "rqrg gi qqr RtRrg glB-fr-{ur, i6{rg I , ffirtrtilug I flfFqtwr, sfrrwq5 | ft'lTrq, trsrq{ rqrg gi qqr RtRrg"
+    const glyphs = ':5!6.!-7;\n99=*1..#"9a9<1#9"/,0#.9352=,"#9/=901#976,339",-9:#9>/3!0!/-#.\n/-901#9/50#29/2901#9!--#29=,"#9/=901#9'
+    const hindi = '500 वर्ग मीटर से अधिक के आवासीय भूखंडों के लिए सड़क सीमा से न्यूनतम अग्र सेटबैक 6 मीटर होगा।'
+    check('English text is readable', readableText(english))
+    check('Unicode Hindi is readable', readableText(hindi))
+    check('legacy Hindi font text (Kruti Dev style) is NOT readable', !readableText(kruti))
+    check('glyph codes with no character map are NOT readable', !readableText(glyphs))
+    check('an empty / near-empty page is NOT readable (a scan)', !readableText('  \n 12 \n'))
+    const normalDoc = Array.from({ length: 9 }, () => english.repeat(11)).join('\n') + kruti.repeat(14)
+    const brokenDoc = Array.from({ length: 6 }, () => kruti.repeat(14)).join('\n') + english.repeat(11)
+    check('a normal document with one bad section stays below the threshold', unreadableShare(normalDoc) < UNREADABLE_DOC_SHARE, unreadableShare(normalDoc).toFixed(2))
+    check('a mostly-garbage document is over it', unreadableShare(brokenDoc) >= UNREADABLE_DOC_SHARE, unreadableShare(brokenDoc).toFixed(2))
+
+    // The connector's "mixed" result and its note come through to the indexer.
+    let calls = 0
+    globalThis.fetch = (async () => { calls++; return new Response(JSON.stringify({ id: 'j9', state: 'done', result: { ok: true, text: 'Recovered text.', method: 'mixed', truncated: false, note: "800 of 1100 pages unreadable and not OCR'd (NAS_OCR_MAX_PAGES=300); left out" } }), { status: 200 }) }) as typeof fetch
+    const mixed = await asTrijya(() => client.nasExtractText('WD', '/nbc-digital.pdf'))
+    check('connector "mixed" (some pages OCR\'d) is treated as OCR, and its note is kept',
+      mixed.ok && mixed.method === 'ocr' && /800 of 1100 pages/.test(mixed.note ?? ''), JSON.stringify(mixed).slice(0, 120))
+    globalThis.fetch = realFetch
+  }
+
   // ── .docx extraction (feature I) ──────────────────────────────────────────
   console.log('\n## .docx extraction')
   const mammothMod = await import('mammoth')

@@ -215,6 +215,8 @@ export interface NasExtractResult {
   text: string
   method: 'text' | 'ocr'
   truncated: boolean
+  /** Set when unreadable pages were left out (OCR page budget, or no tesseract). */
+  note?: string
 }
 export interface NasExtractFailure {
   ok: false
@@ -238,7 +240,9 @@ function parseJob(raw: unknown): ExtractJob | null {
 function toResult(raw: unknown): NasExtractResult | NasExtractFailure {
   const r = raw as { ok?: unknown; text?: unknown; method?: unknown; truncated?: unknown; reason?: unknown } | null
   if (r && r.ok === true && typeof r.text === 'string') {
-    return { ok: true, text: r.text, method: r.method === 'ocr' ? 'ocr' : 'text', truncated: r.truncated === true }
+    // "mixed" = some pages OCR'd: worth the same "may contain recognition errors" warning.
+    const note = (r as { note?: unknown }).note
+    return { ok: true, text: r.text, method: r.method === 'ocr' || r.method === 'mixed' ? 'ocr' : 'text', truncated: r.truncated === true, ...(typeof note === 'string' && note && { note }) }
   }
   if (r && r.ok === false) return { ok: false, reason: String(r.reason ?? 'extraction failed') }
   return { ok: false, reason: 'connector returned an unexpected extraction result' }

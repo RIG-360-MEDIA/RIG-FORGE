@@ -4,6 +4,7 @@
  * formats (CAD, images) return a short note instead of throwing.
  */
 import * as XLSX from 'xlsx'
+import { unreadableShare, UNREADABLE_DOC_SHARE } from './readability'
 import mammoth from 'mammoth'
 
 const TEXTY = new Set(['txt', 'csv', 'md', 'log', 'json', 'xml', 'svg', 'ini', 'yaml', 'yml', 'tsv', 'rtf'])
@@ -114,6 +115,12 @@ export async function extractForIndex(name: string, buf: Buffer): Promise<IndexE
     // pages). Name that explicitly — it is common for government bylaws and is
     // fixable later with OCR, unlike a corrupt file.
     if (!result.ok) return { ok: false, reason: 'PDF has no selectable text (likely scanned images; needs OCR)', connector: true }
+    // A text layer that is mostly garbage (legacy Hindi font, glyphs with no
+    // character map) must not be indexed as if it were text: the connector
+    // reads such PDFs page by page and OCRs the unreadable pages.
+    if (unreadableShare(result.text) >= UNREADABLE_DOC_SHARE) {
+      return { ok: false, reason: 'PDF text layer is mostly unreadable (a legacy Hindi font or glyphs with no character map); needs OCR', connector: true }
+    }
     return result
   }
 

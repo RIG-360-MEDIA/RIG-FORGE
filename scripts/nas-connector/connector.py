@@ -336,7 +336,39 @@ import shutil
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
-OCR_MAX_PAGES = int(os.environ.get("NAS_OCR_MAX_PAGES", "60"))
+# Pages OCR'd per document. Generous: a mostly-unreadable document has only
+# its unreadable pages OCR'd (see _extract_pdf), and Trijya's include a
+# compiled bye-laws book of a few hundred pages.
+OCR_MAX_PAGES = int(os.environ.get("NAS_OCR_MAX_PAGES", "300"))
+OCR_NICE = int(os.environ.get("NAS_OCR_NICE", "10"))
+# A document whose pages are at least this share unreadable gets page-level
+# OCR. Measured on every passage of Trijya's bylaws index (Oct 2026): normal
+# documents 0-14%, broken ones 40-100%.
+UNREADABLE_DOC_SHARE = float(os.environ.get("NAS_UNREADABLE_DOC_SHARE", "0.3"))
+
+_STOPWORDS = frozenset("the of and to in a is for be shall with by on as or at from that this are which "
+                       "an not any such its it have has been may all other than per under into within "
+                       "where each above below".split())
+_LATIN = re.compile(r"[A-Za-z]")
+_DEVA = re.compile(r"[ऀ-ॿ]")
+_WORD = re.compile(r"[a-z]+")
+
+
+def _readable(t: str) -> bool:
+    """Is this real language (English, or Unicode Hindi), or garbage from a
+    broken text layer: a legacy Hindi typing font (Kruti Dev style text
+    extracts as Latin nonsense), glyphs with no character map, or an empty
+    scanned page? Kept identical to readableText() in lib/nas/readability.ts."""
+    nonsp = re.sub(r"\s", "", t or "")
+    if len(nonsp) < 20:
+        return False
+    latin = len(_LATIN.findall(t))
+    deva = len(_DEVA.findall(t))
+    if deva / max(1, latin + deva) >= 0.2:
+        return True
+    words = _WORD.findall(t.lower())
+    stop = sum(1 for w in words if w in _STOPWORDS) / max(1, len(words))
+    return (latin + deva) / len(nonsp) >= 0.5 and stop >= 0.08
 OCR_ZOOM = float(os.environ.get("NAS_OCR_ZOOM", "2.0"))  # ~144 DPI at 2x
 EXTRACT_WORKERS = max(1, int(os.environ.get("NAS_EXTRACT_WORKERS", "1")))
 EXTRACT_RESULT_TTL = int(os.environ.get("NAS_EXTRACT_RESULT_TTL", "3600"))
@@ -412,43 +444,62 @@ def _extract_pdf(server: str, path: str, max_chars: int) -> dict:
         except Exception as e:
             return {"ok": False, "reason": f"PDF could not be opened: {type(e).__name__}"}
         try:
-            # Text layer first. Stop reading pages once past the cap.
-            parts, size = [], 0
-            for page in doc:
-                t = page.get_text()
-                parts.append(t)
-                size += len(t)
-                if size > max_chars:
-                    break
-            text = "\n\n".join(parts).strip()
-            if text:
+            # Text layer of every page, and whether each one is real language.
+            pages = [page.get_text() for page in doc]
+            bad = [i for i, t in enumerate(pages) if not _readable(t)]
+            n = len(pages) or 1
+
+            # Mostly readable: index the text layer as it is, as before. (Normal
+            # documents have a few "unreadable" pages, tables and title pages;
+            # measured on Trijya's bylaws: at most 14% of passages.)
+            if len(bad) / n < UNREADABLE_DOC_SHARE:
+                text = "\n\n".join(pages).strip()
                 return {"ok": True, "text": text[:max_chars], "method": "text",
                         "truncated": len(text) > max_chars}
 
-            # No selectable text at all: almost always a scan. OCR page by page.
-            if not _HAVE_OCR:
-                return {"ok": False, "reason": "PDF has no selectable text (likely scanned images; needs OCR, "
-                                               "but pytesseract is not installed on the connector)"}
-            if not _tesseract_available():
+            # Mostly unreadable: a scan (no text layer) or a broken one (a legacy
+            # Hindi typing font, or glyphs with no character map). Keep the
+            # readable pages, OCR the others up to the page budget, and leave
+            # out what cannot be read rather than index garbage.
+            ocr_ready = _HAVE_OCR and _tesseract_available()
+            if not ocr_ready and len(bad) == len(pages):
+                if not _HAVE_OCR:
+                    return {"ok": False, "reason": "PDF has no selectable text (likely scanned images; needs OCR, "
+                                                   "but pytesseract is not installed on the connector)"}
                 return {"ok": False, "reason": "PDF has no selectable text (likely scanned images; needs OCR, "
                                                "but the tesseract program is not installed on the connector: "
                                                "sudo apt-get install -y tesseract-ocr tesseract-ocr-hin)"}
-            lang = _ocr_lang()
-            limit = min(doc.page_count, OCR_MAX_PAGES)
-            parts, size = [], 0
-            for i in range(limit):
-                pix = doc[i].get_pixmap(matrix=fitz.Matrix(OCR_ZOOM, OCR_ZOOM))
-                img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-                t = pytesseract.image_to_string(img, lang=lang)
-                parts.append(t)
-                size += len(t)
+            lang = _ocr_lang() if ocr_ready else None
+            bad_set = set(bad)
+            parts, size, ocred, skipped = [], 0, 0, 0
+            for i, t in enumerate(pages):
+                if i not in bad_set:
+                    piece = t
+                elif ocr_ready and ocred < OCR_MAX_PAGES:
+                    pix = doc[i].get_pixmap(matrix=fitz.Matrix(OCR_ZOOM, OCR_ZOOM))
+                    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                    # nice: OCR yields the CPU to everything else on this box.
+                    piece = pytesseract.image_to_string(img, lang=lang, nice=OCR_NICE)
+                    ocred += 1
+                else:
+                    skipped += 1
+                    continue
+                parts.append(piece)
+                size += len(piece)
                 if size > max_chars:
                     break
-            ocr_text = "\n\n".join(parts).strip()
-            if not ocr_text:
+            text = "\n\n".join(parts).strip()
+            if not text:
                 return {"ok": False, "reason": "OCR found no readable text on this PDF"}
-            return {"ok": True, "text": ocr_text[:max_chars], "method": "ocr", "lang": lang,
-                    "truncated": doc.page_count > limit or len(ocr_text) > max_chars}
+            readable_pages = len(pages) - len(bad)
+            note = None
+            if skipped:
+                why = f"NAS_OCR_MAX_PAGES={OCR_MAX_PAGES}" if ocr_ready else "tesseract not installed"
+                note = f"{skipped} of {len(pages)} pages unreadable and not OCR'd ({why}); left out"
+            return {"ok": True, "text": text[:max_chars],
+                    "method": "ocr" if readable_pages == 0 else "mixed",
+                    "lang": lang, "truncated": len(text) > max_chars,
+                    "pages": len(pages), "pages_ocr": ocred, "pages_skipped": skipped, "note": note}
         finally:
             doc.close()
     except Exception as e:  # last resort: a worker must never die silently
