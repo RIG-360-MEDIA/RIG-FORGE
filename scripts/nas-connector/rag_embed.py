@@ -120,7 +120,14 @@ def embed(texts, model=None):
         if model not in _states:
             _states[model] = _load(model)
         s = _states[model]
-        out = []
-        for i in range(0, len(texts), MICROBATCH):
-            out.extend(_run(s, texts[i:i + MICROBATCH]))
-    return out
+        # Embed in length order: each micro-batch is padded to its longest
+        # text, so grouping similar lengths avoids computing on padding (the
+        # padding is masked out, so results are the same). Restore the order
+        # before returning.
+        order = sorted(range(len(texts)), key=lambda i: len(texts[i]))
+        vecs = [None] * len(texts)
+        for i in range(0, len(order), MICROBATCH):
+            idx = order[i:i + MICROBATCH]
+            for j, v in zip(idx, _run(s, [texts[k] for k in idx])):
+                vecs[j] = v
+    return vecs
