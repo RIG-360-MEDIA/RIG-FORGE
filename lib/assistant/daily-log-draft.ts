@@ -112,8 +112,9 @@ export async function collectActivity(
   }
 }
 
-const DRAFT_SYSTEM = `You draft daily work-log entries for a media + intelligence company
-(RIG 360 Media). The user did real work today; your job is to summarize
+// The company is named per run (the cron drafts for each company separately).
+const draftSystem = (company: string) => `You draft daily work-log entries for people at ${company}.
+The user did real work today; your job is to summarize
 it in their voice as a short, factual daily-log entry.
 
 Strict rules:
@@ -130,6 +131,7 @@ Return ONLY the daily-log text. No headers, no commentary.`
 export async function draftLogForActivity(
   userName: string,
   activity: ActivityEvidence,
+  company = 'their company',
 ): Promise<{ summary: string | null; provider: string | null }> {
   const userPrompt = [
     `Activity for ${userName} today:`,
@@ -163,7 +165,7 @@ export async function draftLogForActivity(
     .join('\n')
 
   const result = await generate([
-    { role: 'system', content: DRAFT_SYSTEM },
+    { role: 'system', content: draftSystem(company) },
     { role: 'user', content: userPrompt },
   ])
 

@@ -10,6 +10,8 @@ import { type NextRequest } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getTokenFromCookies, verifyToken } from '@/lib/auth'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
+import { istDateOnly } from '@/lib/date-ist'
+import { getOrgId } from '@/lib/tenant-context'
 
 export async function GET(request: NextRequest) {
   const token = getTokenFromCookies(request)
@@ -17,11 +19,11 @@ export async function GET(request: NextRequest) {
   const claims = verifyToken(token)
   if (!claims) return errorResponse('Invalid or expired session', 401)
 
-  const now = new Date()
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  // Keyed to the IST day, the same key the cron writes.
+  const today = istDateOnly()
 
   const todays = await prisma.standupDigest.findUnique({
-    where: { date: today },
+    where: { organizationId_date: { organizationId: getOrgId(), date: today } },
     select: { id: true, date: true, summary: true, generatedAt: true },
   })
   if (todays) {

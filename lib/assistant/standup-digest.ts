@@ -208,8 +208,9 @@ export async function buildStandupMetrics(): Promise<StandupMetrics> {
   }
 }
 
-const STANDUP_SYSTEM = `You are Forgie, writing the team's morning standup digest for RIG 360
-Media (an India-based media + intelligence org, ~30 people).
+// The company is named per run: the digest is generated for each company
+// separately (see app/api/cron/standup-digest).
+const standupSystem = (company: string) => `You are Forgie, writing the team's morning standup digest for ${company}.
 
 Write it in 4-7 short paragraphs. Tone is Forgie's — concise, lightly
 witty, confident. Like a sharp coworker giving the team a 60-second
@@ -234,7 +235,10 @@ Rules:
 
 Return ONLY the digest text. No headers, no commentary about the prompt.`
 
-export async function generateStandupDigest(metrics: StandupMetrics): Promise<string | null> {
+export async function generateStandupDigest(
+  metrics: StandupMetrics,
+  company = 'the company',
+): Promise<string | null> {
   const userPrompt = `Yesterday's data for the team standup digest:
 
 ${JSON.stringify(metrics, null, 2)}
@@ -242,7 +246,7 @@ ${JSON.stringify(metrics, null, 2)}
 Write the digest now.`
 
   const result = await generate([
-    { role: 'system', content: STANDUP_SYSTEM },
+    { role: 'system', content: standupSystem(company) },
     { role: 'user', content: userPrompt },
   ])
 

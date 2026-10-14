@@ -3,11 +3,10 @@
  *
  * Cron-driven. Run daily.
  *
- * Scans every active project, computes a health score using the existing
- * get_project_health tool, and creates an in-app notification (one per
- * stressed project) for admins + the project lead. Threshold is
- * conservative — only alerts on projects below 50/100 OR with
- * accelerating bad signals.
+ * Scans every active project of every company, computes a health score using
+ * the existing get_project_health tool, and creates an in-app notification
+ * (one per stressed project) for that company's admins + the project lead.
+ * Threshold is conservative: only alerts on projects scoring below 50/100.
  *
  * Idempotent within a day: we skip projects we already alerted on today.
  */
@@ -16,7 +15,7 @@ import { type NextRequest } from 'next/server'
 
 import { prisma } from '@/lib/db'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
-import { isCronAuthorized } from '@/lib/cron'
+import { forEachActiveOrg, isCronAuthorized } from '@/lib/cron'
 import { istDateOnly, istDayRangeFromKey } from '@/lib/date-ist'
 import { getProjectHealth } from '@/lib/assistant/tools/projects'
 
@@ -29,6 +28,13 @@ export async function POST(request: NextRequest) {
   // alerted today" tracks the team's day rather than the UTC server clock.
   const { start: today0, end: tomorrow0 } = istDayRangeFromKey(istDateOnly())
 
+  // Each company runs inside its own tenant context, so projects, admins and
+  // the de-dupe check below only ever see that company's rows.
+  const results = await forEachActiveOrg(() => scanOrg(today0, tomorrow0))
+  return successResponse({ orgs: results })
+}
+
+async function scanOrg(today0: Date, tomorrow0: Date) {
   // Find all active projects
   const projects = await prisma.project.findMany({
     where: { isActive: true, status: 'ACTIVE' },
@@ -119,5 +125,5 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  return successResponse(counters)
+  return counters
 }
