@@ -187,6 +187,14 @@ export interface ChunkSearchHit extends ChunkPayload {
  * model's relevant and irrelevant score ranges OVERLAP, so this is a junk
  * filter, not a guarantee — it removes the clearly unrelated tail.
  * Re-calibrate if HF_EMBEDDING_MODEL changes.
+ *
+ * multilingual-e5-large (set RAG_MIN_SCORE=0.82 on Render), calibrated on
+ * 14 Oct 2026 against trijya_bylaws_e5 after near-empty chunks were removed,
+ * with 22 relevant and 18 irrelevant English/Hindi queries. Top-1 scores:
+ * relevant 0.843-0.900 (English) and 0.838-0.890 (Hindi); irrelevant
+ * 0.732-0.831. At 0.82, 16 of 18 irrelevant queries return nothing and every
+ * relevant one keeps at least 6 of 8 hits; 0.83 cuts relevant queries down
+ * to 3 hits, and at 0.84 one Hindi query returns nothing.
  */
 const MIN_SCORE = Number(process.env.RAG_MIN_SCORE ?? 0.5)
 
