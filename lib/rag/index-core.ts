@@ -11,7 +11,7 @@
 import { createHash } from 'crypto'
 
 import { extractForIndex, isExtractable, INDEX_MAX_TEXT } from '@/lib/nas/extract'
-import { chunkText } from './chunk'
+import { chunkText, substantiveChunks } from './chunk'
 import { embedTexts } from './embeddings'
 import { pruneStaleChunks, upsertChunks } from './qdrant'
 
@@ -119,7 +119,9 @@ export async function indexFile(job: IndexJob): Promise<IndexOutcome> {
     const existing = await tracker.find(key)
     if (existing?.status === 'INDEXED' && existing.contentHash === contentHash) return { status: 'unchanged' }
 
-    const chunks = chunkText(extracted.text)
+    // Near-empty chunks (number tables, stray headers) are left out: they match
+    // every query about as well as real text does. See MIN_CHUNK_LETTERS.
+    const { kept: chunks, skipped } = substantiveChunks(chunkText(extracted.text))
     const vectors = await embedTexts(chunks.map((c) => c.text))
 
     // Upsert FIRST: deterministic point ids mean the new chunks overwrite the
@@ -142,6 +144,7 @@ export async function indexFile(job: IndexJob): Promise<IndexOutcome> {
     if (extracted.truncated) warnings.push(`only the first ${extracted.text.length.toLocaleString('en-US')} characters were indexed (RAG_MAX_TEXT_CHARS)`)
     if (ocrUsed) warnings.push('text was recovered via OCR (connector) — may contain recognition errors')
     if (preExtracted?.note) warnings.push(preExtracted.note)
+    if (chunks.length === 0 && skipped > 0) warnings.push(`no passage had enough readable text to index (${skipped} near-empty skipped)`)
     const warning = warnings.length ? warnings.join('; ') : undefined
     await tracker.save(key, {
       status: 'INDEXED', contentHash, chunkCount: chunks.length, error: warning ?? null, indexedAt: new Date(),
