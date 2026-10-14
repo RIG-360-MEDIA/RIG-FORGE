@@ -58,6 +58,8 @@ export interface StreamMetadata {
   outputTokens: number | null
   latencyMs: number
   toolCalls: Array<{ name: string; args: unknown; result: unknown; errored: boolean }>
+  /** Why the model stopped: "stop" normally, "length" when it hit the output cap (the reply is cut off). */
+  finishReason?: string | null
   fallback: false
 }
 
@@ -187,6 +189,7 @@ export async function consumeStream(
   // After the iterator drains, AI SDK has resolved all promises.
   const usage = await start.result.usage
   const steps = await start.result.steps
+  const finishReason = await Promise.resolve(start.result.finishReason).catch(() => null)
 
   const toolCalls: StreamMetadata['toolCalls'] = []
   for (const step of steps) {
@@ -219,6 +222,7 @@ export async function consumeStream(
     outputTokens: usage?.outputTokens ?? null,
     latencyMs: Date.now() - start.startedAt,
     toolCalls,
+    finishReason: finishReason ?? null,
     fallback: false,
   }
 }

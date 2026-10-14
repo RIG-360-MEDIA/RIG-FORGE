@@ -249,7 +249,7 @@ function buildResponseStream(args: BuildArgs): ReadableStream<Uint8Array> {
           if (!readText.trim()) {
             readText = `I found ${nasRead.name} on the ${nasRead.server} NAS but couldn't read it just now.`
           }
-          const link = `\n\n[⬇ ${nasRead.name}](/api/nas/download?server=${encodeURIComponent(nasRead.server)}&path=${encodeURIComponent(nasRead.path)})`
+          const link = `\n\n[Download ${nasRead.name}](/api/nas/download?server=${encodeURIComponent(nasRead.server)}&path=${encodeURIComponent(nasRead.path)})`
           write(controller, { type: 'text', delta: link })
           readText += link
           write(controller, {
@@ -588,9 +588,13 @@ function buildResponseStream(args: BuildArgs): ReadableStream<Uint8Array> {
         // Only cache genuine successful model answers. Excludes fallbacks/nudges
         // and empty/very-short replies via isCacheableResponse — otherwise a
         // transient failure gets cached and replayed (provider=cache) for the TTL.
+        // Never cache a reply the model cut off at the output cap either
+        // (finishReason "length"): replaying half a sentence for the whole TTL
+        // is worse than asking the model again.
         if (
           priorCount <= 1 &&
           metadata?.provider &&
+          metadata.finishReason !== 'length' &&
           pendingActions.length === 0 &&
           isCacheableResponse(fullText)
         ) {
