@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
+import { Bot, Mail, Sparkles } from 'lucide-react'
 
 import { APP_NAME_UPPER } from '@/lib/branding'
 
@@ -156,7 +157,7 @@ export default function MailPanel() {
   if (!connected) {
     return (
       <div className="p-10 text-center border border-border-default rounded-xl">
-        <p className="text-2xl mb-2">📬</p>
+        <Mail className="h-7 w-7 mx-auto mb-2 text-text-secondary" aria-hidden="true" />
         <p className="text-lg font-medium text-text-primary mb-1">Connect Gmail</p>
         <p className="text-sm text-text-secondary mb-5">Read and send mail without leaving {APP_NAME_UPPER}.</p>
         <a href="/api/auth/google/connect" className="inline-block h-9 leading-9 px-4 rounded-full bg-[#3F7A0A] text-white font-mono text-xs hover:bg-[#356a08]">
@@ -221,11 +222,11 @@ export default function MailPanel() {
               <p className="text-xs text-text-secondary mt-1 break-all">{selected.from} · {shortDate(selected.date)}</p>
               <div className="flex flex-wrap gap-2 mt-3">
                 <button type="button" onClick={() => setCompose({ to: extractEmail(selected.from), subject: replySubject(selected.subject), body: '' })} className="h-8 px-3 rounded-full bg-[#3F7A0A] text-white text-xs font-mono">↩ Reply</button>
-                <button type="button" onClick={() => void runForgie('summarize')} disabled={forgieBusy} className="h-8 px-3 rounded-full border border-border-default text-xs font-mono text-text-primary disabled:opacity-40">✨ Summarize</button>
-                <button type="button" onClick={() => void runForgie('reply')} disabled={forgieBusy} className="h-8 px-3 rounded-full border border-border-default text-xs font-mono text-text-primary disabled:opacity-40">✨ Draft reply</button>
+                <button type="button" onClick={() => void runForgie('summarize')} disabled={forgieBusy} className="inline-flex items-center gap-1.5 h-8 px-3 rounded-full border border-border-default text-xs font-mono text-text-primary disabled:opacity-40"><Sparkles className="h-3.5 w-3.5" aria-hidden="true" />Summarize</button>
+                <button type="button" onClick={() => void runForgie('reply')} disabled={forgieBusy} className="inline-flex items-center gap-1.5 h-8 px-3 rounded-full border border-border-default text-xs font-mono text-text-primary disabled:opacity-40"><Sparkles className="h-3.5 w-3.5" aria-hidden="true" />Draft reply</button>
               </div>
               {forgieBusy && <p className="text-xs text-accent-ink mt-2">Forgie is thinking…</p>}
-              {forgieOut && <div className="mt-2 p-2.5 rounded-lg bg-bubble-mine text-bubble-mine-ink text-sm whitespace-pre-wrap">🤖 {forgieOut}</div>}
+              {forgieOut && <div className="mt-2 p-2.5 rounded-lg bg-bubble-mine text-bubble-mine-ink text-sm whitespace-pre-wrap"><Bot className="inline h-4 w-4 mr-1.5 -mt-0.5 align-middle" aria-hidden="true" />{forgieOut}</div>}
             </div>
             <div className="flex-1 overflow-y-auto p-5 text-sm text-text-primary whitespace-pre-wrap break-words">
               {selected.bodyTruncatedToSnippet && (

@@ -13,6 +13,7 @@
  */
 
 import { useEffect, useState } from 'react'
+import { AlertTriangle } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 
 import { useAuth } from '@/hooks/useAuth'
@@ -204,8 +205,9 @@ export default function DevDashboardPage() {
             <span className="text-[11px] text-text-muted">{latency.count.toLocaleString()} turns</span>
           </div>
           {latency.sloBreached && (
-            <div className="mb-3 px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm">
-              ⚠ p95 is {fmtMs(latency.p95Ms)} — above the {fmtMs(latency.sloP95Ms)} target.
+            <div className="mb-3 px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />
+              p95 is {fmtMs(latency.p95Ms)} — above the {fmtMs(latency.sloP95Ms)} target.
             </div>
           )}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">

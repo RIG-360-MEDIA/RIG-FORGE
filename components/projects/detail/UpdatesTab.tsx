@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { Globe, Link, Lock } from 'lucide-react'
 import type { MessageResponse, ApiResponse } from '@/lib/types'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -100,8 +101,9 @@ function MessageBubble({ message, isOwn, isAuthorLead }: MessageBubbleProps) {
             <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-900/40 text-blue-400">Lead</span>
           )}
           {isPrivate && (
-            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-900/40 text-amber-400" title="Visible to Lead & Admins only">
-              🔒 private
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-900/40 text-amber-400" title="Visible to Lead & Admins only">
+              <Lock className="h-3 w-3" aria-hidden="true" />
+              private
             </span>
           )}
           <span className="text-muted">{formatTime(message.createdAt)}</span>
@@ -132,7 +134,8 @@ function MessageBubble({ message, isOwn, isAuthorLead }: MessageBubbleProps) {
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1.5 mt-1 font-mono text-[10px] text-accent-ink border border-accent/40 px-2 py-1 hover:bg-accent/10 transition-colors rounded"
           >
-            🔗 {message.fileName ?? message.fileUrl}
+            <Link className="h-3 w-3 shrink-0" aria-hidden="true" />
+            {message.fileName ?? message.fileUrl}
           </a>
         )}
       </div>
@@ -294,31 +297,33 @@ export default function UpdatesTab({ projectId, currentUser, isLead, isAdmin = f
             type="button"
             onClick={() => setVisibility('TEAM')}
             disabled={sending}
-            className={`font-mono text-[10px] tracking-widest px-2 py-1 border transition-colors ${
+            className={`inline-flex items-center gap-1 font-mono text-[10px] tracking-widest px-2 py-1 border transition-colors ${
               visibility === 'TEAM'
                 ? 'border-accent text-accent-ink bg-accent/10'
                 : 'border-border-default text-muted hover:text-secondary'
             }`}
           >
-            🌐 TEAM
+            <Globe className="h-3 w-3" aria-hidden="true" />
+            TEAM
           </button>
           <button
             type="button"
             onClick={() => setVisibility('LEAD_ADMIN')}
             disabled={sending}
-            className={`font-mono text-[10px] tracking-widest px-2 py-1 border transition-colors ${
+            className={`inline-flex items-center gap-1 font-mono text-[10px] tracking-widest px-2 py-1 border transition-colors ${
               visibility === 'LEAD_ADMIN'
                 ? 'border-amber-500 text-amber-400 bg-amber-500/10'
                 : 'border-border-default text-muted hover:text-secondary'
             }`}
           >
-            🔒 LEAD & ADMINS ONLY
+            <Lock className="h-3 w-3" aria-hidden="true" />
+            LEAD & ADMINS ONLY
           </button>
         </div>
 
         {/* Row 2: Optional link attachment */}
         <div className="flex items-center gap-2">
-          <span className="font-mono text-[10px] text-muted tracking-widest shrink-0">🔗 LINK:</span>
+          <span className="inline-flex items-center gap-1 font-mono text-[10px] text-muted tracking-widest shrink-0"><Link className="h-3 w-3" aria-hidden="true" />LINK:</span>
           <input
             type="text"
             value={linkLabel}

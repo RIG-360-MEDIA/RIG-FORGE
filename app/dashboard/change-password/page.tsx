@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { AlertTriangle } from 'lucide-react'
 import { useAuthStore } from '@/store/authStore'
 import type { AuthUser, ApiResponse } from '@/lib/types'
 import { APP_NAME_UPPER } from '@/lib/branding'
@@ -61,8 +62,9 @@ export default function ChangePasswordPage() {
       <div className="w-full max-w-md">
         {/* Header */}
         <div className="mb-8 text-center">
-          <p className="font-mono text-[10px] text-accent-ink tracking-widest uppercase mb-2">
-            ⚠ ACTION REQUIRED
+          <p className="flex items-center justify-center gap-1.5 font-mono text-[10px] text-accent-ink tracking-widest uppercase mb-2">
+            <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+            ACTION REQUIRED
           </p>
           <h1 className="font-mono font-bold text-2xl text-primary tracking-tight">
             Change Your Password

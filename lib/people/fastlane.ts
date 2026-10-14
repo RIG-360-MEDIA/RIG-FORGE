@@ -52,10 +52,10 @@ export async function tryPeopleFastLane(raw: string, caller: ToolUser): Promise<
     const card = (m: Memberish): string => {
       const bits: string[] = []
       const mail = m.contactEmail || m.email
-      if (mail) bits.push(`  ✉️ ${mail}`)
-      if (m.whatsappNumber) bits.push(`  📞 ${m.whatsappNumber}`)
+      if (mail) bits.push(`  Email: ${mail}`)
+      if (m.whatsappNumber) bits.push(`  Phone: ${m.whatsappNumber}`)
       if (!mail && !m.whatsappNumber) bits.push('  _No contact details on file._')
-      return [`👤 **${m.name}** — ${m.role.replace('_', ' ').toLowerCase()}`, ...bits].join('\n')
+      return [`**${m.name}** — ${m.role.replace('_', ' ').toLowerCase()}`, ...bits].join('\n')
     }
 
     if (members.length === 1) return card(members[0]!)

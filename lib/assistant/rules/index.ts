@@ -81,7 +81,7 @@ export function matchGreeting(n: string, ctx: ForgieContext): string | null {
     : open > 0
       ? ` You have ${open} open task${open === 1 ? '' : 's'}. Ask me "what's due" any time.`
       : ''
-  return `Hey ${first} 👋 What do you need?${tail}`
+  return `Hey ${first}. What do you need?${tail}`
 }
 
 // Precise: bare "help" only when it IS the request — not the word "help"
@@ -108,7 +108,7 @@ function matchTasks(n: string, ctx: ForgieContext): string | null {
 
   if (OVERDUE_HIT.test(n)) {
     const od = open.filter((t) => t.isOverdue)
-    if (od.length === 0) return "Nothing overdue — you're all caught up. ✅"
+    if (od.length === 0) return "Nothing overdue — you're all caught up."
     return `You have ${od.length} overdue task${od.length === 1 ? '' : 's'}:\n` +
       bullet(od.map((t) => `${t.title} (${t.projectName}) — ${fmtDue(t.dueDate)}`))
   }
@@ -122,8 +122,8 @@ function matchTasks(n: string, ctx: ForgieContext): string | null {
   }
   if (list.length === 0) {
     return WEEK_HIT.test(n)
-      ? 'Nothing due this week. 🎉'
-      : 'You have no open tasks right now. 🎉'
+      ? 'Nothing due this week.'
+      : 'You have no open tasks right now.'
   }
   // Overdue first, then by due date.
   list = [...list].sort((a, b) => {
@@ -131,7 +131,7 @@ function matchTasks(n: string, ctx: ForgieContext): string | null {
     return (a.dueDate ?? '9999').localeCompare(b.dueDate ?? '9999')
   })
   return `You have ${list.length} ${scope}${list.length === 1 ? '' : 's'}:\n` +
-    bullet(list.map((t) => `${t.title} (${t.projectName}) — ${fmtDue(t.dueDate)}${t.isOverdue ? ' ⚠ overdue' : ''}`))
+    bullet(list.map((t) => `${t.title} (${t.projectName}) — ${fmtDue(t.dueDate)}${t.isOverdue ? ' (overdue)' : ''}`))
 }
 
 // Tickets — "my tickets", "open tickets", "support".
@@ -139,7 +139,7 @@ const TICKET_HIT = /\b(ticket|tickets|support request|help request)\b/
 function matchTickets(n: string, ctx: ForgieContext): string | null {
   if (!TICKET_HIT.test(n)) return null
   const open = ctx.myTickets.filter((t) => t.status === 'OPEN' || t.status === 'ACCEPTED')
-  if (open.length === 0) return 'You have no open tickets. ✅'
+  if (open.length === 0) return 'You have no open tickets.'
   return `You have ${open.length} open ticket${open.length === 1 ? '' : 's'}:\n` +
     bullet(open.map((t) => `${t.title} (${t.projectName}) — ${t.status.toLowerCase()}, ${t.role === 'raised' ? 'you raised' : 'you\'re helping'}`))
 }

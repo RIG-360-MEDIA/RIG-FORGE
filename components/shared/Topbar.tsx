@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import { AlertTriangle } from 'lucide-react'
 import { usePathname, useRouter } from 'next/navigation'
 import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
@@ -166,8 +167,9 @@ export default function Topbar() {
         {/* ── Navigation tabs (desktop only) ──────────────────────────────── */}
         {user?.mustChangePassword ? (
           <nav className="topbar-nav">
-            <span className="font-mono text-xs text-amber-600 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-full">
-              ⚠ Please change your password to continue
+            <span className="inline-flex items-center gap-1.5 font-mono text-xs text-amber-600 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-full">
+              <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+              Please change your password to continue
             </span>
           </nav>
         ) : (

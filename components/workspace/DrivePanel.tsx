@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
+import { FileSpreadsheet, FileText, FileType2, Film, Folder, Image, Music, Package, Presentation, type LucideIcon } from 'lucide-react'
 
 interface DriveFile {
   id: string
@@ -20,17 +21,17 @@ async function api<T>(url: string): Promise<T> {
   return j.data as T
 }
 
-function icon(f: DriveFile): string {
-  if (f.isFolder) return '📁'
+function icon(f: DriveFile): LucideIcon {
+  if (f.isFolder) return Folder
   const m = f.mimeType || ''
-  if (m.includes('document')) return '📄'
-  if (m.includes('spreadsheet')) return '📊'
-  if (m.includes('presentation')) return '📽️'
-  if (m.includes('pdf')) return '📕'
-  if (m.startsWith('image/')) return '🖼️'
-  if (m.startsWith('video/')) return '🎬'
-  if (m.startsWith('audio/')) return '🎵'
-  return '📦'
+  if (m.includes('document')) return FileText
+  if (m.includes('spreadsheet')) return FileSpreadsheet
+  if (m.includes('presentation')) return Presentation
+  if (m.includes('pdf')) return FileType2
+  if (m.startsWith('image/')) return Image
+  if (m.startsWith('video/')) return Film
+  if (m.startsWith('audio/')) return Music
+  return Package
 }
 function fmtSize(n: number | null): string {
   if (!n) return ''
@@ -89,7 +90,7 @@ export default function DrivePanel() {
   if (!connected) {
     return (
       <div className="p-10 text-center border border-border-default rounded-xl">
-        <p className="text-2xl mb-2">📁</p>
+        <Folder className="h-7 w-7 mx-auto mb-2 text-text-secondary" aria-hidden="true" />
         <p className="text-lg font-medium text-text-primary mb-1">Connect Google Drive</p>
         <p className="text-sm text-text-secondary mb-5">Browse and search your Drive files without leaving the app.</p>
         <a href="/api/auth/google/connect" className="inline-block h-9 leading-9 px-4 rounded-full bg-[#3F7A0A] text-white font-mono text-xs hover:bg-[#356a08]">
@@ -124,7 +125,7 @@ export default function DrivePanel() {
               rel="noopener noreferrer"
               className="flex items-center gap-3 px-4 py-2.5 border-b border-black/[0.05] hover:bg-black/[0.03]"
             >
-              <span className="text-lg shrink-0">{icon(f)}</span>
+              {(() => { const Icon = icon(f); return <Icon className="h-5 w-5 shrink-0 text-text-secondary" aria-hidden="true" /> })()}
               <div className="min-w-0 flex-1">
                 <p className="text-sm text-text-primary truncate">{f.name || 'Untitled'}</p>
                 <p className="text-[11px] text-text-secondary truncate">

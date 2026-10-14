@@ -182,7 +182,7 @@ async function dispatchUpdateNotifications(
       data: members.map(({ userId }) => ({
         userId,
         type:   'PROJECT_UPDATE' as const,
-        title:  `💬 New update in ${projectName}`,
+        title:  `New update in ${projectName}`,
         body:   `${senderName}: "${preview}"`,
         linkTo: link,
       })),
@@ -209,7 +209,7 @@ async function dispatchUpdateNotifications(
       data: [...recipientIds].map((userId) => ({
         userId,
         type:   'PROJECT_UPDATE' as const,
-        title:  `🔒 Private message in ${projectName}`,
+        title:  `Private message in ${projectName}`,
         body:   `${senderName} sent a private message — tap to view`,
         linkTo: link,
       })),

@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { Archive, ArchiveRestore, Ban, Bell, BellOff, Bot, Check, Eraser, Pin, PinOff, Star } from 'lucide-react'
 
 import Avatar from '@/components/ui/Avatar'
 import NotificationToggle from './NotificationToggle'
@@ -97,14 +98,14 @@ export default function ConversationList({
         ].join(' ')}
       >
         {c.isForgie ? (
-          <div className="h-9 w-9 shrink-0 rounded-full bg-bubble-mine flex items-center justify-center text-base">🤖</div>
+          <div className="h-9 w-9 shrink-0 rounded-full bg-bubble-mine text-bubble-mine-ink flex items-center justify-center" aria-label="Forgie"><Bot className="h-5 w-5" aria-hidden="true" /></div>
         ) : (
           <Avatar name={c.title ?? '?'} avatarUrl={c.avatarUrl} size="sm" />
         )}
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
             <span className="font-medium text-sm text-text-primary truncate">
-              {c.isPinned ? '📌 ' : ''}{c.type === 'GROUP' ? '# ' : ''}{c.title}
+              {c.isPinned && <Pin className="inline h-3.5 w-3.5 mr-1 -mt-0.5 align-middle text-text-secondary" aria-label="Pinned" />}{c.type === 'GROUP' ? '# ' : ''}{c.title}
             </span>
             <span className={`shrink-0 text-[10px] ${c.unread > 0 ? 'text-accent-ink font-medium' : 'text-text-secondary'}`}>
               {time}
@@ -120,7 +121,7 @@ export default function ConversationList({
               )
             })()}
             <span className="flex items-center gap-1 shrink-0">
-              {c.muted && <span title="Muted" className="text-[10px]">🔇</span>}
+              {c.muted && <span title="Muted" aria-label="Muted" className="text-text-secondary"><BellOff className="h-3 w-3" aria-hidden="true" /></span>}
               {c.unread > 0 && (
                 <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-[#3F7A0A] text-white text-[10px] font-mono flex items-center justify-center">
                   {c.unread}
@@ -133,7 +134,7 @@ export default function ConversationList({
     )
   }
 
-  const menuBtn = 'w-full text-left px-3 py-2 text-sm text-text-primary hover:bg-text-primary//[0.05]'
+  const menuBtn = 'w-full text-left px-3 py-2 text-sm text-text-primary hover:bg-text-primary//[0.05] flex items-center gap-2'
 
   return (
     <aside className={`w-full md:w-72 shrink-0 border-r border-border-default bg-surface-raised/60 flex-col ${activeId ? 'hidden md:flex' : 'flex'}`}>
@@ -141,8 +142,8 @@ export default function ConversationList({
         <span className="font-mono text-xs uppercase tracking-widest text-text-secondary">Messages</span>
         <div className="flex items-center gap-2">
           <NotificationToggle />
-          <button type="button" onClick={onOpenStarred} title="Starred messages" className="text-text-secondary hover:text-text-primary">
-            ⭐
+          <button type="button" onClick={onOpenStarred} title="Starred messages" aria-label="Starred messages" className="text-text-secondary hover:text-text-primary">
+            <Star className="h-4 w-4" aria-hidden="true" />
           </button>
           <button
             type="button"
@@ -171,7 +172,7 @@ export default function ConversationList({
                   onClick={() => setShowArchived((s) => !s)}
                   className="w-full text-left px-3 py-2 text-[11px] font-mono uppercase tracking-wide text-text-secondary border-b border-border-subtle hover:bg-text-primary//[0.03]"
                 >
-                  🗄 Archived ({archivedChats.length}) {showArchived ? '▾' : '▸'}
+                  <Archive className="inline h-3.5 w-3.5 mr-1 -mt-0.5 align-middle" aria-hidden="true" />Archived ({archivedChats.length}) {showArchived ? '▾' : '▸'}
                 </button>
                 {showArchived && archivedChats.map(renderRow)}
               </>
@@ -188,13 +189,13 @@ export default function ConversationList({
             onClick={(e) => e.stopPropagation()}
           >
             <button type="button" className={menuBtn} onClick={() => { onChatSettings(chatMenu.conv.id, { pinned: !chatMenu.conv.isPinned }); setChatMenu(null) }}>
-              {chatMenu.conv.isPinned ? '📌 Unpin chat' : '📌 Pin chat'}
+              {chatMenu.conv.isPinned ? <><PinOff className="h-4 w-4 shrink-0" aria-hidden="true" />Unpin chat</> : <><Pin className="h-4 w-4 shrink-0" aria-hidden="true" />Pin chat</>}
             </button>
             <button type="button" className={menuBtn} onClick={() => { onChatSettings(chatMenu.conv.id, { muteHours: chatMenu.conv.muted ? 0 : 87600 }); setChatMenu(null) }}>
-              {chatMenu.conv.muted ? '🔔 Unmute' : '🔇 Mute'}
+              {chatMenu.conv.muted ? <><Bell className="h-4 w-4 shrink-0" aria-hidden="true" />Unmute</> : <><BellOff className="h-4 w-4 shrink-0" aria-hidden="true" />Mute</>}
             </button>
             <button type="button" className={menuBtn} onClick={() => { onChatSettings(chatMenu.conv.id, { archived: !chatMenu.conv.isArchived }); setChatMenu(null) }}>
-              {chatMenu.conv.isArchived ? '📥 Unarchive' : '🗄 Archive'}
+              {chatMenu.conv.isArchived ? <><ArchiveRestore className="h-4 w-4 shrink-0" aria-hidden="true" />Unarchive</> : <><Archive className="h-4 w-4 shrink-0" aria-hidden="true" />Archive</>}
             </button>
             {chatMenu.conv.type === 'DIRECT' && (() => {
               const other = chatMenu.conv.members.find((mm) => mm.id !== meId)
@@ -202,15 +203,16 @@ export default function ConversationList({
               return (
                 <button
                   type="button"
-                  className="w-full text-left px-3 py-2 text-sm text-status-danger hover:bg-text-primary//[0.05]"
+                  className="w-full text-left px-3 py-2 text-sm text-status-danger hover:bg-text-primary//[0.05] flex items-center gap-2"
                   onClick={() => { onBlockUser(other.id, !chatMenu.conv.blocked); setChatMenu(null) }}
                 >
-                  {chatMenu.conv.blocked ? '✅ Unblock' : '🚫 Block'}
+                  {chatMenu.conv.blocked ? <><Check className="h-4 w-4 shrink-0" aria-hidden="true" />Unblock</> : <><Ban className="h-4 w-4 shrink-0" aria-hidden="true" />Block</>}
                 </button>
               )
             })()}
-            <button type="button" className="w-full text-left px-3 py-2 text-sm text-status-danger hover:bg-text-primary//[0.05]" onClick={() => { const id = chatMenu.conv.id; setChatMenu(null); if (confirm('Clear all messages in this chat for you?')) onChatSettings(id, { cleared: true }) }}>
-              🧹 Clear chat
+            <button type="button" className="w-full text-left px-3 py-2 text-sm text-status-danger hover:bg-text-primary//[0.05] flex items-center gap-2" onClick={() => { const id = chatMenu.conv.id; setChatMenu(null); if (confirm('Clear all messages in this chat for you?')) onChatSettings(id, { cleared: true }) }}>
+              <Eraser className="h-4 w-4 shrink-0" aria-hidden="true" />
+              Clear chat
             </button>
           </div>
         </div>

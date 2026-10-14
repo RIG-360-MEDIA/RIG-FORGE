@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { Code2, FolderOpen, HardDrive, Mail, ScrollText, Users, Video } from 'lucide-react'
 
 import MailPanel from '@/components/workspace/MailPanel'
 import CodePanel from '@/components/workspace/CodePanel'
@@ -11,13 +12,13 @@ import FilesPanel from '@/components/workspace/FilesPanel'
 import BylawsPanel from '@/components/workspace/BylawsPanel'
 
 const TABS = [
-  { key: 'mail', label: '📬 Mail' },
-  { key: 'code', label: '⌥ Code' },
-  { key: 'meet', label: '📹 Meet' },
-  { key: 'drive', label: '📁 Drive' },
-  { key: 'files', label: '🗄️ Files' },
-  { key: 'bylaws', label: '📜 Bylaws' },
-  { key: 'contacts', label: '👥 Contacts' },
+  { key: 'mail', label: 'Mail', icon: Mail },
+  { key: 'code', label: 'Code', icon: Code2 },
+  { key: 'meet', label: 'Meet', icon: Video },
+  { key: 'drive', label: 'Drive', icon: HardDrive },
+  { key: 'files', label: 'Files', icon: FolderOpen },
+  { key: 'bylaws', label: 'Bylaws', icon: ScrollText },
+  { key: 'contacts', label: 'Contacts', icon: Users },
 ] as const
 
 type TabKey = (typeof TABS)[number]['key']
@@ -108,10 +109,11 @@ export default function WorkspacePage() {
             key={t.key}
             type="button"
             onClick={() => setTab(t.key)}
-            className={`px-4 py-2 text-sm font-mono -mb-px border-b-2 transition-colors ${
+            className={`inline-flex items-center gap-1.5 px-4 py-2 text-sm font-mono -mb-px border-b-2 transition-colors ${
               tab === t.key ? 'border-accent-ink text-text-primary' : 'border-transparent text-text-secondary hover:text-text-primary'
             }`}
           >
+            <t.icon className="h-4 w-4" aria-hidden="true" />
             {t.label}
           </button>
         ))}

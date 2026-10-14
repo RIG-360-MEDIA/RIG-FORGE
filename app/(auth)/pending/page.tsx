@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
+import { Hourglass } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import type { AuthUser, ApiResponse } from '@/lib/types'
 
@@ -56,7 +57,7 @@ export default function PendingPage() {
         </h1>
 
         <div className="bg-surface-raised border border-border-default rounded-card p-8 mb-6">
-          <div className="text-4xl mb-4">⏳</div>
+          <Hourglass className="h-9 w-9 mx-auto mb-4 text-text-secondary" aria-hidden="true" />
           <p className="text-text-primary font-mono text-sm mb-3">
             Your account is pending approval.
           </p>

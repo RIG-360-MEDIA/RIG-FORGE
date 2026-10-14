@@ -174,7 +174,7 @@ export async function createGroup(userId: string, title: string, memberIds: stri
 // Resolved per-caller-org so each tenant's Forgie greets under its OWN name
 // (Rig Forge / Trijya Forge), never the neutral default or another org's name.
 function forgieWelcome(brandUpper: string): string {
-  return `Hi! I'm Forgie 🤖 — your ${brandUpper} assistant. Ask me about your projects, tasks, tickets, standups, or team. I can take actions too (create tasks, log standups), and you can @Forgie me in any group.`
+  return `Hi! I'm Forgie, your ${brandUpper} assistant. Ask me about your projects, tasks, tickets, standups, or team. I can take actions too (create tasks, log standups), and you can @Forgie me in any group.`
 }
 
 // The dedicated 1:1 Forgie (AI) chat for a user. Idempotent via the synthetic
@@ -560,7 +560,7 @@ export async function sendMediaMessage(
       data: { lastReadAt: new Date() },
     }),
   ])
-  const label = mediaType === 'IMAGE' ? '📷 Photo' : mediaType === 'AUDIO' ? '🎤 Voice message' : `📎 ${fileName ?? 'File'}`
+  const label = mediaType === 'IMAGE' ? 'Photo' : mediaType === 'AUDIO' ? 'Voice message' : `File: ${fileName ?? 'attachment'}`
   void notifyNewMessage(conversationId, userId, label)
   return message
 }
@@ -859,7 +859,7 @@ export async function createPoll(
       data: { lastReadAt: new Date() },
     }),
   ])
-  void notifyNewMessage(conversationId, userId, `📊 Poll: ${q}`)
+  void notifyNewMessage(conversationId, userId, `Poll: ${q}`)
   return message
 }
 

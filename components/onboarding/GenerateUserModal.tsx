@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { AlertTriangle, Copy } from 'lucide-react'
 
 interface GenerateUserModalProps {
   onClose: () => void
@@ -106,10 +107,10 @@ export default function GenerateUserModal({ onClose, onGenerated, isSuperAdmin =
                 <p><span className="text-text-muted">Email:</span> <span className="text-text-primary">{result.email}</span></p>
                 <p><span className="text-text-muted">Password:</span> <span className="text-text-primary font-bold">{result.temporaryPassword}</span></p>
               </div>
-              <button type="button" onClick={() => void handleCopy()} className="w-full h-9 mt-3 bg-background-tertiary border border-border-default rounded-card font-mono text-xs text-text-secondary hover:text-text-primary transition-colors">
-                {copied ? '✓ Copied!' : '📋 Copy All'}
+              <button type="button" onClick={() => void handleCopy()} className="w-full h-9 mt-3 inline-flex items-center justify-center gap-1.5 bg-background-tertiary border border-border-default rounded-card font-mono text-xs text-text-secondary hover:text-text-primary transition-colors">
+                {copied ? '✓ Copied!' : <><Copy className="h-3.5 w-3.5" aria-hidden="true" />Copy All</>}
               </button>
-              <p className="font-mono text-[10px] text-status-danger mt-3">⚠ This password will NOT be shown again. Copy it now.</p>
+              <p className="flex items-center gap-1.5 font-mono text-[10px] text-status-danger mt-3"><AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />This password will NOT be shown again. Copy it now.</p>
             </div>
             <button type="button" onClick={onClose} className="w-full h-10 bg-accent text-white font-mono text-xs rounded-card hover:opacity-90 mt-2">Done</button>
           </div>

@@ -1,6 +1,7 @@
 'use client'
 
 import { Fragment, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { Ban, BarChart3, Bot, CheckSquare, Copy, FileText, Forward, Image as ImageIcon, Info, Mic, Palette, Paperclip, Pencil, Pin, PinOff, Reply, Search, Square, Star, StarOff, Trash2 } from 'lucide-react'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 
 import Avatar from '@/components/ui/Avatar'
@@ -124,7 +125,7 @@ function PollCard({ msg, meId, onVote }: { msg: ChatMessageDTO; meId: string; on
   const totalVotes = totals.reduce((a, b) => a + b, 0)
   return (
     <div className="min-w-[220px] max-w-[300px]">
-      <p className="font-medium text-sm mb-2 flex items-center gap-1">📊 {msg.content}</p>
+      <p className="font-medium text-sm mb-2 flex items-center gap-1.5"><BarChart3 className="h-4 w-4 shrink-0" aria-hidden="true" />{msg.content}</p>
       <div className="space-y-1.5">
         {poll.options.map((o, i) => {
           const count = totals[i]
@@ -135,7 +136,7 @@ function PollCard({ msg, meId, onVote }: { msg: ChatMessageDTO; meId: string; on
               <div className="relative rounded-lg border border-border-default overflow-hidden">
                 <div className="absolute inset-y-0 left-0 bg-[#3F7A0A]/15" style={{ width: `${pct}%` }} />
                 <div className="relative flex items-center justify-between gap-2 px-2.5 py-1.5 text-sm">
-                  <span className="flex items-center gap-1.5">{mine ? '☑' : '☐'} {o.text}</span>
+                  <span className="flex items-center gap-1.5">{mine ? <CheckSquare className="h-4 w-4 shrink-0" aria-label="Voted" /> : <Square className="h-4 w-4 shrink-0" aria-hidden="true" />}{o.text}</span>
                   <span className="text-[11px] text-text-secondary shrink-0">{count} · {pct}%</span>
                 </div>
               </div>
@@ -510,7 +511,7 @@ export default function MessageThread({
           ‹
         </button>
         {conversation.isForgie ? (
-          <div className="h-9 w-9 shrink-0 rounded-full bg-bubble-mine flex items-center justify-center text-base">🤖</div>
+          <div className="h-9 w-9 shrink-0 rounded-full bg-bubble-mine text-bubble-mine-ink flex items-center justify-center" aria-label="Forgie"><Bot className="h-5 w-5" aria-hidden="true" /></div>
         ) : (
           <Avatar name={conversation.title ?? '?'} avatarUrl={conversation.avatarUrl} size="sm" />
         )}
@@ -535,16 +536,18 @@ export default function MessageThread({
           onClick={(e) => { e.stopPropagation(); setSearchOpen((o) => !o); setSearchQuery('') }}
           className="ml-auto text-text-secondary hover:text-text-primary"
           title="Search in chat"
+          aria-label="Search in chat"
         >
-          🔍
+          <Search className="h-4 w-4" aria-hidden="true" />
         </button>
         <button
           type="button"
           onClick={(e) => { e.stopPropagation(); setWallpaperOpen((o) => !o) }}
           className="text-text-secondary hover:text-text-primary"
           title="Wallpaper"
+          aria-label="Wallpaper"
         >
-          🎨
+          <Palette className="h-4 w-4" aria-hidden="true" />
         </button>
       </div>
 
@@ -599,9 +602,9 @@ export default function MessageThread({
           onClick={() => scrollToMessage(pinnedMessages[pinnedMessages.length - 1].id)}
           className="shrink-0 w-full text-left px-3 py-2 border-b border-border-default bg-[#3F7A0A]/5 flex items-center gap-2"
         >
-          <span className="text-accent-ink">📌</span>
+          <Pin className="h-3.5 w-3.5 shrink-0 text-accent-ink" aria-hidden="true" />
           <span className="text-xs text-text-secondary truncate flex-1">
-            {pinnedMessages[pinnedMessages.length - 1].type === 'IMAGE' ? '📷 Photo' : pinnedMessages[pinnedMessages.length - 1].content}
+            {pinnedMessages[pinnedMessages.length - 1].type === 'IMAGE' ? 'Photo' : pinnedMessages[pinnedMessages.length - 1].content}
           </span>
           {pinnedMessages.length > 1 && <span className="text-[10px] text-text-secondary shrink-0">{pinnedMessages.length} pinned</span>}
         </button>
@@ -618,7 +621,7 @@ export default function MessageThread({
             ))}
           </div>
         ) : messages.length === 0 ? (
-          <p className="font-mono text-xs text-text-muted">No messages yet — say hello 👋</p>
+          <p className="font-mono text-xs text-text-muted">No messages yet — say hello.</p>
         ) : (
           messages.map((m, i) => {
             const prev = messages[i - 1]
@@ -671,11 +674,11 @@ export default function MessageThread({
                   >
                     {!mine && (isForgie || conversation.type === 'GROUP') && (
                       <p className="text-[10px] font-mono uppercase tracking-wide opacity-70 mb-0.5">
-                        {isForgie ? '🤖 Forgie' : nameFor(m.senderId)}
+                        {isForgie ? <span className="inline-flex items-center gap-1"><Bot className="h-3 w-3" aria-hidden="true" />Forgie</span> : nameFor(m.senderId)}
                       </p>
                     )}
                     {m.deletedAt ? (
-                      <p className="text-sm italic opacity-70">🚫 This message was deleted</p>
+                      <p className="text-sm italic opacity-70"><Ban className="inline h-3.5 w-3.5 mr-1 -mt-0.5 align-middle" aria-hidden="true" />This message was deleted</p>
                     ) : (
                       <>
                         {m.replyToId && (
@@ -684,7 +687,7 @@ export default function MessageThread({
                               {quoted ? (quoted.senderId === meId ? 'You' : nameFor(quoted.senderId)) : 'Message'}
                             </span>
                             <span className="block truncate">
-                              {quoted ? (quoted.deletedAt ? 'This message was deleted' : quoted.type === 'IMAGE' ? '📷 Photo' : quoted.content) : '…'}
+                              {quoted ? (quoted.deletedAt ? 'This message was deleted' : quoted.type === 'IMAGE' ? 'Photo' : quoted.content) : '…'}
                             </span>
                           </div>
                         )}
@@ -693,7 +696,7 @@ export default function MessageThread({
                           <img src={m.content} alt="" loading="lazy" decoding="async" className="rounded-lg max-w-full max-h-72 object-cover" />
                         ) : m.type === 'FILE' ? (
                           <a href={m.content} target="_blank" rel="noopener noreferrer" className={`flex items-center gap-2 rounded-lg px-2 py-1.5 ${mine ? 'bg-text-primary/[0.15]' : 'bg-text-primary//[0.04]'}`}>
-                            <span className="text-lg shrink-0">📄</span>
+                            <FileText className="h-5 w-5 shrink-0" aria-hidden="true" />
                             <span className="min-w-0">
                               <span className="block text-sm truncate underline">{m.fileName ?? 'Download file'}</span>
                               {m.fileSize ? <span className="block text-[10px] opacity-70">{formatBytes(m.fileSize)}</span> : null}
@@ -729,7 +732,7 @@ export default function MessageThread({
                       </>
                     )}
                     <div className={`text-[10px] mt-0.5 flex items-center justify-end gap-1 ${mine ? 'text-white/70' : 'text-text-muted'}`}>
-                      {m.starred && <span title="Starred">⭐</span>}
+                      {m.starred && <span title="Starred" aria-label="Starred"><Star className="h-3 w-3 fill-current" aria-hidden="true" /></span>}
                       {m.editedAt && !m.deletedAt && <span className="opacity-60">edited</span>}
                       <span>{timeLabel(m.createdAt)}</span>
                       {mine && !m.deletedAt && receiptFor(m)}
@@ -785,7 +788,7 @@ export default function MessageThread({
                 {replyingTo.senderId === meId ? 'You' : nameFor(replyingTo.senderId)}
               </p>
               <p className="text-xs text-text-secondary truncate">
-                {replyingTo.type === 'IMAGE' ? '📷 Photo' : replyingTo.content}
+                {replyingTo.type === 'IMAGE' ? 'Photo' : replyingTo.content}
               </p>
             </div>
             <button type="button" onClick={() => setReplyingTo(null)} className="text-text-secondary hover:text-text-primary">✕</button>
@@ -796,9 +799,10 @@ export default function MessageThread({
             type="button"
             onClick={() => fileRef.current?.click()}
             title="Send image"
+            aria-label="Send image"
             className="h-10 w-10 shrink-0 rounded-full border border-border-default flex items-center justify-center text-text-secondary hover:text-text-primary"
           >
-            📷
+            <ImageIcon className="h-5 w-5" aria-hidden="true" />
           </button>
           <input
             ref={fileRef}
@@ -811,9 +815,10 @@ export default function MessageThread({
             type="button"
             onClick={() => docRef.current?.click()}
             title="Send a file"
+            aria-label="Send a file"
             className="h-10 w-10 shrink-0 rounded-full border border-border-default flex items-center justify-center text-text-secondary hover:text-text-primary"
           >
-            📎
+            <Paperclip className="h-5 w-5" aria-hidden="true" />
           </button>
           <input
             ref={docRef}
@@ -825,9 +830,10 @@ export default function MessageThread({
             type="button"
             onClick={() => setPollOpen(true)}
             title="Create a poll"
+            aria-label="Create a poll"
             className="h-10 w-10 shrink-0 rounded-full border border-border-default flex items-center justify-center text-text-secondary hover:text-text-primary"
           >
-            📊
+            <BarChart3 className="h-5 w-5" aria-hidden="true" />
           </button>
           {recording ? (
             <>
@@ -835,12 +841,13 @@ export default function MessageThread({
                 ✕
               </button>
               <button type="button" onClick={stopRecording} title="Stop & send" className="h-10 px-3 shrink-0 rounded-full bg-red-500 text-white text-xs flex items-center gap-1">
-                ⏹ {recordSecs}s
+                <Square className="h-3 w-3 fill-current" aria-hidden="true" />
+                {recordSecs}s
               </button>
             </>
           ) : (
-            <button type="button" onClick={() => void startRecording()} title="Record voice note" className="h-10 w-10 shrink-0 rounded-full border border-border-default flex items-center justify-center text-text-secondary hover:text-text-primary">
-              🎤
+            <button type="button" onClick={() => void startRecording()} title="Record voice note" aria-label="Record voice note" className="h-10 w-10 shrink-0 rounded-full border border-border-default flex items-center justify-center text-text-secondary hover:text-text-primary">
+              <Mic className="h-5 w-5" aria-hidden="true" />
             </button>
           )}
           <textarea
@@ -877,27 +884,27 @@ export default function MessageThread({
                 ))}
               </div>
             )}
-            <button type="button" onClick={() => { setReplyingTo(ctxMenu.msg); setCtxMenu(null) }} className="w-full text-left px-3 py-2 text-sm text-text-primary hover:bg-text-primary//[0.05]">↩ Reply</button>
+            <button type="button" onClick={() => { setReplyingTo(ctxMenu.msg); setCtxMenu(null) }} className="w-full text-left px-3 py-2 text-sm text-text-primary hover:bg-text-primary//[0.05] flex items-center gap-2"><Reply className="h-4 w-4 shrink-0" aria-hidden="true" />Reply</button>
             {!ctxMenu.msg.deletedAt && ctxMenu.msg.type !== 'IMAGE' && (
-              <button type="button" onClick={() => { onForward(ctxMenu.msg); setCtxMenu(null) }} className="w-full text-left px-3 py-2 text-sm text-text-primary hover:bg-text-primary//[0.05]">↪ Forward</button>
+              <button type="button" onClick={() => { onForward(ctxMenu.msg); setCtxMenu(null) }} className="w-full text-left px-3 py-2 text-sm text-text-primary hover:bg-text-primary//[0.05] flex items-center gap-2"><Forward className="h-4 w-4 shrink-0" aria-hidden="true" />Forward</button>
             )}
             {!ctxMenu.msg.deletedAt && (
-              <button type="button" onClick={() => { onStar(ctxMenu.msg.id); setCtxMenu(null) }} className="w-full text-left px-3 py-2 text-sm text-text-primary hover:bg-text-primary//[0.05]">{ctxMenu.msg.starred ? '★ Unstar' : '☆ Star'}</button>
+              <button type="button" onClick={() => { onStar(ctxMenu.msg.id); setCtxMenu(null) }} className="w-full text-left px-3 py-2 text-sm text-text-primary hover:bg-text-primary//[0.05] flex items-center gap-2">{ctxMenu.msg.starred ? <><StarOff className="h-4 w-4 shrink-0" aria-hidden="true" />Unstar</> : <><Star className="h-4 w-4 shrink-0" aria-hidden="true" />Star</>}</button>
             )}
             {!ctxMenu.msg.deletedAt && (
-              <button type="button" onClick={() => { onPin(ctxMenu.msg.id, !ctxMenu.msg.pinnedAt); setCtxMenu(null) }} className="w-full text-left px-3 py-2 text-sm text-text-primary hover:bg-text-primary//[0.05]">{ctxMenu.msg.pinnedAt ? '📌 Unpin' : '📌 Pin'}</button>
+              <button type="button" onClick={() => { onPin(ctxMenu.msg.id, !ctxMenu.msg.pinnedAt); setCtxMenu(null) }} className="w-full text-left px-3 py-2 text-sm text-text-primary hover:bg-text-primary//[0.05] flex items-center gap-2">{ctxMenu.msg.pinnedAt ? <><PinOff className="h-4 w-4 shrink-0" aria-hidden="true" />Unpin</> : <><Pin className="h-4 w-4 shrink-0" aria-hidden="true" />Pin</>}</button>
             )}
             {ctxMenu.msg.type !== 'IMAGE' && !ctxMenu.msg.deletedAt && (
-              <button type="button" onClick={() => { void navigator.clipboard?.writeText(ctxMenu.msg.content); setCtxMenu(null) }} className="w-full text-left px-3 py-2 text-sm text-text-primary hover:bg-text-primary//[0.05]">⧉ Copy</button>
+              <button type="button" onClick={() => { void navigator.clipboard?.writeText(ctxMenu.msg.content); setCtxMenu(null) }} className="w-full text-left px-3 py-2 text-sm text-text-primary hover:bg-text-primary//[0.05] flex items-center gap-2"><Copy className="h-4 w-4 shrink-0" aria-hidden="true" />Copy</button>
             )}
             {ctxMenu.msg.senderId === meId && ctxMenu.msg.type !== 'IMAGE' && !ctxMenu.msg.deletedAt && (
-              <button type="button" onClick={() => { startEdit(ctxMenu.msg); setCtxMenu(null) }} className="w-full text-left px-3 py-2 text-sm text-text-primary hover:bg-text-primary//[0.05]">✎ Edit</button>
+              <button type="button" onClick={() => { startEdit(ctxMenu.msg); setCtxMenu(null) }} className="w-full text-left px-3 py-2 text-sm text-text-primary hover:bg-text-primary//[0.05] flex items-center gap-2"><Pencil className="h-4 w-4 shrink-0" aria-hidden="true" />Edit</button>
             )}
             {ctxMenu.msg.senderId === meId && !ctxMenu.msg.deletedAt && (
-              <button type="button" onClick={() => { const id = ctxMenu.msg.id; setCtxMenu(null); if (confirm('Delete this message for everyone?')) onDelete(id) }} className="w-full text-left px-3 py-2 text-sm text-status-danger hover:bg-text-primary//[0.05]">🗑 Delete</button>
+              <button type="button" onClick={() => { const id = ctxMenu.msg.id; setCtxMenu(null); if (confirm('Delete this message for everyone?')) onDelete(id) }} className="w-full text-left px-3 py-2 text-sm text-status-danger hover:bg-text-primary//[0.05] flex items-center gap-2"><Trash2 className="h-4 w-4 shrink-0" aria-hidden="true" />Delete</button>
             )}
             {ctxMenu.msg.senderId === meId && (
-              <button type="button" onClick={() => { setInfoMsg(ctxMenu.msg); setCtxMenu(null) }} className="w-full text-left px-3 py-2 text-sm text-text-primary hover:bg-text-primary//[0.05]">ⓘ Info</button>
+              <button type="button" onClick={() => { setInfoMsg(ctxMenu.msg); setCtxMenu(null) }} className="w-full text-left px-3 py-2 text-sm text-text-primary hover:bg-text-primary//[0.05] flex items-center gap-2"><Info className="h-4 w-4 shrink-0" aria-hidden="true" />Info</button>
             )}
           </div>
         </div>

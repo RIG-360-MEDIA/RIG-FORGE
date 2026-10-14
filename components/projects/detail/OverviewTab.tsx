@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import { Pencil } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 
 import MemberRow from '@/components/projects/detail/MemberRow'
@@ -236,7 +237,7 @@ function DescriptionSection({ projectId, description, isAdmin, canEdit, onSaved 
         /* Empty state — differs by role */
         isAdmin ? (
           <div className="flex items-start gap-3 bg-surface-mid border border-border-default rounded-card px-5 py-4">
-            <span className="text-muted text-base shrink-0 mt-0.5">✏️</span>
+            <Pencil className="h-4 w-4 text-muted shrink-0 mt-0.5" aria-hidden="true" />
             <p className="font-mono text-xs text-muted leading-relaxed">
               No description yet.{' '}
               {canEdit && (

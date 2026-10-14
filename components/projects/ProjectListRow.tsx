@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useRef } from 'react'
+import { AlertTriangle } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 
 import Avatar from '@/components/ui/Avatar'
@@ -50,7 +51,7 @@ const STATUS_BAR_COLOR: Record<string, string> = {
 
 // ─── Deadline display ─────────────────────────────────────────────────────────
 
-function getDeadlineDisplay(deadline: Date | null): { text: string; className: string } {
+function getDeadlineDisplay(deadline: Date | null): { text: string; className: string; warn?: boolean } {
   if (!deadline) return { text: '—', className: 'text-muted' }
   // deadline arrives as ISO string from JSON despite Date type
   const d = new Date(deadline as unknown as string)
@@ -61,7 +62,7 @@ function getDeadlineDisplay(deadline: Date | null): { text: string; className: s
     year: 'numeric',
   })
   if (diffDays < 0) return { text: `✕ ${formatted}`, className: 'text-status-danger' }
-  if (diffDays <= 7) return { text: `⚠ ${formatted}`, className: 'text-status-warning' }
+  if (diffDays <= 7) return { text: formatted, className: 'text-status-warning', warn: true }
   return { text: formatted, className: 'text-secondary' }
 }
 
@@ -347,7 +348,7 @@ export default function ProjectListRow({
             <p className="font-mono text-[10px] text-muted tracking-widest uppercase mb-1">
               Deadline
             </p>
-            <p className={`font-mono text-xs ${deadline.className}`}>{deadline.text}</p>
+            <p className={`flex items-center gap-1 font-mono text-xs ${deadline.className}`}>{deadline.warn && <AlertTriangle className="h-3 w-3" aria-hidden="true" />}{deadline.text}</p>
           </>
         )}
       </div>

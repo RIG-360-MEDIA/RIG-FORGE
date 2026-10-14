@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
+import { Bot, GitPullRequestDraft, Sparkles } from 'lucide-react'
 
 interface Repo {
   name: string
@@ -164,10 +165,10 @@ export default function CodePanel() {
                 {subTab('commits', 'Commits')}
                 {subTab('prs', 'Pull requests')}
                 {subTab('issues', 'Issues')}
-                <button type="button" onClick={() => void summarize()} disabled={summarizing} className="px-3 py-1.5 text-xs font-mono rounded-full border border-border-default text-text-primary disabled:opacity-40">✨ Summarize</button>
+                <button type="button" onClick={() => void summarize()} disabled={summarizing} className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono rounded-full border border-border-default text-text-primary disabled:opacity-40"><Sparkles className="h-3.5 w-3.5" aria-hidden="true" />Summarize</button>
               </div>
               {summarizing && <p className="text-xs text-accent-ink mt-2">Forgie is reading the repo…</p>}
-              {summary && <div className="mt-2 p-2.5 rounded-lg bg-[#EDE7FB] text-[#2A1A4A] text-sm whitespace-pre-wrap">🤖 {summary}</div>}
+              {summary && <div className="mt-2 p-2.5 rounded-lg bg-[#EDE7FB] text-[#2A1A4A] text-sm whitespace-pre-wrap"><Bot className="inline h-4 w-4 mr-1.5 -mt-0.5 align-middle" aria-hidden="true" />{summary}</div>}
             </div>
             <div className="flex-1 overflow-y-auto">
               {loadingItems ? (
@@ -184,7 +185,7 @@ export default function CodePanel() {
               ) : view === 'prs' ? (
                 (items as PR[]).map((p) => (
                   <a key={p.number} href={p.url} target="_blank" rel="noopener noreferrer" className="block px-5 py-2.5 border-b border-border-subtle hover:bg-text-primary//[0.03]">
-                    <p className="text-sm text-text-primary truncate">{p.draft ? '🚧 ' : ''}{p.title}</p>
+                    <p className="text-sm text-text-primary truncate">{p.draft && <GitPullRequestDraft className="inline h-3.5 w-3.5 mr-1.5 -mt-0.5 align-middle text-text-secondary" aria-label="Draft" />}{p.title}</p>
                     <p className="text-[11px] text-text-secondary mt-0.5">#{p.number} · {p.authorLogin}{p.labels.length ? ` · ${p.labels.join(', ')}` : ''}</p>
                   </a>
                 ))

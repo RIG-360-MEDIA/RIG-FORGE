@@ -1,6 +1,10 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  Archive, Download, Eye, File, FileSpreadsheet, FileText, Film, Folder, HardDrive,
+  Image as ImageIcon, Link as LinkIcon, Mail, Music, Ruler, Upload, type LucideIcon,
+} from 'lucide-react'
 
 interface NasEntry { name: string; isDir: boolean; size: number; mtime: number }
 interface SearchHit { name: string; path: string; isDir: boolean; size: number; server?: string }
@@ -20,18 +24,22 @@ function fmtSize(n: number): string {
 }
 function ext(name: string): string { return name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] || '' }
 const VIEWABLE = new Set(['pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'txt', 'csv', 'svg', 'bmp'])
-function icon(e: { isDir: boolean; name: string }): string {
-  if (e.isDir) return '📁'
+function iconFor(e: { isDir: boolean; name: string }): LucideIcon {
+  if (e.isDir) return Folder
   const x = ext(e.name)
-  if (x === 'pdf') return '📕'
-  if (['xls', 'xlsx', 'csv'].includes(x)) return '📊'
-  if (['doc', 'docx'].includes(x)) return '📄'
-  if (['dwg', 'dxf', 'rvt', 'skp', '3ds', 'max'].includes(x)) return '📐'
-  if (['jpg', 'jpeg', 'png', 'gif', 'tif', 'tiff', 'bmp', 'webp'].includes(x)) return '🖼️'
-  if (['mp4', 'mov', 'avi', 'mkv'].includes(x)) return '🎬'
-  if (['mp3', 'wav', 'amr', 'm4a'].includes(x)) return '🎵'
-  if (['zip', 'rar', '7z'].includes(x)) return '🗜️'
-  return '📦'
+  if (x === 'pdf') return FileText
+  if (['xls', 'xlsx', 'csv'].includes(x)) return FileSpreadsheet
+  if (['doc', 'docx', 'txt', 'rtf'].includes(x)) return FileText
+  if (['dwg', 'dxf', 'rvt', 'skp', '3ds', 'max'].includes(x)) return Ruler
+  if (['jpg', 'jpeg', 'png', 'gif', 'tif', 'tiff', 'bmp', 'webp'].includes(x)) return ImageIcon
+  if (['mp4', 'mov', 'avi', 'mkv'].includes(x)) return Film
+  if (['mp3', 'wav', 'amr', 'm4a'].includes(x)) return Music
+  if (['zip', 'rar', '7z'].includes(x)) return Archive
+  return File
+}
+function EntryIcon({ e }: { e: { isDir: boolean; name: string } }) {
+  const I = iconFor(e)
+  return <I aria-hidden className={`h-4 w-4 shrink-0 ${e.isDir ? 'text-accent-ink' : 'text-text-secondary'}`} />
 }
 const joinPath = (dir: string, name: string) => (dir.endsWith('/') ? dir : dir + '/') + name
 const parentOf = (p: string) => '/' + p.split('/').filter(Boolean).slice(0, -1).join('/')
@@ -265,10 +273,10 @@ export default function FilesPanel() {
 
   const FileActions = ({ p, name }: { p: string; name: string }) => (
     <span className="flex items-center gap-1 shrink-0">
-      {VIEWABLE.has(ext(name)) && <button onClick={(e) => { e.stopPropagation(); view(p) }} title="View" className="px-1.5 py-0.5 text-xs rounded hover:bg-surface-raised">👁</button>}
-      <button onClick={(e) => { e.stopPropagation(); download(p) }} title="Download" className="px-1.5 py-0.5 text-xs rounded hover:bg-surface-raised">⬇</button>
-      <button onClick={(e) => { e.stopPropagation(); void shareLink(p) }} title="Copy share link" className="px-1.5 py-0.5 text-xs rounded hover:bg-surface-raised">🔗</button>
-      <button onClick={(e) => { e.stopPropagation(); setEmailFor({ path: p, name }) }} title="Email file" className="px-1.5 py-0.5 text-xs rounded hover:bg-surface-raised">✉️</button>
+      {VIEWABLE.has(ext(name)) && <button onClick={(e) => { e.stopPropagation(); view(p) }} title="View" aria-label="View" className="px-1.5 py-0.5 text-xs rounded hover:bg-surface-raised"><Eye aria-hidden className="h-3.5 w-3.5" /></button>}
+      <button onClick={(e) => { e.stopPropagation(); download(p) }} title="Download" aria-label="Download" className="px-1.5 py-0.5 text-xs rounded hover:bg-surface-raised"><Download aria-hidden className="h-3.5 w-3.5" /></button>
+      <button onClick={(e) => { e.stopPropagation(); void shareLink(p) }} title="Copy share link" aria-label="Copy share link" className="px-1.5 py-0.5 text-xs rounded hover:bg-surface-raised"><LinkIcon aria-hidden className="h-3.5 w-3.5" /></button>
+      <button onClick={(e) => { e.stopPropagation(); setEmailFor({ path: p, name }) }} title="Email file" aria-label="Email file" className="px-1.5 py-0.5 text-xs rounded hover:bg-surface-raised"><Mail aria-hidden className="h-3.5 w-3.5" /></button>
     </span>
   )
 
@@ -280,14 +288,14 @@ export default function FilesPanel() {
       <div className="flex flex-wrap items-center gap-2">
         {servers.map((s) => (
           <button key={s} onClick={() => { setQ(''); goto('/', s) }}
-            className={`px-3 py-1 text-sm font-mono rounded border ${server === s ? 'border-accent-ink text-text-primary bg-surface-raised' : 'border-border-default text-text-secondary'}`}>
-            🗄️ {s}
+            className={`inline-flex items-center gap-1.5 px-3 py-1 text-sm font-mono rounded border ${server === s ? 'border-accent-ink text-text-primary bg-surface-raised' : 'border-border-default text-text-secondary'}`}>
+            <HardDrive aria-hidden className="h-3.5 w-3.5" /> {s}
           </button>
         ))}
         <div className="flex-1" />
         <button onClick={() => fileInput.current?.click()} disabled={uploading || !!hits}
-          className="px-3 py-1 text-sm border border-border-default rounded text-text-primary disabled:opacity-50">
-          {uploading ? 'Uploading…' : '⬆ Upload'}
+          className="inline-flex items-center gap-1.5 px-3 py-1 text-sm border border-border-default rounded text-text-primary disabled:opacity-50">
+          {uploading ? 'Uploading…' : <><Upload aria-hidden className="h-3.5 w-3.5" /> Upload</>}
         </button>
         <input ref={fileInput} type="file" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) void onUpload(f) }} />
       </div>
@@ -334,7 +342,7 @@ export default function FilesPanel() {
           {hits.map((h) => (
             <div key={h.path} className="px-3 py-2 text-sm flex items-center gap-2">
               <button onClick={() => (h.isDir ? (setHits(null), goto(h.path)) : view(h.path))} className="flex items-center gap-2 flex-1 text-left min-w-0" title={h.path}>
-                <span>{icon(h)}</span>
+                <EntryIcon e={h} />
                 <span className="text-text-primary truncate">{h.name}</span>
                 <span className="text-text-secondary text-xs font-mono truncate hidden sm:inline">{h.path}</span>
               </button>
@@ -351,7 +359,7 @@ export default function FilesPanel() {
           {items.map((e) => (
             <div key={e.name} className="px-3 py-2 text-sm flex items-center gap-2">
               <button onClick={() => (e.isDir ? goto(joinPath(path, e.name)) : view(joinPath(path, e.name)))} className="flex items-center gap-2 flex-1 text-left min-w-0">
-                <span>{icon(e)}</span>
+                <EntryIcon e={e} />
                 <span className="text-text-primary truncate">{e.name}</span>
                 {!e.isDir && <span className="text-text-secondary text-xs">{fmtSize(e.size)}</span>}
               </button>

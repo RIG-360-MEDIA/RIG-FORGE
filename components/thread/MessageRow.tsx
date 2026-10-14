@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import { Link, Lock } from 'lucide-react'
 
 import Avatar from '@/components/ui/Avatar'
 import type { LocalMessage } from '@/components/thread/types'
@@ -147,8 +148,9 @@ export default function MessageRow({
             </span>
           )}
           {isPrivate && (
-            <span className="font-mono text-[10px] text-amber-400 shrink-0" title="Visible to Lead & Admins only">
-              🔒 private
+            <span className="inline-flex items-center gap-1 font-mono text-[10px] text-amber-400 shrink-0" title="Visible to Lead & Admins only">
+              <Lock className="h-3 w-3" aria-hidden="true" />
+              private
             </span>
           )}
 
@@ -229,7 +231,8 @@ export default function MessageRow({
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1 mt-1 font-mono text-[10px] text-accent-ink border border-accent/40 px-2 py-0.5 hover:bg-accent/10 transition-colors"
               >
-                🔗 {message.fileName ?? message.fileUrl}
+                <Link className="h-3 w-3 shrink-0" aria-hidden="true" />
+                {message.fileName ?? message.fileUrl}
               </a>
             )}
           </>

@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useRef } from 'react'
+import { CheckSquare, FolderOpen, NotebookPen, RefreshCw, Users } from 'lucide-react'
 import { useRouter, useParams } from 'next/navigation'
 import Link from 'next/link'
 
@@ -290,7 +291,7 @@ function EmployeeReport({
 
       {/* Sort control */}
       <div className="flex items-center justify-between mb-4 no-print">
-        <h2 className="text-lg font-bold text-text-primary">👥 Employee Activity</h2>
+        <h2 className="text-lg font-bold text-text-primary flex items-center gap-2"><Users className="h-5 w-5" aria-hidden="true" />Employee Activity</h2>
         <div className="flex items-center gap-2">
           <label className="text-sm text-text-secondary">Sort by:</label>
           <select
@@ -381,7 +382,7 @@ function EmployeeCard({ employee: e }: { employee: EmployeeReportEntry }) {
               {/* Completed tasks */}
               {e.tasksCompleted.length > 0 && (
                 <div>
-                  <p className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-2">✅ Completed Tasks</p>
+                  <p className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-2 flex items-center gap-1.5"><CheckSquare className="h-3.5 w-3.5" aria-hidden="true" />Completed Tasks</p>
                   <ul className="space-y-1">
                     {e.tasksCompleted.map((t) => (
                       <li key={t.id} className="text-sm text-text-secondary flex items-start gap-1.5">
@@ -401,7 +402,7 @@ function EmployeeCard({ employee: e }: { employee: EmployeeReportEntry }) {
               {/* In progress tasks */}
               {e.tasksInProgress.length > 0 && (
                 <div>
-                  <p className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-2">🔄 In Progress</p>
+                  <p className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-2 flex items-center gap-1.5"><RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />In Progress</p>
                   <ul className="space-y-1">
                     {e.tasksInProgress.map((t) => (
                       <li key={t.id} className="text-sm text-text-secondary flex items-start gap-1.5">
@@ -419,7 +420,7 @@ function EmployeeCard({ employee: e }: { employee: EmployeeReportEntry }) {
               {/* Daily logs */}
               {e.dailyLogs.length > 0 && (
                 <div>
-                  <p className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-2">📝 Daily Logs</p>
+                  <p className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-2 flex items-center gap-1.5"><NotebookPen className="h-3.5 w-3.5" aria-hidden="true" />Daily Logs</p>
                   <div className="space-y-2">
                     {e.dailyLogs.map((log) => (
                       <div key={log.date} className="text-sm border-l-2 border-border-default pl-3">
@@ -491,7 +492,7 @@ function WeeklyReport({
       {/* Projects */}
       {projects.length > 0 && (
         <section className="mb-10">
-          <h2 className="text-lg font-bold text-text-primary mb-4">📁 Project Progress</h2>
+          <h2 className="text-lg font-bold text-text-primary mb-4 flex items-center gap-2"><FolderOpen className="h-5 w-5" aria-hidden="true" />Project Progress</h2>
           {activeProjects.length > 0 && (
             <>
               <p className="text-xs font-semibold text-text-muted uppercase tracking-widest mb-3">Active ({activeProjects.length})</p>
@@ -514,7 +515,7 @@ function WeeklyReport({
       {/* Employees */}
       <section>
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-bold text-text-primary">👥 Employee Activity</h2>
+          <h2 className="text-lg font-bold text-text-primary flex items-center gap-2"><Users className="h-5 w-5" aria-hidden="true" />Employee Activity</h2>
           <div className="flex items-center gap-2 no-print">
             <label className="text-sm text-text-secondary">Sort by:</label>
             <select

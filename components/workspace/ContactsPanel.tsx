@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
+import { Mail, Users } from 'lucide-react'
 
 interface Contact {
   id: string
@@ -69,7 +70,7 @@ export default function ContactsPanel() {
   if (!connected) {
     return (
       <div className="p-10 text-center border border-border-default rounded-xl">
-        <p className="text-2xl mb-2">👥</p>
+        <Users className="h-7 w-7 mx-auto mb-2 text-text-secondary" aria-hidden="true" />
         <p className="text-lg font-medium text-text-primary mb-1">Connect Google Contacts</p>
         <p className="text-sm text-text-secondary mb-5">Look up and search your Google contacts without leaving the app.</p>
         <a href="/api/auth/google/connect" className="inline-block h-9 leading-9 px-4 rounded-full bg-[#3F7A0A] text-white font-mono text-xs hover:bg-[#356a08]">
@@ -113,7 +114,7 @@ export default function ContactsPanel() {
                 </p>
               </div>
               {c.email && (
-                <a href={`mailto:${c.email}`} className="text-xs font-mono text-text-secondary shrink-0 hover:text-accent-ink" title="Email">✉</a>
+                <a href={`mailto:${c.email}`} className="text-text-secondary shrink-0 hover:text-accent-ink" title="Email" aria-label={`Email ${c.email}`}><Mail className="h-4 w-4" aria-hidden="true" /></a>
               )}
             </div>
           ))

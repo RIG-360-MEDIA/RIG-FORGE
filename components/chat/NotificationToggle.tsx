@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { Bell } from 'lucide-react'
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4)
@@ -54,8 +55,8 @@ export default function NotificationToggle() {
   // Only offer the opt-in when it can actually do something (permission still askable).
   if (perm !== 'default') return null
   return (
-    <button type="button" onClick={enable} title="Enable notifications" className="text-text-secondary hover:text-text-primary">
-      🔔
+    <button type="button" onClick={enable} title="Enable notifications" aria-label="Enable notifications" className="text-text-secondary hover:text-text-primary">
+      <Bell className="h-4 w-4" aria-hidden="true" />
     </button>
   )
 }

@@ -1,6 +1,7 @@
 'use client'
 
 import { useRef, useState } from 'react'
+import { Globe, Lock } from 'lucide-react'
 
 import Avatar from '@/components/ui/Avatar'
 import { useAuthStore } from '@/store/authStore'
@@ -119,24 +120,26 @@ export default function MessageInput({
             <button
               type="button"
               onClick={() => setVisibility('TEAM')}
-              className={`font-mono text-[10px] tracking-widest px-2 py-1 border transition-colors ${
+              className={`inline-flex items-center gap-1 font-mono text-[10px] tracking-widest px-2 py-1 border transition-colors ${
                 visibility === 'TEAM'
                   ? 'border-accent text-accent-ink bg-accent/10'
                   : 'border-border-default text-muted hover:text-secondary'
               }`}
             >
-              🌐 TEAM
+              <Globe className="h-3 w-3" aria-hidden="true" />
+              TEAM
             </button>
             <button
               type="button"
               onClick={() => setVisibility('LEAD_ADMIN')}
-              className={`font-mono text-[10px] tracking-widest px-2 py-1 border transition-colors ${
+              className={`inline-flex items-center gap-1 font-mono text-[10px] tracking-widest px-2 py-1 border transition-colors ${
                 visibility === 'LEAD_ADMIN'
                   ? 'border-amber-500 text-amber-400 bg-amber-500/10'
                   : 'border-border-default text-muted hover:text-secondary'
               }`}
             >
-              🔒 LEAD & ADMINS ONLY
+              <Lock className="h-3 w-3" aria-hidden="true" />
+              LEAD & ADMINS ONLY
             </button>
           </div>
         )}

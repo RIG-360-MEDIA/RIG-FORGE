@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { ScrollText, Search } from 'lucide-react'
 
 interface BylawsMatch {
   server: string
@@ -63,9 +64,9 @@ export default function BylawsPanel() {
         <button
           onClick={() => void runSearch()}
           disabled={loading || !q.trim()}
-          className="px-3 py-1 text-sm border border-border-default rounded text-text-secondary disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 px-3 py-1 text-sm border border-border-default rounded text-text-secondary disabled:opacity-50"
         >
-          {loading ? 'Searching…' : '📜 Search'}
+          {loading ? 'Searching…' : <><Search className="h-4 w-4" aria-hidden="true" />Search</>}
         </button>
       </div>
 
@@ -92,7 +93,7 @@ export default function BylawsPanel() {
                   className="text-text-primary font-medium truncate hover:underline"
                   title={m.path}
                 >
-                  📜 {m.fileName}
+                  <ScrollText className="inline h-4 w-4 mr-1.5 -mt-0.5 align-middle" aria-hidden="true" />{m.fileName}
                 </a>
                 <span className="text-text-secondary text-xs font-mono shrink-0">{Math.round(m.score * 100)}% match</span>
               </div>

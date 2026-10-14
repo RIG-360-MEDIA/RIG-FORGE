@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { Star } from 'lucide-react'
 
 import type { StarredMessage } from '@/lib/chat/types'
 
@@ -29,7 +30,7 @@ export default function StarredModal({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="p-4 border-b border-border-default flex items-center justify-between">
-          <span className="font-mono text-xs uppercase tracking-widest text-text-secondary">⭐ Starred messages</span>
+          <span className="flex items-center gap-1.5 font-mono text-xs uppercase tracking-widest text-text-secondary"><Star className="h-3.5 w-3.5" aria-hidden="true" />Starred messages</span>
           <button type="button" onClick={onClose} className="text-text-secondary hover:text-text-primary">✕</button>
         </div>
         <div className="flex-1 overflow-y-auto p-2">
@@ -48,7 +49,7 @@ export default function StarredModal({
                 <p className="text-[11px] text-text-secondary">
                   {m.conversationTitle ?? 'Direct chat'} · {m.senderName ?? 'Forgie'}
                 </p>
-                <p className="text-sm text-text-primary truncate">{m.type === 'IMAGE' ? '📷 Photo' : m.content}</p>
+                <p className="text-sm text-text-primary truncate">{m.type === 'IMAGE' ? 'Photo' : m.content}</p>
               </button>
             ))
           )}

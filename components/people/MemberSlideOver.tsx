@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { AlertTriangle } from 'lucide-react'
 import Link from 'next/link'
 
 import Avatar from '@/components/ui/Avatar'
@@ -661,8 +662,9 @@ export default function MemberSlideOver({ memberId, isAdmin, isSuperAdmin = fals
                       {/* Current temp password (if user hasn't changed yet) */}
                       {member.mustChangePassword && member.tempPassword && !resetResult && (
                         <div className="bg-amber-950/20 border border-amber-500/40 px-3 py-2">
-                          <p className="font-mono text-[10px] text-amber-400 tracking-widest uppercase mb-1">
-                            ⚠ Temp Password (user hasn't changed it yet)
+                          <p className="flex items-center gap-1.5 font-mono text-[10px] text-amber-400 tracking-widest uppercase mb-1">
+                            <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
+                            Temp Password (user hasn't changed it yet)
                           </p>
                           <div className="flex items-center gap-2">
                             <span className="font-mono text-xs text-primary flex-1">

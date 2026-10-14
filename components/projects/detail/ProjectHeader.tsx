@@ -1,6 +1,7 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
+import { AlertTriangle } from 'lucide-react'
 
 import ContributionBar from '@/components/ui/ContributionBar'
 import ProjectTabs from '@/components/projects/detail/ProjectTabs'
@@ -40,7 +41,7 @@ function PriorityBadge({ priority }: { priority: string }) {
   )
 }
 
-function getDeadlineDisplay(deadline: Date | null): { text: string; className: string } {
+function getDeadlineDisplay(deadline: Date | null): { text: string; className: string; warn?: boolean } {
   if (!deadline) return { text: '—', className: 'text-muted' }
   const d = new Date(deadline as unknown as string)
   const diffDays = Math.floor((d.getTime() - Date.now()) / (1000 * 60 * 60 * 24))
@@ -50,7 +51,7 @@ function getDeadlineDisplay(deadline: Date | null): { text: string; className: s
     year: 'numeric',
   })
   if (diffDays < 0) return { text: `✕ ${formatted}`, className: 'text-status-danger' }
-  if (diffDays <= 7) return { text: `⚠ ${formatted}`, className: 'text-status-warning' }
+  if (diffDays <= 7) return { text: formatted, className: 'text-status-warning', warn: true }
   return { text: formatted, className: 'text-secondary' }
 }
 
@@ -111,7 +112,7 @@ export default function ProjectHeader({
             <ProjectStatusBadge status={project.status} />
             <PriorityBadge priority={project.priority} />
             {project.deadline && (
-              <span className={`font-mono text-xs ${deadline.className}`}>{deadline.text}</span>
+              <span className={`inline-flex items-center gap-1 font-mono text-xs ${deadline.className}`}>{deadline.warn && <AlertTriangle className="h-3 w-3" aria-hidden="true" />}{deadline.text}</span>
             )}
           </div>
         </div>
