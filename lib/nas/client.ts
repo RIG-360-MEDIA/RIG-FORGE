@@ -72,6 +72,31 @@ export async function nasServers(): Promise<NasServer[]> {
   return servers
 }
 
+export interface NasServerStatus extends NasServer {
+  /** The connector could connect to this NAS over SMB and list its share. */
+  reachable: boolean
+  error?: string | null
+}
+
+// Whether each NAS actually answers right now. The connector being up says
+// nothing about the NAS behind it (it can serve every request while SMB is
+// down), so this asks the connector, which tries an SMB connect per server.
+// Short cache: the connector caches its own checks for 30 s.
+let statusCache: { at: number; servers: NasServerStatus[] } | null = null
+
+export async function nasServerStatus(): Promise<NasServerStatus[]> {
+  if (statusCache && Date.now() - statusCache.at < 20_000) return statusCache.servers
+  const r = await nasFetch('/servers')
+  if (!r.ok) throw new Error(`NAS servers failed (${r.status})`)
+  const j = (await r.json()) as { servers: Array<NasServer & { reachable?: boolean; error?: string | null }> }
+  // An older connector without the check reports no flag: treat as reachable,
+  // which is what this code assumed before.
+  const servers = (j.servers ?? []).map((s) => ({ label: s.label, reachable: s.reachable !== false, error: s.error ?? null }))
+  statusCache = { at: Date.now(), servers }
+  serversCache = { at: Date.now(), servers: servers.map(({ label }) => ({ label })) }
+  return servers
+}
+
 export async function nasList(server: string, path = '/'): Promise<{ path: string; items: NasEntry[] }> {
   const r = await nasFetch(`/list?server=${encodeURIComponent(server)}&path=${encodeURIComponent(path)}`)
   if (!r.ok) throw new Error(`NAS list failed (${r.status})`)

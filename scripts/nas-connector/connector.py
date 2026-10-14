@@ -35,6 +35,7 @@ SERVERS = {s["label"]: s for s in CFG["servers"]}
 # only until the first index build completes.
 INDEX = {}                 # server -> list[dict]
 INDEX_META = {}            # server -> {"count", "updated", "building"}
+INDEX_SQ = {}              # server -> list[str]: squashed names, parallel to INDEX (see _squash)
 INDEX_LOCK = threading.Lock()
 INDEX_MAX_ENTRIES = int(os.environ.get("NAS_INDEX_MAX", "80000"))
 INDEX_MAX_DEPTH = int(os.environ.get("NAS_INDEX_DEPTH", "9"))
@@ -110,8 +111,10 @@ def _build_index(server: str):
             conn.close()
         except Exception:
             pass
+    squashed = [_squash(e["name"]) for e in entries]
     with INDEX_LOCK:
         INDEX[server] = entries
+        INDEX_SQ[server] = squashed
         INDEX_META[server] = {"count": len(entries), "updated": int(time.time()), "building": False}
 
 
@@ -238,9 +241,56 @@ def reindex():
     return {"ok": True, "reindexing": list(SERVERS.keys())}
 
 
+# ── Reachability (does SMB actually work right now?) ─────────────────────────
+# /health only says this process is up, which is what the restart watchdog
+# needs: a NAS outage must not make it restart the connector in a loop. Forge
+# needs the other question, whether the NAS itself answers, so /servers carries
+# a real SMB check per server: connect and list the share root. Cached briefly
+# so a busy Files page does not open an SMB session per request.
+REACH_TTL = int(os.environ.get("NAS_REACH_TTL", "30"))
+REACH = {}  # server -> {"reachable", "checkedAt", "error"}
+REACH_LOCK = threading.Lock()
+
+
+def _probe(server: str) -> dict:
+    try:
+        conn, share = _connect(server)
+    except HTTPException as e:
+        return {"reachable": False, "checkedAt": int(time.time()), "error": str(e.detail)}
+    try:
+        conn.listPath(share, "/")
+        return {"reachable": True, "checkedAt": int(time.time()), "error": None}
+    except Exception as e:
+        return {"reachable": False, "checkedAt": int(time.time()), "error": f"{server}: list failed ({type(e).__name__})"}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _reachability() -> dict:
+    now = time.time()
+    with REACH_LOCK:
+        stale = [s for s in SERVERS if now - REACH.get(s, {}).get("checkedAt", 0) >= REACH_TTL]
+    if stale:
+        out = {}
+        threads = [threading.Thread(target=lambda s=s: out.__setitem__(s, _probe(s)), daemon=True) for s in stale]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(15)
+        with REACH_LOCK:
+            for s in stale:
+                REACH[s] = out.get(s) or {"reachable": False, "checkedAt": int(time.time()), "error": f"{s}: check timed out"}
+    with REACH_LOCK:
+        return {s: dict(REACH[s]) for s in SERVERS}
+
+
 @app.get("/servers")
 def servers():
-    return {"servers": [{"label": k} for k in SERVERS]}
+    reach = _reachability()
+    return {"servers": [{"label": k, **reach[k]} for k in SERVERS]}
 
 
 @app.get("/list")
@@ -642,8 +692,46 @@ async def upload(server: str, path: str, file: UploadFile = File(...)):
             pass
 
 
-def _live_walk_search(server, ql, limit, base="/"):
+# ── Filename matching ────────────────────────────────────────────────────────
+# A plain substring test misses the same word written differently: "bylaws"
+# vs "By Laws", "By_Laws", "Bye-Laws" or "byelaws". So a name also matches when
+# it contains the query with spaces, underscores, hyphens and dots squashed out
+# (and the Indian "bye-laws" spelling folded into "bylaws"), or, for a query of
+# several words, every word in any order. Exact substring hits rank first.
+_SQUASH = re.compile(r"[\s_\-.]+")
+_BYE = re.compile(r"bye(?=laws?)")
+
+
+def _squash(s: str) -> str:
+    return _BYE.sub("by", _SQUASH.sub("", s.lower()))
+
+
+def _matcher(q: str):
+    """Returns name -> tier (0 exact substring, 1 squashed, 2 all words) or None."""
+    ql = q.lower().strip()
+    qs = _squash(ql)
+    words = [w for w in (_squash(t) for t in re.split(r"[\s_\-]+", ql)) if w]
+
+    def tier(name: str, ns: str = None):
+        n = name.lower()
+        if ql and ql in n:
+            return 0
+        if not qs:
+            return None
+        if ns is None:
+            ns = _squash(n)
+        if qs in ns:
+            return 1
+        if len(words) > 1 and all(w in ns for w in words):
+            return 2
+        return None
+
+    return tier
+
+
+def _live_walk_search(server, q, limit, base="/"):
     """Fallback used only before the index for this server is built."""
+    match = _matcher(q)
     conn, share = _connect(server)
     results = []
     deadline = time.time() + 12
@@ -659,7 +747,7 @@ def _live_walk_search(server, ql, limit, base="/"):
                 if f.filename in (".", ".."):
                     continue
                 fp = (p.rstrip("/") + "/" + f.filename)
-                if ql in f.filename.lower():
+                if match(f.filename) is not None:
                     results.append({"name": f.filename, "path": fp, "isDir": bool(f.isDirectory), "size": int(f.file_size), "mtime": int(f.last_write_time or 0)})
                     if len(results) >= limit:
                         break
@@ -686,7 +774,6 @@ def search(
     (only files modified after it) — powers "survey drawings, latest"."""
     if server not in SERVERS:
         raise HTTPException(404, f"unknown server '{server}'")
-    ql = q.lower().strip()
     # Optional folder scope: only match files under this path (like a Windows
     # "search in current folder"). "/" = whole drive.
     scope = _norm(path)
@@ -710,18 +797,24 @@ def search(
 
     with INDEX_LOCK:
         idx = INDEX.get(server)
+        sq = INDEX_SQ.get(server)
     if idx is not None:
         # Instant in-memory filter over the pre-built index. When sorting we must
         # collect ALL matches first (not stop at `limit`), or "latest" would only
-        # sort an arbitrary first slice.
+        # sort an arbitrary first slice. Exact substring hits rank first; the
+        # scan stops early only once there are enough of those.
         cap = limit if sort == "relevance" and not since else 5000
-        results = []
-        for e in idx:
-            if ql in e["name"].lower() and (prefix is None or e["path"].startswith(prefix)):
-                results.append(e)
-                if len(results) >= cap:
+        match = _matcher(q)
+        tiers = ([], [], [])
+        for i, e in enumerate(idx):
+            if prefix is not None and not e["path"].startswith(prefix):
+                continue
+            t = match(e["name"], sq[i] if sq is not None and i < len(sq) else None)
+            if t is not None:
+                tiers[t].append(e)
+                if len(tiers[0]) >= cap:
                     break
-        return _finish(results, "index")
+        return _finish(tiers[0] + tiers[1] + tiers[2], "index")
     # Index not ready yet → one-time live fallback (already path-scoped).
-    results = _live_walk_search(server, ql, max(limit, 200) if (since or sort != "relevance") else limit, base=scope)
+    results = _live_walk_search(server, q, max(limit, 200) if (since or sort != "relevance") else limit, base=scope)
     return _finish(results, "live")

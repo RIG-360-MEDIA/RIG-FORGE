@@ -514,7 +514,7 @@ function buildChatTools(caller: ToolUser): ToolSet {
             const { getOrCreateDm, sendMessage } = await import('@/lib/chat/service')
             const meUser = await prisma.user.findUnique({ where: { id: caller.userId }, select: { name: true } })
             const who = meUser?.name ?? 'Someone'
-            const text = `📹 ${who} started a video call${topic ? `: ${topic}` : ''} — join: ${link}`
+            const text = `${who} started a video call${topic ? `: ${topic}` : ''} — join: ${link}`
 
             const group = await prisma.conversation.findFirst({
               where: { type: 'GROUP', title: { contains: sendTo, mode: 'insensitive' }, members: { some: { userId: caller.userId } } },
@@ -604,7 +604,7 @@ const TOOL_GROUPS: Array<{ prefixes: string[]; trigger: RegExp }> = [
   { prefixes: ['drive_', 'propose_drive_'], trigger: /\b(drive|file|files|folder|folders|document|\bdocs?\b|upload|attachment|spreadsheet|sheet)\b/i },
   { prefixes: ['wa_', 'propose_wa_'], trigger: /\b(whatsapp|whats app|\bwa\b|broadcast)\b/i },
   { prefixes: ['nas_'], trigger: /\b(nas|file|files|folder|folders|document|\bdocs?\b|drawing|drawings|dwg|revit|\bcad\b|blueprint|floor ?plan|elevation|render|renders|spec|specs|drive|project files|on the server)\b/i },
-  { prefixes: ['bylaws_'], trigger: /\b(bylaw|by-law|by ?laws|regulation|ordinance|zoning|setback|statute|building code|compliance)\b/i },
+  { prefixes: ['bylaws_'], trigger: /\b(bye?[ _-]?laws?|regulation|ordinance|zoning|setback|statute|building code|compliance)\b/i },
 ]
 
 // Name prefixes of the optional (integration) tool groups. A query whose tool
@@ -803,10 +803,10 @@ function buildGmailTools(caller: ToolUser): ToolSet {
         '',
         '  4. SIGN-OFF — exactly these two lines:',
         '       "Catch you then!"',
-        `       "— Forgie 🤖 (AI assistant in ${APP_NAME_UPPER}, sending this for <CallerFirstName>)"`,
+        `       "— Forgie (AI assistant in ${APP_NAME_UPPER}, sending this for <CallerFirstName>)"`,
         '     Vary "Catch you then!" only when it doesn\'t fit the context',
         '     (e.g. no meeting → use "Hope that helps!" or "Have a good one!"',
-        '     instead). The "— Forgie 🤖" line stays exactly as shown.',
+        '     instead). The "— Forgie" line stays exactly as shown.',
         '',
         'Never use "Hi <Name>" or "Dear <Name>" — always "Hi there".',
       ].join('\n'),
@@ -945,7 +945,7 @@ function buildWhatsappTools(): ToolSet {
         '',
         'Message tone: WhatsApp messages from Forgie should be short and',
         'conversational (1-3 sentences). No formal email structure.',
-        'Sign off as "— Forgie 🤖" only if the message is more than one line.',
+        'Sign off as "— Forgie" only if the message is more than one line.',
       ].join('\n'),
       inputSchema: z.object({
         to: z.string().min(3).describe('E.164 number, group JID, or 10-digit Indian number'),

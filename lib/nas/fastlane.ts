@@ -8,7 +8,10 @@ import { isNasEnabled, nasServers, nasSearch, nasSemantic, nasFetchBytes } from 
 import { extractText, isExtractable } from './extract'
 
 const VERB = /\b(find|search|locate|look for|looking for|show me|do we have|is there|are there|where is|where are|pull up|get me)\b/i
-const NOUN = /\b(nas|file|files|folder|folders|drawing|drawings|dwg|revit|document|documents|pdf|blueprint|floor ?plan|elevation|render|renders|drive|server)\b/i
+// Bylaws in any spelling (bylaws, by laws, by_laws, bye-laws, byelaws) are
+// documents too: "find the byelaws" is a file request even without "pdf".
+// Not a bare "by law", so "find what is required by law" stays with the LLM.
+const NOUN = /\b(nas|file|files|folder|folders|drawing|drawings|dwg|revit|document|documents|pdf|blueprint|floor ?plan|elevation|render|renders|drive|server|bylaws?|byelaws?|by[ _-]laws|bye[ _-]laws?)\b/i
 // An explicit NAS/server mention is strong enough intent to search even without
 // a verb ("elevation drawings on the nas", "BOQ files on the server").
 const NAS_EXPLICIT = /\b(nas|on (the )?server|from (the )?server|on (the )?drive)\b/i
@@ -79,7 +82,7 @@ export async function tryNasFastLane(raw: string): Promise<string | null> {
     const fmtDate = (m?: number) =>
       m ? new Date(m * 1000).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : null
     const lines: string[] = [
-      `🗄️ Found ${hits.length} match${hits.length === 1 ? '' : 'es'} for “${term}” on the NAS${
+      `Found ${hits.length} match${hits.length === 1 ? '' : 'es'} for “${term}” on the NAS${
         semantic ? ' (by meaning)' : ''
       }${wantsLatest ? ' — newest first' : ''}:`,
     ]
@@ -89,7 +92,7 @@ export async function tryNasFastLane(raw: string): Promise<string | null> {
       lines.push(`• [${f.name}](${url}) — _${f.server}_${d ? ` · ${d}` : ''} ${f.path}`)
     }
     for (const d of dirs) {
-      lines.push(`• 📁 ${d.name} — _${d.server}_ ${d.path}`)
+      lines.push(`• Folder: ${d.name} — _${d.server}_ ${d.path}`)
     }
     if (hits.length > files.length + dirs.length) {
       lines.push(`…and more. Open Workspace → Files to browse everything.`)
