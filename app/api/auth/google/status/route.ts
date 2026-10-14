@@ -11,7 +11,7 @@ import { type NextRequest } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getTokenFromCookies, verifyToken } from '@/lib/auth'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
-import { isGoogleConfigured } from '@/lib/google/oauth'
+import { isGoogleConfigured, getAuthorizedClient, GOOGLE_REAUTH_REQUIRED } from '@/lib/google/oauth'
 
 export async function GET(request: NextRequest) {
   const token = getTokenFromCookies(request)
@@ -35,10 +35,27 @@ export async function GET(request: NextRequest) {
     select: { email: true, connectedAt: true, scopes: true },
   })
 
+  // A stored connection is not necessarily a working one: Google can kill the
+  // refresh token (the user revoked access, or the OAuth app is still in
+  // "Testing", where every token dies after 7 days). Check it the same way
+  // every Google feature does, so this page stops saying "Connected" while
+  // Mail, Drive and Forgie say "reconnect". The check only calls Google when
+  // the access token is about to expire; other failures (network, Google 5xx)
+  // are not treated as disconnected.
+  let needsReconnect = false
+  if (integ) {
+    try {
+      await getAuthorizedClient(claims.userId)
+    } catch (e) {
+      needsReconnect = e instanceof Error && e.message === GOOGLE_REAUTH_REQUIRED
+    }
+  }
+
   const scopes = integ?.scopes ?? ''
   return successResponse({
     configured: true,
-    connected: integ !== null,
+    connected: integ !== null && !needsReconnect,
+    needsReconnect,
     email: integ?.email ?? null,
     connectedAt: integ?.connectedAt ?? null,
     features: {

@@ -6,6 +6,8 @@ import { useSearchParams } from 'next/navigation'
 interface Status {
   configured: boolean
   connected: boolean
+  /** A connection exists but Google rejected it (token revoked or expired). */
+  needsReconnect?: boolean
   email: string | null
   connectedAt: string | null
   features?: {
@@ -152,6 +154,12 @@ function GoogleConnectCardInner() {
                 </p>
               )}
             </>
+          ) : status.needsReconnect ? (
+            <p className="text-xs text-amber-700 mt-3 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg">
+              Your Google connection{status.email ? <> for <span className="font-medium">{status.email}</span></> : null} has
+              expired, so Mail, Drive, Calendar and Forgie cannot use it. Click <strong>Reconnect Google</strong> to
+              sign in again.
+            </p>
           ) : (
             <>
               <p className="text-sm text-text-secondary mt-2">
@@ -191,7 +199,7 @@ function GoogleConnectCardInner() {
                 : 'bg-[#1A1A1A] text-white hover:bg-[#333]',
             ].join(' ')}
           >
-            {busy ? '...' : status.connected ? 'Disconnect' : 'Connect Google'}
+            {busy ? '...' : status.connected ? 'Disconnect' : status.needsReconnect ? 'Reconnect Google' : 'Connect Google'}
           </button>
         </div>
       </div>
