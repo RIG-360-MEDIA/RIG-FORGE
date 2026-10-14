@@ -1,12 +1,15 @@
 'use client'
 
+import type { ReactNode } from 'react'
+import { Hand, TriangleAlert } from 'lucide-react'
+
 import type { NotificationItem as NotificationItemType } from '@/store/notificationStore'
 
 // ─── Type icon / colour ────────────────────────────────────────────────────
 
-function getTypeSymbol(type: string): string {
+function getTypeSymbol(type: string): ReactNode {
   switch (type) {
-    case 'WELCOME':                return '👋'
+    case 'WELCOME':                return <Hand className="inline-block w-3.5 h-3.5" aria-hidden="true" />
     case 'TICKET_RAISED':         return '■'
     case 'TICKET_ACCEPTED':       return '○'
     case 'TICKET_ASSIGNED':       return '◆'
@@ -14,7 +17,7 @@ function getTypeSymbol(type: string): string {
     case 'TICKET_CANCELLED':      return '✕'
     case 'TASK_ASSIGNED':         return '◆'
     case 'TASK_DONE':             return '✓'
-    case 'TASK_OVERDUE':          return '⚠'
+    case 'TASK_OVERDUE':          return <TriangleAlert className="inline-block w-3.5 h-3.5" aria-hidden="true" />
     case 'PROJECT_UPDATE':        return '▸'
     case 'PROJECT_ANNOUNCEMENT':  return '◉'
     case 'PROJECT_MEMBER_ADDED':  return '+'

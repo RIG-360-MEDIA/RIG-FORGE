@@ -24,6 +24,14 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null)
   const [brand, setBrand] = useState({ appName: APP_NAME, appNameUpper: APP_NAME_UPPER })
 
+  // Forgot-password mode: the request goes to the user's company admins, who
+  // reset it from People and hand over a temporary password (no email service).
+  const [mode, setMode] = useState<'signin' | 'forgot'>('signin')
+  const [resetEmail, setResetEmail] = useState('')
+  const [resetSending, setResetSending] = useState(false)
+  const [resetDone, setResetDone] = useState(false)
+  const [resetError, setResetError] = useState<string | null>(null)
+
   // Always clear any existing session when visiting login page
   // User must re-authenticate every time
   useEffect(() => {
@@ -76,6 +84,44 @@ export default function LoginPage() {
     }
   }
 
+  function openForgot(): void {
+    setResetEmail(email.trim())
+    setResetDone(false)
+    setResetError(null)
+    setError(null)
+    setMode('forgot')
+  }
+
+  function backToSignIn(): void {
+    setMode('signin')
+    setResetDone(false)
+    setResetError(null)
+  }
+
+  async function handleResetRequest(): Promise<void> {
+    if (resetSending) return
+    if (!resetEmail.trim()) {
+      setResetError('Enter your email address')
+      return
+    }
+    setResetSending(true)
+    setResetError(null)
+    try {
+      // The server answers the same way whether or not the account exists, so
+      // any completed request shows the same confirmation.
+      await fetch('/api/auth/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: resetEmail.trim() }),
+      })
+      setResetDone(true)
+    } catch {
+      setResetError('Unable to connect. Please try again.')
+    } finally {
+      setResetSending(false)
+    }
+  }
+
   return (
     <div className="relative min-h-screen flex items-center justify-center">
       <div className="absolute inset-0 z-0">
@@ -88,6 +134,61 @@ export default function LoginPage() {
           <p className="type-body-muted mt-2">Secure operational command access</p>
         </div>
 
+        {mode === 'forgot' ? (
+          <form
+            className="mt-9 space-y-5"
+            onSubmit={(e) => { e.preventDefault(); void handleResetRequest() }}
+          >
+            <div>
+              <p className="type-meta text-accent-ink">RESET ACCESS KEY</p>
+              <p className="type-body-muted mt-2">
+                Enter your account email. Your company&apos;s administrators will be asked to reset your password.
+              </p>
+            </div>
+
+            {resetDone ? (
+              <Alert variant="success">
+                If that email belongs to an account, your company&apos;s administrators have been notified. They will reset your password and give you a temporary one.
+              </Alert>
+            ) : (
+              <>
+                <Input
+                  id="reset-email"
+                  type="email"
+                  label="Email Address"
+                  value={resetEmail}
+                  onChange={(e) => setResetEmail(e.target.value)}
+                  disabled={resetSending}
+                  placeholder="you@company.com"
+                  autoComplete="email"
+                  maxLength={254}
+                />
+
+                {resetError && <Alert variant="error">ERROR  {resetError}</Alert>}
+
+                <Button
+                  type="submit"
+                  disabled={resetSending}
+                  className="w-full mt-2"
+                  size="lg"
+                  variant="primary"
+                >
+                  {resetSending ? 'SENDING...' : 'REQUEST RESET'}
+                </Button>
+              </>
+            )}
+
+            <div className="text-center">
+              <button
+                type="button"
+                onClick={backToSignIn}
+                className="font-mono text-[10px] tracking-widest uppercase text-text-muted hover:text-accent-ink"
+              >
+                Back to sign in
+              </button>
+            </div>
+          </form>
+        ) : (
         <form
           className="mt-9 space-y-5"
           onSubmit={(e) => { e.preventDefault(); void handleSubmit() }}
@@ -123,6 +224,16 @@ export default function LoginPage() {
             >
               {showPassword ? 'HIDE' : 'SHOW'}
             </button>
+            <div className="mt-2 flex justify-end">
+              <button
+                type="button"
+                onClick={openForgot}
+                disabled={isLoading}
+                className="font-mono text-[10px] tracking-widest uppercase text-text-muted hover:text-accent-ink disabled:opacity-50"
+              >
+                Forgot password?
+              </button>
+            </div>
           </div>
 
           {error && <Alert variant="error">ERROR  {error}</Alert>}
@@ -137,6 +248,7 @@ export default function LoginPage() {
             {isLoading ? 'SIGNING IN...' : 'SIGN IN'}
           </Button>
         </form>
+        )}
 
         <div className="mt-10 text-center">
           <p className="type-meta">{brand.appNameUpper} v1.0 — INTERNAL USE ONLY</p>
