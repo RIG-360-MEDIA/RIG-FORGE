@@ -232,10 +232,56 @@ async function main() {
   // Make HF succeed, so the only thing missing is Qdrant.
   globalThis.fetch = (async (_u: unknown, init: any) =>
     new Response(JSON.stringify(JSON.parse(init.body).inputs.map(() => vec())), { status: 200 })) as typeof fetch
-  const noQdrant = await indexFile({ ...base, path: '/utility data/By_Laws/ok.txt', bytes: Buffer.from('A real bylaw clause about setbacks.') })
+  const noQdrant = await indexFile({ ...base, path: '/utility data/By_Laws/ok.txt', bytes: Buffer.from('A real bylaw clause about front and side setbacks for plots.') })
   check('Qdrant unreachable -> "failed", not silently "indexed"', noQdrant.status === 'failed' && /QDRANT_URL/.test(noQdrant.reason),
     noQdrant.status === 'failed' ? noQdrant.reason.slice(0, 60) : noQdrant.status)
   globalThis.fetch = realFetch
+
+  // ── Near-empty chunks are not indexed ─────────────────────────────────────
+  // On multilingual-e5-large, chunks like ",2016", "(Ss)" or a column of
+  // numbers scored 0.81-0.82 against ANY query (even "xyzzy quantum banana
+  // spaceship"), above RAG_MIN_SCORE and close to real hits.
+  console.log('\n## Near-empty chunks (number tables, stray headers) are not indexed')
+  const { hasEnoughText, letterCount, substantiveChunks, MIN_CHUNK_LETTERS } = await import('../lib/rag/chunk')
+  check('default threshold is 40 letters', MIN_CHUNK_LETTERS === 40, String(MIN_CHUNK_LETTERS))
+  // Real junk texts from trijya_bylaws_e5 (14 Oct 2026).
+  const junkTexts = [',2016', '(Ss)', '9.38 \n14.20 \n15.00 \n15.00 \n1  200 \n2.22 \n4.02 \n6.28 \n8.99 \n13.61',
+    'Clear Design Sky\n\n(Clause B-1.1)\n\n07\n\n(8)\n\n08\n\n9)\n\n0.9\n\n(10)\n\n1.0\n\n(11)\n\n1\n\n(12)\n\n12\n\n(13)\n\n13\n\n(14)\n\n14\n\n(15)\n\n15\n\n(16)\n\n16\n\n(17)\n\nदा',
+    '1496.77 1 503.22 \n1509.67 1516.13 1 522.58 \n1529.03 1 535.48 \n1541.93 \n240 \n1548.38 1554.84']
+  check('junk chunks (",2016", "(Ss)", number tables) are rejected', junkTexts.every((t) => !hasEnoughText(t)), junkTexts.map(letterCount).join(','))
+  check('a real English clause is kept', hasEnoughText('The minimum front setback for residential plots shall be 3.0 metres.'))
+  // Devanagari vowel signs are combining marks (\p{M}), not letters (\p{L}).
+  // Counting only \p{L} would under-count Hindi by about a third.
+  check('Devanagari vowel signs count as letters (की = 2)', letterCount('की') === 2, String(letterCount('की')))
+  const hindiClause = 'भवन की अधिकतम ऊंचाई बारह मीटर होगी तथा सेटबैक तीन मीटर रखा जाएगा।'
+  check('a short real Hindi clause is kept', hasEnoughText(hindiClause), `${letterCount(hindiClause)} letters, ${(hindiClause.match(/\p{L}/gu) ?? []).length} without marks`)
+  check('digits and punctuation do not count', letterCount('12.5 m, (ii) 4,500 sq.m — 30%') === 6, String(letterCount('12.5 m, (ii) 4,500 sq.m — 30%')))
+  check('RAG_MIN_CHUNK_LETTERS can be overridden per call', hasEnoughText('Short heading here', 10) && !hasEnoughText('Short heading here', 40))
+  const mixedChunks = substantiveChunks([{ index: 0, text: hindiClause }, { index: 1, text: ',2016' }, { index: 2, text: '(Ss)' }, { index: 3, text: 'The minimum front setback for residential plots shall be 3.0 metres.' }])
+  check('junk dropped and the rest renumbered 0..n-1 (so pruneStaleChunks(n) still trims old points)',
+    mixedChunks.skipped === 2 && mixedChunks.kept.map((c) => c.index).join() === '0,1' && mixedChunks.kept[1]!.text.startsWith('The minimum'), JSON.stringify(mixedChunks.kept.map((c) => c.index)))
+  const allJunk = substantiveChunks([{ index: 0, text: ',2016' }])
+  check('a file of nothing but junk yields no chunks (and is counted as skipped)', allJunk.kept.length === 0 && allJunk.skipped === 1)
+
+  // End to end through indexFile: a long single-paragraph number table is
+  // hard-split into pure-number chunks; none of them may reach the embedder.
+  const realPara = 'Front setback for residential plots between 250 and 500 square metres shall be 4.5 metres. '.repeat(12).trim()
+  const table = Array.from({ length: 700 }, (_, i) => (i * 1.37).toFixed(2)).join(' \n')
+  const tailPara = 'Parking shall be provided at one equivalent car space for every 100 square metres of built-up area.'
+  const tableDoc = `${realPara}\n\n${table}\n\n${tailPara}`
+  const rawChunks = chunkText(tableDoc)
+  const embedded: string[] = []
+  globalThis.fetch = (async (_u: unknown, init: any) => {
+    const inputs: string[] = JSON.parse(init.body).inputs
+    embedded.push(...inputs)
+    return new Response(JSON.stringify(inputs.map(() => vec())), { status: 200 })
+  }) as typeof fetch
+  await indexFile({ ...base, path: '/utility data/By_Laws/table.txt', bytes: Buffer.from(tableDoc) })
+  globalThis.fetch = realFetch
+  check('indexFile embeds no near-empty chunk', embedded.length > 0 && embedded.every((t) => letterCount(t) >= 40),
+    `${rawChunks.length} chunks, ${embedded.length} embedded, min ${Math.min(...embedded.map(letterCount))} letters`)
+  check('  at least one pure-number chunk was dropped', rawChunks.some((c) => !hasEnoughText(c.text)) && embedded.length < rawChunks.length)
+  check('  the real text on both sides of the table is still embedded', embedded.some((t) => t.includes('Front setback')) && embedded.some((t) => t.includes('Parking shall')))
 
   // ── Large/scanned PDFs: connector-side extraction (feature C/D) ───────────
   // Qdrant is deliberately unconfigured in this suite (see file header), so a
@@ -256,7 +302,7 @@ async function main() {
     `${preText.status}: ${preText.status === 'failed' ? preText.reason.slice(0, 50) : ''} (no bytes were ever checked, no "over the 1 MB")`)
   const ocrOutcome = await indexFile({
     ...base, path: '/utility data/By_Laws/scan.pdf',
-    preExtracted: { text: 'Recovered via OCR: setback shall be 4.5 metres.', truncated: false, method: 'ocr' },
+    preExtracted: { text: 'Recovered via OCR: the front setback shall be 4.5 metres for residential plots.', truncated: false, method: 'ocr' },
   })
   check('OCR-recovered preExtracted text takes the same path, not reported as "needs OCR" again',
     ocrOutcome.status === 'failed' && /QDRANT_URL/.test(ocrOutcome.reason), ocrOutcome.status === 'failed' ? ocrOutcome.reason.slice(0, 50) : ocrOutcome.status)
