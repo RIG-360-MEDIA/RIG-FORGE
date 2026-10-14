@@ -191,7 +191,7 @@ function TaskRow({ task, currentUserId, canManage, onStatusChange, onEdit, onDel
               {task.description && (
                 <div>
                   <span className="text-muted text-xs uppercase tracking-wider">Description</span>
-                  <p className="mt-1 text-foreground">{task.description}</p>
+                  <p className="mt-1 text-foreground whitespace-pre-line">{task.description}</p>
                 </div>
               )}
               {task.expectedOutput && (
@@ -232,8 +232,15 @@ interface TaskFormModalProps {
 function TaskFormModal({ mode, projectId, members, task, onClose, onSaved }: TaskFormModalProps) {
   const isEdit = mode === 'edit'
   const [title, setTitle]               = useState(task?.title ?? '')
-  const [description, setDescription]   = useState(task?.description ?? '')
-  const [expectedOutput, setExpected]   = useState(task?.expectedOutput ?? '')
+  // One text field. Tasks used to have a separate Expected Output; an older
+  // task that has one is folded into the description when edited, so nothing
+  // is lost and the separate field empties out over time.
+  const [description, setDescription]   = useState(() => {
+    const d = task?.description?.trim() ?? ''
+    const eo = task?.expectedOutput?.trim() ?? ''
+    if (!eo) return d
+    return d ? `${d}\n\nExpected output: ${eo}` : `Expected output: ${eo}`
+  })
   const [assigneeId, setAssigneeId]     = useState(task?.assigneeId ?? '')
   const [priority, setPriority]         = useState<Priority>((task?.priority as Priority) ?? 'MEDIUM')
   const [points, setPoints]             = useState<string>(task?.points != null ? String(task.points) : '')
@@ -249,8 +256,7 @@ function TaskFormModal({ mode, projectId, members, task, onClose, onSaved }: Tas
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    // Only the title is required. Expected Output stays available for anyone who
-    // wants to record a deliverable, but a description alone is often enough.
+    // Only the title is required.
     if (!title.trim()) {
       setError('Title is required.')
       return
@@ -263,7 +269,8 @@ function TaskFormModal({ mode, projectId, members, task, onClose, onSaved }: Tas
       const payload: Record<string, unknown> = {
         title: title.trim(),
         description: description.trim() || null,
-        expectedOutput: expectedOutput.trim() || null,
+        // Folded into the description above (see the initial value).
+        expectedOutput: null,
         assigneeId: assigneeId || null,
         priority,
         points: points === '' ? null : Number(points),
@@ -329,20 +336,9 @@ function TaskFormModal({ mode, projectId, members, task, onClose, onSaved }: Tas
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              rows={2}
-              className={`${fieldClass} resize-none`}
-              placeholder="Optional description"
-            />
-          </div>
-
-          <div>
-            <label className="text-xs text-muted uppercase tracking-wider">Expected Output</label>
-            <textarea
-              value={expectedOutput}
-              onChange={(e) => setExpected(e.target.value)}
-              rows={2}
-              className={`${fieldClass} resize-none`}
-              placeholder="Optional — what should be delivered?"
+              rows={4}
+              className={`${fieldClass} resize-y`}
+              placeholder="Optional: what needs to be done and what should be delivered"
             />
           </div>
 
