@@ -6,16 +6,12 @@ name: Forgie crons
 # that it was never set up ("confirm it's configured, or the jobs silently
 # never fire").
 #
-# SCHEDULED: only the two RAG jobs. They do nothing at all until RAG is
-# configured on Render (HF_API_KEY + QDRANT_URL), so this is safe to have
-# running before the feature is switched on.
-#
-# MANUAL ONLY (Actions tab -> "Run workflow"): the four older jobs. They have
-# never run in production, they act on real data (daily-log-draft AI quota,
-# the standup digest, health notifications, and the HARD DELETE of expired
-# disappearing chat messages), and they run as the default company only. Do
-# not add them to the schedule until that is decided and checked. To schedule
-# one: add its cron line below AND its case in "Pick endpoint".
+# SCHEDULED: all six jobs. The four older ones (daily-log drafts, standup
+# digest, project health, disappearing-message cleanup) were manual-only until
+# 14 Oct 2026 because they ran as the default company only; they now run once
+# per company (lib/cron.ts forEachActiveOrg), and Kavya asked for all four to
+# be scheduled. Every job can still be run by hand from the Actions tab. To add
+# a schedule: add its cron line below AND its case in "Pick endpoint".
 #
 # Each schedule is matched by its EXACT cron string via github.event.schedule,
 # so every schedule must stay textually unique.
@@ -27,6 +23,10 @@ on:
   schedule:
     - cron: '30 20 * * *'   # rag-stale-sweep — 2:00am IST (low traffic; its 48 h grace window means daily is plenty)
     - cron: '*/15 * * * *'  # rag-retry       — every 15 min (each row has its own backoff; most runs find nothing due)
+    - cron: '30 12 * * *'   # daily-log-drafts     — 6:00pm IST
+    - cron: '30 3 * * *'    # standup-digest       — 9:00am IST
+    - cron: '0 4 * * *'     # project-health       — 9:30am IST
+    - cron: '0 */4 * * *'   # disappearing-cleanup — every 4 hours
   workflow_dispatch:         # manual "Run workflow" from the Actions tab
     inputs:
       endpoint:
@@ -59,6 +59,10 @@ jobs:
           case "${{ github.event.schedule }}" in
             '30 20 * * *')  echo "path=rag-stale-sweep" >> "$GITHUB_OUTPUT" ;;
             '*/15 * * * *') echo "path=rag-retry" >> "$GITHUB_OUTPUT" ;;
+            '30 12 * * *')  echo "path=daily-log-drafts" >> "$GITHUB_OUTPUT" ;;
+            '30 3 * * *')   echo "path=standup-digest" >> "$GITHUB_OUTPUT" ;;
+            '0 4 * * *')    echo "path=project-health" >> "$GITHUB_OUTPUT" ;;
+            '0 */4 * * *')  echo "path=disappearing-cleanup" >> "$GITHUB_OUTPUT" ;;
             *) echo "No endpoint mapped for schedule '${{ github.event.schedule }}'" >&2; exit 1 ;;
           esac
 
