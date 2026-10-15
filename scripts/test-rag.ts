@@ -620,6 +620,38 @@ async function main() {
   const stillMd = await extractForIndex('readme.md', Buffer.from('# hi'))
   check('adding .docx did not affect other extensions', stillMd.ok && stillMd.text.includes('# hi'))
 
+  // ── Whole-question matching: topic AND plot area (query-match.ts) ─────────
+  console.log('\n## Whole-question matching (topic + plot area, all required)')
+  {
+    const qm = await import('../lib/rag/query-match')
+    const a1 = qm.analyzeQuery('FAR for 2000 sq meter plot')
+    check('"FAR for 2000 sq meter plot" -> topic FAR and area 2000', a1.topics.join() === 'far' && a1.area === 2000, JSON.stringify(a1))
+    const a2 = qm.analyzeQuery('2000 वर्गमीटर भूखंड का एफ.ए.आर.')
+    check('the same question in Hindi -> FAR and 2000', a2.topics.join() === 'far' && a2.area === 2000, JSON.stringify(a2))
+    const a3 = qm.analyzeQuery('setback and parking for a 1,500 sqm plot')
+    check('two topics and a comma number are all required', a3.topics.join() === 'setback,parking' && a3.area === 1500, JSON.stringify(a3))
+    check('a plain question is not constrained', !qm.isConstrained(qm.analyzeQuery('what does the bylaw say about green buildings')))
+
+    // Real passages from trijya_bylaws_e5 (202504161857302632Bylaws_160425.pdf).
+    const farTable = '4.1.6 Ground Coverage and FAR The ground coverage and FAR of the buildings shall be as follows: Plot Area (sqm) Ground Coverage (%) Base FAR Max. Permissible FAR ≥40 to 150 Max. coverage after ensuring setbacks 2.00 2.0 >150 to 300 Max. coverage after ensuring setbacks 1.80 2.0 >300 to 500 Max. coverage after ensuring setbacks 1.75 2.0 >500 to1200 Max. coverage after ensuring setbacks 1.50 2.0 >1200 Max. coverage after ensuring setbacks 1.25 2.0'
+    const r2000 = qm.matchPassage(farTable, a1)
+    check('FAR table: a 2000 sq m plot falls in the open ">1200" row', r2000?.quality === 3 && /^>\s*1200 Max\. coverage.*1\.25 2\.0/.test(r2000?.row ?? ''), JSON.stringify(r2000))
+    const r400 = qm.matchPassage(farTable, qm.analyzeQuery('FAR for 400 sqm plot'))
+    check('FAR table: a 400 sq m plot falls in ">300 to 500", not a wider row', /^>300 to 500/.test(r400?.row ?? ''), JSON.stringify(r400))
+    const setbackTable = 'Plot Area (sqm) Setback (meter) Front Rear Side-1 Side-2 =>100 – 300 3 1.5 0 0 >300 – 1000 4.5 3 3 0 >1000 – 2000 6 3 3 3'
+    const s200 = qm.matchPassage(setbackTable, qm.analyzeQuery('setback rules for 200 sq meter plot'))
+    check('setback table: 200 sq m -> the "=>100 - 300" row (3 m front, 1.5 m rear)', /=>100 - 300 3 1\.5/.test(s200?.row ?? ''), JSON.stringify(s200))
+    check('setback table is NOT a match for a FAR question (both parts are required)', qm.matchPassage(setbackTable, a1) === null)
+    check('FAR prose without a covering row is NOT a match for "FAR for 2000 sq m"',
+      qm.matchPassage('Base FAR shall be as given in the Master Plan for each land use. Plot area (sqm) is the net area.', a1) === null)
+    check('years are not area ranges ("2016-2020")', qm.coversArea('Plot area (sqm) amended 2016-2020 by G.O.', 2018) === null)
+    check('dates are not area ranges ("26-08-2019")', qm.coversArea('Plot size order dated 26-08-2019', 20) === null)
+    check('a height threshold (">15 m") does not cover a 200 sq m plot',
+      qm.coversArea('Plot Area (sqm) for buildings >15 meter height, setback 5', 200) === null)
+    check('">1200" is not used when a higher threshold below the area exists (">1500" for 2000)',
+      qm.coversArea('Plot size (sqm) >1200 FAR 1.25 >1500 FAR 1.20', 2000)?.row === '>1500')
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`)
   process.exitCode = fail ? 1 : 0
 }

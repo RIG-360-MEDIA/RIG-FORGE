@@ -12,6 +12,7 @@ import { createHash } from 'crypto'
 import { QdrantClient } from '@qdrant/js-client-rest'
 
 import { EMBEDDING_DIM } from './embeddings'
+import { analyzeQuery, isConstrained, matchPassage, type QueryConstraints } from './query-match'
 
 const QDRANT_URL = process.env.QDRANT_URL?.trim()
 const QDRANT_API_KEY = process.env.QDRANT_API_KEY?.trim() || undefined // "" (local/no-auth) must not become a real header
@@ -203,13 +204,14 @@ export async function searchChunks(
   vector: number[],
   limit = 8,
   collection: string = COLLECTION,
+  minScore: number = MIN_SCORE,
 ): Promise<ChunkSearchHit[]> {
   const res = await withCollection(collection, () => getClient().search(collection, {
     vector,
     limit,
     filter: { must: [{ key: 'organizationId', match: { value: organizationId } }] },
     with_payload: true,
-    score_threshold: MIN_SCORE,
+    score_threshold: minScore,
   }))
   return res.map((r) => ({ ...(r.payload as unknown as ChunkPayload), score: r.score }))
 }
@@ -288,4 +290,64 @@ export async function searchChunksHybrid(
 ): Promise<HybridChunkSearchHit[]> {
   const candidates = await searchChunks(organizationId, vector, limit * 4, collection)
   return rerankByKeyword(candidates, queryText, limit)
+}
+
+export interface ConstrainedSearchHit extends HybridChunkSearchHit {
+  /** The table row / figure that made the passage apply (e.g. "> 1200 ... 1.25 2.0"). */
+  matchedRow?: string
+}
+
+export interface ConstrainedSearchResult {
+  hits: ConstrainedSearchHit[]
+  constraints: QueryConstraints
+  /** False when no passage met every part of the question: `hits` are then
+   * the closest passages by meaning, and the caller must say so. */
+  allMatched: boolean
+}
+
+/** How far below MIN_SCORE the candidate pool reaches when the question is
+ * constrained. The topic + area checks are a much stronger relevance test
+ * than the score floor, and the passage that actually applies (a table row)
+ * often scores a little lower than prose that merely talks about the topic. */
+const CONSTRAINED_POOL_MARGIN = Number(process.env.RAG_CONSTRAINED_MARGIN ?? 0.04)
+const CONSTRAINED_POOL_SIZE = 200
+
+/**
+ * Search where every part of the question must hold for the SAME passage: the
+ * regulation topics it names (FAR, setback, ...) and the plot area it gives.
+ * See lib/rag/query-match.ts. Questions without such parts behave exactly like
+ * searchChunksHybrid.
+ */
+export async function searchChunksConstrained(
+  organizationId: string,
+  vector: number[],
+  queryText: string,
+  limit = 8,
+  collection: string = COLLECTION,
+): Promise<ConstrainedSearchResult> {
+  const constraints = analyzeQuery(queryText)
+  if (!isConstrained(constraints)) {
+    return { hits: await searchChunksHybrid(organizationId, vector, queryText, limit, collection), constraints, allMatched: true }
+  }
+  const pool = await searchChunks(organizationId, vector, CONSTRAINED_POOL_SIZE, collection, MIN_SCORE - CONSTRAINED_POOL_MARGIN)
+  const passing: Array<{ hit: ChunkSearchHit; quality: number; row?: string }> = []
+  for (const hit of pool) {
+    const m = matchPassage(hit.text, constraints)
+    if (m) passing.push({ hit, quality: m.quality, row: m.row })
+  }
+  if (passing.length > 0) {
+    // Exact coverage first (a table row that applies), then meaning + keywords.
+    const ranked = rerankByKeyword(passing.map((p) => ({ ...p.hit, quality: p.quality, matchedRow: p.row })), queryText, passing.length)
+    ranked.sort((a, b) => b.quality - a.quality)
+    return {
+      hits: ranked.slice(0, limit).map(({ quality: _q, ...h }) => ({ ...h, matchType: 'hybrid' as const })),
+      constraints,
+      allMatched: true,
+    }
+  }
+  // Nothing meets every part: return the closest passages by meaning (still
+  // above the normal floor), flagged so the caller says so instead of
+  // presenting them as the answer.
+  const closest = rerankByKeyword(pool.filter((h) => h.score >= MIN_SCORE), queryText, limit)
+  return { hits: closest, constraints, allMatched: false }
 }

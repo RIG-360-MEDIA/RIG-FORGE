@@ -11,13 +11,14 @@ import { isNasEnabled } from '@/lib/nas/client'
 import { getOrgId } from '@/lib/tenant-context'
 import { isBylawsIndexingEnabled } from '@/lib/rag/index-bylaws-file'
 import { embedQuery } from '@/lib/rag/embeddings'
-import { searchChunksHybrid, BYLAWS_COLLECTION } from '@/lib/rag/qdrant'
+import { searchChunksConstrained, BYLAWS_COLLECTION } from '@/lib/rag/qdrant'
+import { describeConstraints, isConstrained } from '@/lib/rag/query-match'
 
 export function buildBylawsTools(): ToolSet {
   return {
     bylaws_search: tool({
       description:
-        'Search Trijya\'s bylaws documents by meaning, e.g. "what is the setback requirement" or "rules on building height". Separate from general NAS file search — use this specifically for bylaw/regulation/ordinance questions. Returns the most relevant passages with their source document.',
+        'Search Trijya\'s bylaws and building codes (local bylaws, NBC, Hindi government orders) by meaning, e.g. "setback for a 200 sq m residential plot" or "FAR for a 2000 sq m plot". Pass the user\'s whole question, including any plot area. Every passage returned mentions each regulation topic in the question and, when a plot area is given, covers that area; `matchedRow` is the table row that applies. Separate from general NAS file search.',
       inputSchema: z.object({
         query: z.string().describe('A question or phrase describing the bylaw topic, e.g. "maximum building height in residential zones".'),
         limit: z.number().optional().describe('Max passages to return (default 6).'),
@@ -27,15 +28,22 @@ export function buildBylawsTools(): ToolSet {
         if (!isBylawsIndexingEnabled()) return { error: 'Bylaws search is not configured for this deployment.' }
         try {
           const vector = await embedQuery(query)
-          const hits = await searchChunksHybrid(getOrgId(), vector, query, limit ?? 6, BYLAWS_COLLECTION)
+          const { hits, constraints, allMatched } = await searchChunksConstrained(getOrgId(), vector, query, limit ?? 6, BYLAWS_COLLECTION)
           if (hits.length === 0) {
-            return { query, matches: [], hint: 'No indexed bylaws passages matched. The bylaws folder may not have been indexed yet (see /api/nas/bylaws/reindex).' }
+            return { query, matches: [], hint: 'No bylaws passage matched this question. Say so; do not answer from general knowledge.' }
           }
+          const requirement = isConstrained(constraints) ? describeConstraints(constraints) : null
           return {
             query,
+            ...(requirement && {
+              note: allMatched
+                ? `Every passage below covers ${requirement}. Answer from the matchedRow and excerpt, and cite the document.`
+                : `No passage covers ${requirement} together. These are only the closest passages: say that the exact rule was not found, and do not infer a figure for that plot size.`,
+            }),
             matches: hits.map((h) => ({
               server: h.server, path: h.path, fileName: h.fileName,
               score: Math.round(h.score * 1000) / 1000, matchType: h.matchType, excerpt: h.text,
+              ...('matchedRow' in h && h.matchedRow ? { matchedRow: h.matchedRow } : {}),
             })),
           }
         } catch (e) {

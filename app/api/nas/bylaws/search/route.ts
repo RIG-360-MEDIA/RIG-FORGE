@@ -6,7 +6,8 @@ import { isNasEnabled } from '@/lib/nas/client'
 import { getOrgId } from '@/lib/tenant-context'
 import { isBylawsIndexingEnabled } from '@/lib/rag/index-bylaws-file'
 import { embedQuery } from '@/lib/rag/embeddings'
-import { searchChunksHybrid, BYLAWS_COLLECTION } from '@/lib/rag/qdrant'
+import { searchChunksConstrained, BYLAWS_COLLECTION } from '@/lib/rag/qdrant'
+import { describeConstraints, isConstrained } from '@/lib/rag/query-match'
 
 export const runtime = 'nodejs'
 
@@ -34,13 +35,20 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       : 8
 
     const vector = await embedQuery(query)
-    const hits = await searchChunksHybrid(getOrgId(), vector, query, limit, BYLAWS_COLLECTION)
+    // Every part of the question (topic + plot area) must hold for the same
+    // passage; see lib/rag/query-match.ts.
+    const { hits, constraints, allMatched } = await searchChunksConstrained(getOrgId(), vector, query, limit, BYLAWS_COLLECTION)
 
     return successResponse({
       query,
+      // What every result had to satisfy, e.g. "FAR and a 2,000 sq m plot";
+      // null when the question named no topic or area.
+      requirement: isConstrained(constraints) ? describeConstraints(constraints) : null,
+      allMatched,
       matches: hits.map((h) => ({
         server: h.server, path: h.path, fileName: h.fileName,
         score: Math.round(h.score * 1000) / 1000, matchType: h.matchType, excerpt: h.text,
+        ...('matchedRow' in h && h.matchedRow ? { matchedRow: h.matchedRow } : {}),
       })),
     })
   } catch (error) {

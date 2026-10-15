@@ -9,6 +9,17 @@ interface BylawsMatch {
   fileName: string
   score: number
   excerpt: string
+  /** The table row that applies to the plot area in the question. */
+  matchedRow?: string
+}
+
+interface BylawsResult {
+  query: string
+  /** What every result had to satisfy, e.g. "FAR and a 2,000 sq m plot". */
+  requirement: string | null
+  /** False: nothing satisfied all of it; the matches are only the closest. */
+  allMatched: boolean
+  matches: BylawsMatch[]
 }
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
@@ -25,6 +36,7 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
 export default function BylawsPanel() {
   const [q, setQ] = useState('')
   const [matches, setMatches] = useState<BylawsMatch[] | null>(null)
+  const [meta, setMeta] = useState<{ requirement: string | null; allMatched: boolean } | null>(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [notConfigured, setNotConfigured] = useState(false)
@@ -33,12 +45,13 @@ export default function BylawsPanel() {
     if (!q.trim()) return
     setLoading(true); setErr(null); setNotConfigured(false)
     try {
-      const r = await api<{ query: string; matches: BylawsMatch[] }>('/api/nas/bylaws/search', {
+      const r = await api<BylawsResult>('/api/nas/bylaws/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: q.trim() }),
       })
       setMatches(r.matches || [])
+      setMeta({ requirement: r.requirement ?? null, allMatched: r.allMatched !== false })
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Search failed'
       if (/not configured/i.test(msg)) setNotConfigured(true)
@@ -58,7 +71,7 @@ export default function BylawsPanel() {
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') void runSearch() }}
-          placeholder="Ask about a bylaw, e.g. “maximum building height”…"
+          placeholder="Ask a full question, e.g. “FAR for a 2000 sq m plot”…"
           className="px-2 py-1 text-sm border border-border-default rounded bg-transparent text-text-primary flex-1 min-w-[200px]"
         />
         <button
@@ -81,8 +94,20 @@ export default function BylawsPanel() {
         <div className="border border-border-default rounded divide-y divide-border-default">
           <div className="px-3 py-2 text-xs font-mono text-text-secondary flex justify-between">
             <span>{matches.length} result{matches.length === 1 ? '' : 's'} for “{q}”</span>
-            <button onClick={() => setMatches(null)} className="hover:text-text-primary">✕ clear</button>
+            <button onClick={() => { setMatches(null); setMeta(null) }} className="hover:text-text-primary">✕ clear</button>
           </div>
+          {meta?.requirement && (
+            meta.allMatched ? (
+              <div className="px-3 py-2 text-xs text-text-secondary">
+                Every result covers <span className="font-medium text-text-primary">{meta.requirement}</span>.
+              </div>
+            ) : (
+              <div className="px-3 py-2 text-xs text-amber-700 bg-amber-50 border-amber-200">
+                No passage covers <span className="font-medium">{meta.requirement}</span> together. Showing the
+                closest passages instead; check the figure for your plot size in the document.
+              </div>
+            )
+          )}
           {matches.map((m, i) => (
             <div key={`${m.path}-${i}`} className="px-3 py-3 text-sm space-y-1">
               <div className="flex items-center justify-between gap-2">
@@ -97,6 +122,11 @@ export default function BylawsPanel() {
                 </a>
                 <span className="text-text-secondary text-xs font-mono shrink-0">{Math.round(m.score * 100)}% match</span>
               </div>
+              {m.matchedRow && (
+                <p className="text-xs font-mono px-2 py-1 rounded bg-surface-raised text-text-primary">
+                  <span className="text-text-secondary">Matching row:</span> {m.matchedRow}
+                </p>
+              )}
               <p className="text-text-secondary text-xs leading-relaxed whitespace-pre-wrap">{m.excerpt}</p>
             </div>
           ))}
