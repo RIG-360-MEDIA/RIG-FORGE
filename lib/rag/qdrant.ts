@@ -32,8 +32,24 @@ function getClient(): QdrantClient {
     // implicit 443 and have no port in them. Passing `port: null` here
     // (distinct from omitting it, which falls back to the 6333 default)
     // stops it from appending one.
-    const port = new URL(QDRANT_URL).port ? undefined : null
-    client = new QdrantClient({ url: QDRANT_URL, apiKey: QDRANT_API_KEY, port })
+    const u = new URL(QDRANT_URL)
+    const port = u.port ? undefined : null
+    // Qdrant can also be the one on TRIJYA-3, reached through the NAS
+    // connector (QDRANT_URL=https://<nas host>/qdrant). Then the path is the
+    // client's prefix, and the request must carry the same Cloudflare Access
+    // service token as every other connector call, or Cloudflare rejects it.
+    const prefix = u.pathname.replace(/\/+$/, '') || undefined
+    const nasHost = (() => { try { return new URL(process.env.TRIJYA_NAS_BASE_URL ?? '').host } catch { return '' } })()
+    const cfId = process.env.CF_ACCESS_CLIENT_ID, cfSecret = process.env.CF_ACCESS_CLIENT_SECRET
+    const headers = u.host === nasHost && cfId && cfSecret
+      ? { 'CF-Access-Client-Id': cfId, 'CF-Access-Client-Secret': cfSecret }
+      : undefined
+    client = new QdrantClient({
+      url: `${u.protocol}//${u.host}`, apiKey: QDRANT_API_KEY, port, prefix, headers,
+      // The version handshake is one more round trip on every cold start, and
+      // its only effect is a console warning.
+      checkCompatibility: false,
+    })
   }
   return client
 }

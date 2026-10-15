@@ -1,0 +1,53 @@
+import { type NextRequest, NextResponse } from 'next/server'
+
+import { getTokenFromCookies, verifyToken } from '@/lib/auth'
+import { successResponse, errorResponse } from '@/lib/api-helpers'
+import { isNasEnabled } from '@/lib/nas/client'
+import { getOrgId } from '@/lib/tenant-context'
+import { isRagIndexingEnabled } from '@/lib/rag/index-nas-file'
+import { embedQuery } from '@/lib/rag/embeddings'
+import { searchChunksConstrained } from '@/lib/rag/qdrant'
+import { describeConstraints, isConstrained } from '@/lib/rag/query-match'
+
+export const runtime = 'nodejs'
+
+// POST /api/nas/content-search — search INSIDE the NAS documents (PDF, Word,
+// Excel, text) by meaning, for the Files tab's "Search inside files". The
+// index is built on TRIJYA-3 by scripts/nas-connector/nas_indexer.py for every
+// file on the NAS however it got there, plus Forge's own upload hook. Same
+// whole-question rules as the bylaws search (lib/rag/query-match.ts).
+export async function POST(request: NextRequest): Promise<NextResponse> {
+  try {
+    const token = getTokenFromCookies(request)
+    if (!token) return errorResponse('Authentication required', 401)
+    if (!verifyToken(token)) return errorResponse('Invalid or expired session', 401)
+    if (!isNasEnabled()) return errorResponse('NAS is not available', 403)
+    if (!isRagIndexingEnabled()) return errorResponse('Content search is not configured for this deployment', 503)
+
+    const body = await request.json().catch(() => null)
+    const query = typeof body?.query === 'string' ? body.query.trim() : ''
+    if (!query) return errorResponse('query is required', 400)
+    if (query.length > 1000) return errorResponse('query must not exceed 1000 characters', 400)
+    const limit = typeof body?.limit === 'number' && Number.isFinite(body.limit)
+      ? Math.min(Math.max(Math.floor(body.limit), 1), 30)
+      : 15
+
+    const vector = await embedQuery(query)
+    const { hits, constraints, allMatched } = await searchChunksConstrained(getOrgId(), vector, query, limit)
+
+    return successResponse({
+      query,
+      requirement: isConstrained(constraints) ? describeConstraints(constraints) : null,
+      allMatched,
+      matches: hits.map((h) => ({
+        server: h.server, path: h.path, fileName: h.fileName,
+        score: Math.round(h.score * 1000) / 1000, excerpt: h.text,
+        ...('matchedRow' in h && h.matchedRow ? { matchedRow: h.matchedRow } : {}),
+      })),
+    })
+  } catch (error) {
+    // Detail server-side only: Qdrant / connector errors can carry internal URLs.
+    console.error('[POST /api/nas/content-search]', error)
+    return errorResponse('Content search failed. Please try again.', 500)
+  }
+}

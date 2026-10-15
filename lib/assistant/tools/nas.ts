@@ -12,7 +12,8 @@ import { extractText } from '@/lib/nas/extract'
 import { getOrgId } from '@/lib/tenant-context'
 import { isRagIndexingEnabled } from '@/lib/rag/index-nas-file'
 import { embedQuery } from '@/lib/rag/embeddings'
-import { searchChunksHybrid } from '@/lib/rag/qdrant'
+import { searchChunksConstrained } from '@/lib/rag/qdrant'
+import { describeConstraints, isConstrained } from '@/lib/rag/query-match'
 
 export function buildNasTools(): ToolSet {
   return {
@@ -104,7 +105,7 @@ export function buildNasTools(): ToolSet {
 
     nas_semantic_search: tool({
       description:
-        'Search the CONTENT of NAS documents by meaning (not filename) and return the most relevant passages, e.g. "what does the spec say about fire rating" or "find the clause about payment terms". Only covers files uploaded since content indexing was enabled — if it returns nothing, fall back to nas_search + nas_read. Each result includes the source file so you can cite it.',
+        'Search the CONTENT of the documents on the NAS (PDF, Word, Excel, text; every file on the NAS, however it got there) by meaning, not filename, and return the most relevant passages, e.g. "what does the spec say about fire rating" or "find the clause about payment terms". Pass the user\'s whole question. Each result includes the source file so you can cite it. If it returns nothing, fall back to nas_search + nas_read.',
       inputSchema: z.object({
         query: z.string().describe('A question or phrase describing what you\'re looking for, e.g. "fire rating requirements for the lobby".'),
         limit: z.number().optional().describe('Max passages to return (default 6).'),
@@ -114,15 +115,20 @@ export function buildNasTools(): ToolSet {
         if (!isRagIndexingEnabled()) return { error: 'Content search is not configured for this deployment.' }
         try {
           const vector = await embedQuery(query)
-          const hits = await searchChunksHybrid(getOrgId(), vector, query, limit ?? 6)
+          const { hits, constraints, allMatched } = await searchChunksConstrained(getOrgId(), vector, query, limit ?? 6)
           if (hits.length === 0) {
             return { query, matches: [], hint: 'No indexed passages matched — try nas_search for a filename match instead.' }
           }
+          const requirement = isConstrained(constraints) ? describeConstraints(constraints) : null
           return {
             query,
+            ...(requirement && !allMatched && {
+              note: `No passage covers ${requirement} together; these are only the closest. Say so, and do not infer a figure.`,
+            }),
             matches: hits.map((h) => ({
               server: h.server, path: h.path, fileName: h.fileName,
               score: Math.round(h.score * 1000) / 1000, matchType: h.matchType, excerpt: h.text,
+              ...('matchedRow' in h && h.matchedRow ? { matchedRow: h.matchedRow } : {}),
             })),
           }
         } catch (e) {

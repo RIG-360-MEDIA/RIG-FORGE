@@ -8,6 +8,9 @@ import {
 
 interface NasEntry { name: string; isDir: boolean; size: number; mtime: number }
 interface SearchHit { name: string; path: string; isDir: boolean; size: number; server?: string }
+// A passage found INSIDE a document (content search), not a filename match.
+interface ContentHit { server: string; path: string; fileName: string; score: number; excerpt: string; matchedRow?: string }
+interface ContentResult { requirement: string | null; allMatched: boolean; matches: ContentHit[] }
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, { credentials: 'include', ...init })
@@ -95,6 +98,9 @@ export default function FilesPanel() {
   const [q, setQ] = useState('')
   const [inFolder, setInFolder] = useState(false)
   const [hits, setHits] = useState<SearchHit[] | null>(null)
+  // "Search inside files": meaning-based search over document contents.
+  const [inside, setInside] = useState(false)
+  const [content, setContent] = useState<ContentResult | null>(null)
   const [uploading, setUploading] = useState(false)
   const [emailFor, setEmailFor] = useState<{ path: string; name: string } | null>(null)
   const [toast, setToast] = useState<string | null>(null)
@@ -200,6 +206,17 @@ export default function FilesPanel() {
   const runSearch = useCallback(async () => {
     if (!q.trim() || !server) return
     setLoading(true); setErr(null)
+    if (inside) {
+      try {
+        const r = await api<ContentResult>('/api/nas/content-search', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: q.trim() }),
+        })
+        setHits(null); setContent(r)
+      } catch (e) { setErr(e instanceof Error ? e.message : 'Search failed') }
+      finally { setLoading(false) }
+      return
+    }
+    setContent(null)
     try {
       const scope = inFolder ? `&path=${encodeURIComponent(path)}` : ''
       const r = await api<{ results: SearchHit[]; truncated: boolean }>(
@@ -208,7 +225,7 @@ export default function FilesPanel() {
       setHits(r.results || [])
     } catch (e) { setErr(e instanceof Error ? e.message : 'Search failed') }
     finally { setLoading(false) }
-  }, [q, server, inFolder, path])
+  }, [q, server, inFolder, path, inside])
 
   const dlUrl = (p: string, inline: boolean) =>
     `/api/nas/download?server=${encodeURIComponent(server)}&path=${encodeURIComponent(p)}${inline ? '&inline=1' : ''}`
@@ -303,16 +320,22 @@ export default function FilesPanel() {
       {/* Search row */}
       <div className="flex items-center gap-2 flex-wrap">
         <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') void runSearch() }}
-          placeholder="Search files…" className="px-2 py-1 text-sm border border-border-default rounded bg-transparent text-text-primary flex-1 min-w-[140px]" />
+          placeholder={inside ? 'Ask about the contents, e.g. “FAR for a 2000 sq m plot”…' : 'Search files…'} className="px-2 py-1 text-sm border border-border-default rounded bg-transparent text-text-primary flex-1 min-w-[140px]" />
         <button onClick={() => void runSearch()} className="px-3 py-1 text-sm border border-border-default rounded text-text-secondary">Go</button>
-        <label className="flex items-center gap-1 text-xs text-text-secondary select-none">
-          <input type="checkbox" checked={inFolder} onChange={(e) => setInFolder(e.target.checked)} />
-          in this folder
+        {!inside && (
+          <label className="flex items-center gap-1 text-xs text-text-secondary select-none">
+            <input type="checkbox" checked={inFolder} onChange={(e) => setInFolder(e.target.checked)} />
+            in this folder
+          </label>
+        )}
+        <label className="flex items-center gap-1 text-xs text-text-secondary select-none" title="Search the text inside PDFs, Word, Excel and text files, by meaning">
+          <input type="checkbox" checked={inside} onChange={(e) => { setInside(e.target.checked); setHits(null); setContent(null) }} />
+          search inside files
         </label>
       </div>
 
       {/* Nav bar */}
-      {!hits && (
+      {!hits && !content && (
         <div className="flex items-center gap-2 text-sm font-mono text-text-secondary">
           <button onClick={back} disabled={histIdx === 0} className="px-2 py-0.5 rounded border border-border-default disabled:opacity-40" title="Back">◀</button>
           <button onClick={forward} disabled={histIdx >= maxIdx} className="px-2 py-0.5 rounded border border-border-default disabled:opacity-40" title="Forward">▶</button>
@@ -353,8 +376,55 @@ export default function FilesPanel() {
         </div>
       )}
 
+      {/* Content search results: passages inside documents */}
+      {content && (
+        <div className="border border-border-default rounded divide-y divide-border-default">
+          <div className="px-3 py-2 text-xs font-mono text-text-secondary flex justify-between">
+            <span>{content.matches.length} passage{content.matches.length === 1 ? '' : 's'} inside files for “{q}”</span>
+            <button onClick={() => setContent(null)} className="hover:text-text-primary">✕ clear</button>
+          </div>
+          {content.requirement && (
+            content.allMatched ? (
+              <div className="px-3 py-2 text-xs text-text-secondary">
+                Every result covers <span className="font-medium text-text-primary">{content.requirement}</span>.
+              </div>
+            ) : (
+              <div className="px-3 py-2 text-xs text-amber-700 bg-amber-50">
+                No passage covers <span className="font-medium">{content.requirement}</span> together. Showing the closest passages instead.
+              </div>
+            )
+          )}
+          {content.matches.map((m, i) => (
+            <div key={`${m.server}:${m.path}:${i}`} className="px-3 py-2 text-sm space-y-1">
+              <div className="flex items-center gap-2">
+                <a href={`/api/nas/download?server=${encodeURIComponent(m.server)}&path=${encodeURIComponent(m.path)}&inline=1`} target="_blank" rel="noreferrer"
+                  className="flex items-center gap-2 flex-1 min-w-0 text-left hover:underline" title={m.path}>
+                  <EntryIcon e={{ isDir: false, name: m.fileName }} />
+                  <span className="text-text-primary truncate">{m.fileName}</span>
+                </a>
+                <button onClick={() => { setContent(null); goto(parentOf(m.path), m.server) }}
+                  className="shrink-0 text-xs text-text-secondary hover:text-text-primary" title="Open the folder this file is in">
+                  Open folder
+                </button>
+                <span className="text-text-secondary text-xs font-mono shrink-0">{Math.round(m.score * 100)}%</span>
+              </div>
+              <div className="text-text-secondary text-xs font-mono truncate">{m.server} {m.path}</div>
+              {m.matchedRow && (
+                <p className="text-xs font-mono px-2 py-1 rounded bg-surface-raised text-text-primary">
+                  <span className="text-text-secondary">Matching row:</span> {m.matchedRow}
+                </p>
+              )}
+              <p className="text-text-secondary text-xs leading-relaxed line-clamp-4 whitespace-pre-wrap">{m.excerpt}</p>
+            </div>
+          ))}
+          {content.matches.length === 0 && !loading && (
+            <div className="px-3 py-3 text-sm text-text-secondary">Nothing inside the indexed files matches this.</div>
+          )}
+        </div>
+      )}
+
       {/* Folder listing */}
-      {!hits && !loading && (
+      {!hits && !content && !loading && (
         <div className="border border-border-default rounded divide-y divide-border-default">
           {items.map((e) => (
             <div key={e.name} className="px-3 py-2 text-sm flex items-center gap-2">
