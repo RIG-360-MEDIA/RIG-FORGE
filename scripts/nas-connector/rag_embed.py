@@ -68,7 +68,7 @@ def _providers(ort):
     ]
 
 
-def _load(model_id):
+def _load(model_id, cpu_only=False):
     import numpy as np  # noqa: F401  (fail early if missing)
     import onnxruntime as ort
     from huggingface_hub import hf_hub_download
@@ -103,8 +103,9 @@ def _load(model_id):
     opts = ort.SessionOptions()
     opts.intra_op_num_threads = THREADS
     opts.inter_op_num_threads = 1
-    sess = ort.InferenceSession(model_path, sess_options=opts, providers=_providers(ort))
-    return {"session": sess, "tokenizer": tok, "pooling": pooling, "normalize": normalize,
+    providers = ["CPUExecutionProvider"] if cpu_only else _providers(ort)
+    sess = ort.InferenceSession(model_path, sess_options=opts, providers=providers)
+    return {"session": sess, "model_id": model_id, "tokenizer": tok, "pooling": pooling, "normalize": normalize,
             "inputs": {i.name for i in sess.get_inputs()}, "max_len": max_len}
 
 
@@ -112,7 +113,31 @@ def info() -> dict:
     """What this box serves, without loading anything."""
     return {"model": MODEL_ID, "models": MODELS, "threads": THREADS, "microbatch": MICROBATCH,
             "device": DEVICE, "loaded": MODEL_ID in _states, "loaded_models": sorted(_states),
-            "providers": {m: s["session"].get_providers()[0] for m, s in _states.items()}}
+            "providers": {m: s["session"].get_providers()[0] for m, s in _states.items()},
+            "cpu_fallbacks": dict(_fallbacks)}
+
+
+_fallbacks = {}  # model id -> micro-batches the GPU could not run, done on the CPU
+
+
+def _run_safe(s, texts):
+    """Run on the GPU; if it fails, run the same model on the CPU.
+
+    The GPU on TRIJYA-3 is shared with Ollama (Forgie's model and RIG
+    SURVEILLANCE's), and when they hold most of its 12 GB a batch can fail to
+    get memory. That must never fail a search, so the batch is done on the
+    CPU instead (same model, same vectors, just slower). The CPU copy is
+    loaded once, on the first failure.
+    """
+    try:
+        return _run(s, texts)
+    except Exception:
+        if s["session"].get_providers()[0] == "CPUExecutionProvider":
+            raise
+        if "cpu" not in s:
+            s["cpu"] = _load(s["model_id"], cpu_only=True)
+        _fallbacks[s["model_id"]] = _fallbacks.get(s["model_id"], 0) + 1
+        return _run(s["cpu"], texts)
 
 
 def _run(s, texts):
@@ -157,6 +182,6 @@ def embed(texts, model=None):
         vecs = [None] * len(texts)
         for i in range(0, len(order), MICROBATCH):
             idx = order[i:i + MICROBATCH]
-            for j, v in zip(idx, _run(s, [texts[k] for k in idx])):
+            for j, v in zip(idx, _run_safe(s, [texts[k] for k in idx])):
                 vecs[j] = v
     return vecs

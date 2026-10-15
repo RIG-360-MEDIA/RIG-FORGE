@@ -232,17 +232,94 @@ def prune(server, path, keep):
 
 # ── Extraction ───────────────────────────────────────────────────────────────
 
-def _fetch(server, path):
-    conn, share = connector._connect(server)
-    buf = io.BytesIO()
-    try:
-        conn.retrieveFile(share, path, buf)
-    finally:
+# One SMB session per share, reused for every file. Opening a new session per
+# file made the WD NAS refuse connections after a while (Oct 2026: ~1,500
+# files failed with ConnectionRefusedError), which can also hit people
+# browsing the Files tab at the same time.
+_SESSIONS = {}
+
+
+def _session(server):
+    if server not in _SESSIONS:
+        _SESSIONS[server] = connector._connect(server)
+    return _SESSIONS[server]
+
+
+def _drop_session(server):
+    conn, _ = _SESSIONS.pop(server, (None, None))
+    if conn is not None:
         try:
             conn.close()
         except Exception:
             pass
-    return buf.getvalue()
+
+
+def _fetch(server, path):
+    for attempt in range(3):
+        try:
+            conn, share = _session(server)
+            buf = io.BytesIO()
+            conn.retrieveFile(share, path, buf)
+            return buf.getvalue()
+        except Exception:
+            _drop_session(server)  # a broken session is replaced, not reused
+            if attempt == 2:
+                raise
+            time.sleep(10 * (attempt + 1))
+
+
+# Pages larger than about A2 (longest side in points) are drawing sheets. Their
+# text layer, if any, is labels; OCR of a whole sheet takes up to a minute and
+# yields little, so they are not OCR'd.
+DRAWING_SHEET_PT = 1300
+OCR_MAX_PAGES = int(os.environ.get("NAS_OCR_MAX_PAGES", "20"))
+
+
+def _pdf_text(b):
+    """Like the connector's extractor (text layer; OCR for unreadable pages),
+    reading bytes already fetched, and skipping OCR on drawing sheets."""
+    import fitz
+    try:
+        doc = fitz.open(stream=b, filetype="pdf")
+    except Exception as e:
+        raise RuntimeError(f"PDF could not be opened: {type(e).__name__}")
+    try:
+        pages = [p.get_text() for p in doc]
+        bad = {i for i, t in enumerate(pages) if not connector._readable(t)}
+        if len(bad) / (len(pages) or 1) < connector.UNREADABLE_DOC_SHARE:
+            return "\n\n".join(pages).strip(), None
+        ocr_ok = connector._HAVE_OCR and connector._tesseract_available()
+        lang = connector._ocr_lang() if ocr_ok else None
+        parts, size, ocred, sheets, skipped = [], 0, 0, 0, 0
+        for i, t in enumerate(pages):
+            if i not in bad:
+                piece = t
+            else:
+                r = doc[i].rect
+                if max(r.width, r.height) > DRAWING_SHEET_PT:
+                    sheets += 1
+                    continue
+                if not ocr_ok or ocred >= OCR_MAX_PAGES:
+                    skipped += 1
+                    continue
+                pix = doc[i].get_pixmap(matrix=fitz.Matrix(connector.OCR_ZOOM, connector.OCR_ZOOM))
+                img = connector.Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                piece = connector.pytesseract.image_to_string(img, lang=lang, nice=connector.OCR_NICE)
+                ocred += 1
+            parts.append(piece)
+            size += len(piece)
+            if size > MAX_TEXT_CHARS:
+                break
+        notes = []
+        if ocred:
+            notes.append(f"{ocred} page(s) OCR'd")
+        if sheets:
+            notes.append(f"{sheets} drawing sheet(s) without text skipped")
+        if skipped:
+            notes.append(f"{skipped} unreadable page(s) left out")
+        return "\n\n".join(parts).strip(), "; ".join(notes) or None
+    finally:
+        doc.close()
 
 
 def _decode(b):
@@ -298,12 +375,10 @@ def _sheet_text(b, ext):
 
 def extract(server, path, ext):
     """-> (text, note) or raises with a reason."""
-    if ext == "pdf":
-        r = connector._extract_pdf(server, path, MAX_TEXT_CHARS)
-        if not r.get("ok"):
-            raise RuntimeError(r.get("reason") or "PDF extraction failed")
-        return r["text"], r.get("note")
     b = _fetch(server, path)
+    if ext == "pdf":
+        text, note = _pdf_text(b)
+        return text[:MAX_TEXT_CHARS], note
     if ext == "docx":
         text = _docx_text(b)
     elif ext in ("xlsx", "xls"):
