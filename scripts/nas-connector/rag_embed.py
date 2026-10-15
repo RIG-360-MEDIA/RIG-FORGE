@@ -29,6 +29,8 @@ MODEL_ID = MODELS[0]  # the default
 THREADS = max(1, int(os.environ.get("NAS_RAG_EMBED_THREADS", "4")))
 MICROBATCH = max(1, int(os.environ.get("NAS_RAG_EMBED_MICROBATCH", "16")))
 MAX_BATCH = 128
+DEVICE = os.environ.get("NAS_RAG_EMBED_DEVICE", "cpu").strip().lower()  # cpu | cuda
+GPU_MB = max(512, int(os.environ.get("NAS_RAG_EMBED_GPU_MB", "4096")))
 # Each model is downloaded into its own plain folder (real files, side by
 # side). Not the HuggingFace cache: it stores files as symlinks into a shared
 # blobs folder, and ONNX Runtime refuses a model whose separate weights file
@@ -38,6 +40,32 @@ MODEL_DIR = os.path.expanduser(os.environ.get("NAS_RAG_MODEL_DIR", "~/.cache/rag
 
 _lock = threading.Lock()
 _states = {}  # model id -> dict(session, tokenizer, pooling, normalize, inputs)
+
+
+def _providers(ort):
+    """CUDA when asked for and available, always with CPU as the fallback.
+
+    NAS_RAG_EMBED_DEVICE=cuda uses the GPU (needs the onnxruntime-gpu package
+    with its CUDA/cuDNN extras: `onnxruntime-gpu[cuda,cudnn]`). The GPU on
+    TRIJYA-3 is shared with Ollama, so the memory this may take is capped
+    (NAS_RAG_EMBED_GPU_MB, default 4096; e5-large needs about 2.2 GB for
+    its weights plus room for a 16-text batch); if the GPU cannot be used at all,
+    ONNX Runtime runs the same model on the CPU and the vectors are the same.
+    """
+    if DEVICE != "cuda" or "CUDAExecutionProvider" not in ort.get_available_providers():
+        return ["CPUExecutionProvider"]
+    try:
+        ort.preload_dlls()  # the CUDA/cuDNN libraries installed by the pip extras
+    except Exception:
+        pass
+    return [
+        ("CUDAExecutionProvider", {
+            "device_id": 0,
+            "gpu_mem_limit": GPU_MB * 1024 * 1024,
+            "arena_extend_strategy": "kSameAsRequested",
+        }),
+        "CPUExecutionProvider",
+    ]
 
 
 def _load(model_id):
@@ -75,7 +103,7 @@ def _load(model_id):
     opts = ort.SessionOptions()
     opts.intra_op_num_threads = THREADS
     opts.inter_op_num_threads = 1
-    sess = ort.InferenceSession(model_path, sess_options=opts, providers=["CPUExecutionProvider"])
+    sess = ort.InferenceSession(model_path, sess_options=opts, providers=_providers(ort))
     return {"session": sess, "tokenizer": tok, "pooling": pooling, "normalize": normalize,
             "inputs": {i.name for i in sess.get_inputs()}, "max_len": max_len}
 
@@ -83,7 +111,8 @@ def _load(model_id):
 def info() -> dict:
     """What this box serves, without loading anything."""
     return {"model": MODEL_ID, "models": MODELS, "threads": THREADS, "microbatch": MICROBATCH,
-            "loaded": MODEL_ID in _states, "loaded_models": sorted(_states)}
+            "device": DEVICE, "loaded": MODEL_ID in _states, "loaded_models": sorted(_states),
+            "providers": {m: s["session"].get_providers()[0] for m, s in _states.items()}}
 
 
 def _run(s, texts):

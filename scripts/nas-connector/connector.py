@@ -653,6 +653,41 @@ def embed(body: dict):
     return {"model": model, "dim": len(vectors[0]), "vectors": vectors}
 
 
+# ── Qdrant pass-through ──────────────────────────────────────────────────────
+# Forge's vector index lives in a Qdrant on this box (127.0.0.1:6333, see
+# scripts/nas-connector/QDRANT.md). Qdrant only listens on localhost, so Forge
+# reaches it here, behind the same Cloudflare tunnel + Access check as every
+# other route; Qdrant's own API key (sent by Forge, checked by Qdrant) is the
+# second lock. Requests and responses are passed through unchanged.
+QDRANT_LOCAL_URL = os.environ.get("QDRANT_LOCAL_URL", "http://127.0.0.1:6333").rstrip("/")
+_QDRANT_FWD_HEADERS = ("api-key", "authorization", "content-type")
+
+from fastapi import Request
+from fastapi.responses import Response
+from starlette.concurrency import run_in_threadpool
+import urllib.error
+
+
+@app.api_route("/qdrant/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+async def qdrant_proxy(path: str, request: Request):
+    body = await request.body()
+    url = f"{QDRANT_LOCAL_URL}/{path}" + (f"?{request.url.query}" if request.url.query else "")
+    headers = {h: request.headers[h] for h in _QDRANT_FWD_HEADERS if h in request.headers}
+
+    def call():
+        req = urllib.request.Request(url, data=body or None, method=request.method, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                return r.status, r.read(), r.headers.get("content-type", "application/json")
+        except urllib.error.HTTPError as e:
+            return e.code, e.read(), e.headers.get("content-type", "application/json")
+        except Exception as e:
+            return 502, json.dumps({"status": {"error": f"qdrant unreachable: {type(e).__name__}"}}).encode(), "application/json"
+
+    status, data, ctype = await run_in_threadpool(call)
+    return Response(content=data, status_code=status, media_type=ctype)
+
+
 @app.post("/upload")
 async def upload(server: str, path: str, file: UploadFile = File(...)):
     conn, share = _connect(server)
