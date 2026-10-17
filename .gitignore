@@ -53,3 +53,4 @@ whatsapp-bridge/.env
 # Python bytecode cache (NAS connector script)
 __pycache__/
 *.pyc
+.bylaws-eval-cache.json
