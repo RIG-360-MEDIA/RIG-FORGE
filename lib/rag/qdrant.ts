@@ -419,7 +419,7 @@ export async function searchChunksConstrained(
   }
   const candidates = pool.filter((h) => mightMatch(h.text, constraints))
   const around = await neighbourPassages(organizationId, candidates, collection)
-  const passing: Array<ChunkSearchHit & { order: number; matchedRow?: string; section?: string; values?: string }> = []
+  const passing: Array<ChunkSearchHit & { order: number; tieBreak: number; matchedRow?: string; section?: string; values?: string }> = []
   for (const hit of candidates) {
     const prev: ChunkPayload[] = []
     for (let b = CONTEXT_PASSAGES; b >= 1; b--) {
@@ -432,13 +432,13 @@ export async function searchChunksConstrained(
     // The row is in another passage of the same table: show that passage,
     // which has the row, with this hit's score.
     const shown = !m.shift ? hit : m.shift > 0 ? next ?? hit : prev[prev.length + m.shift] ?? hit
-    passing.push({ ...hit, ...shown, score: hit.score, order: rank(m), matchedRow: m.row, section: m.section, values: m.values })
+    passing.push({ ...hit, ...shown, score: hit.score, order: rank(m), tieBreak: m.tieBreak ?? 0, matchedRow: m.row, section: m.section, values: m.values })
   }
   if (passing.length > 0) {
     // The best kind of match first (the asked use, then an exact table row,
     // then a residential table when no use was asked), then meaning + keywords.
     const ranked = rerankByKeyword(passing, queryText, passing.length)
-    ranked.sort((a, b) => b.order - a.order || documentPriority(b.fileName) - documentPriority(a.fileName))
+    ranked.sort((a, b) => b.order - a.order || documentPriority(b.fileName) - documentPriority(a.fileName) || a.tieBreak - b.tieBreak)
     // The same row is often in two passages (overlap, or a table split
     // across them): show it once.
     const seen = new Set<string>()
@@ -449,7 +449,7 @@ export async function searchChunksConstrained(
       return true
     })
     return {
-      hits: unique.slice(0, limit).map(({ order: _o, ...h }) => ({ ...h, matchType: 'hybrid' as const })),
+      hits: unique.slice(0, limit).map(({ order: _o, tieBreak: _t, ...h }) => ({ ...h, matchType: 'hybrid' as const })),
       constraints,
       allMatched: true,
     }

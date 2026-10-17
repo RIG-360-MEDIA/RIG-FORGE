@@ -204,6 +204,14 @@ export function analyzeQuery(query: string): QueryConstraints {
     .flatMap((k) => [...f.matchAll(anyWordRe(USES[k].q))].map((m) => m[0]))
     .flatMap((w) => [w, ...w.split(/\s+/).filter((x) => x.length >= 4 && x !== w)]))]
   const words = [...new Set(fold(query).match(/[\p{L}\p{M}]{4,}/gu) ?? [])].filter((w) => !QUESTION_WORDS.has(w))
+  // A Hindi question is also answered by the English bylaws, which name the
+  // use in English: its main English word counts as the question's own too.
+  if (/\p{Script=Devanagari}/u.test(query)) {
+    for (const k of uses) {
+      const en = USES[k].q[0]!
+      for (const w of [en, ...en.split(/\s+/).filter((x) => x.length >= 4 && x !== en)]) if (!useWords.includes(w)) useWords.push(w)
+    }
+  }
   return { topics, uses, area, areaAsAsked, height, road, useWords, words }
 }
 
@@ -250,7 +258,9 @@ const HEADING = /(?<![\d.\p{L}])(?:\d{1,2}\.\d{1,2}\.\d{1,2}(?:\.\d{1,2})*\.?\s+
 /** A two-level clause ("7.21 Ropeway Terminal Buildings", "5.3 OPEN SPACES"):
  * only before two capitalised words, since "1.5 Unrestricted" and "2.0 Note:"
  * are table values, not headings. */
-const HEADING2 = /(?<![\d.\p{L}])\d{1,2}\.\d{1,2}\.?\s+(?=(?:[A-Z][\p{L}'’/-]+|[A-Z]{2,})[\s:,]+[A-Z(\p{Script=Devanagari}])/gu
+// "2.0", "6.50", "0.60" are values (a clause number does not end in 0), and
+// the title's first word has at least three letters ("6.50 Ao एवं" is OCR).
+const HEADING2 = /(?<![\d.\p{L}])[1-9]\d?\.\d?[1-9]\.?\s+(?=(?:[A-Z][\p{L}'’/-]{2,}|[A-Z]{3,})[\s:,]+[A-Z(\p{Script=Devanagari}])/gu
 const NOT_A_TITLE = /^\s*(?:unrestricted|note|notes|no|nil|yes|max|min|not|na|n\.a|plain|plains|hills?|built|non)\b/i
 const REFERENCE_BEFORE = /(?:paragraph|para\.?|paras|clause|section|sections|chapter|table|refer|per|of|in|see|under|and|to|with|from|by)\s*$/i
 
@@ -315,7 +325,8 @@ const TOKEN_RES: Array<{ kind: Kind; re: RegExp; read: (m: RegExpExecArray) => O
   { kind: 'between', re: new RegExp(String.raw`(=?>=?|≥|>)?\s*${NUM}\s*(?:-|to|upto)\s*${NUM}(?![\d-]|\.\d)`, 'giu'),
     read: (m) => {
       const lo = toNum(m[2]!), hi = toNum(m[3]!)
-      if (!(hi > lo) || dateLike(lo, hi)) return null
+      // "0-1000": tables write "up to 1000"; a range from zero is an OCR fragment.
+      if (!(hi > lo) || lo === 0 || dateLike(lo, hi)) return null
       return { lo, hi, loInc: !(m[1] && m[1].includes('>') && !m[1].includes('=')), hiInc: true }
     } },
   // Hindi: "1000 तक", "100 वर्गमीटर तक" (not the second half of "से ... तक")
@@ -574,6 +585,11 @@ export interface ConstrainedHit {
   /** Which passage holds the row: 0 this one, -1 the one before (where the
    * table started), 1 the one after (where it continues). */
   shift?: number
+  /** Between matches that are otherwise equal, lower is better: how loosely
+   * the row's range fits the value (">100 - 150" fits 120 better than a
+   * garbled "0-1000"), or, with no value asked, fewer of the question's
+   * words in the line. */
+  tieBreak?: number
 }
 
 /**
@@ -641,7 +657,7 @@ export function matchPassage(text: string, c: QueryConstraints, before: string |
       if (us === 0) continue
       const row = rowText(t, k, toks.find((x) => x.s >= k.e)?.s, 110, partEnd(k.s))
       const hit: ConstrainedHit = {
-        quality: k.kind === 'exact' || !isTabular(row, k) ? 2 : 3,
+        quality: k.kind === 'exact' || !isTabular(row, k) || garbled(row) ? 2 : 3,
         useScore: us,
         row,
         section: sectionAt(k.s)?.label,
@@ -649,6 +665,7 @@ export function matchPassage(text: string, c: QueryConstraints, before: string |
         rowNamesTopic: c.topics.length > 0 && c.topics.every((x) => topicRes[x].some((re) => re.test(row))),
         residentialDefault: !c.uses.length && (use.nearest === 'residential' || use.nearest === 'group_housing'),
         shift: shiftOf(k.s),
+        tieBreak: (k.kind === 'above' ? v - k.lo : k.kind === 'upto' ? k.hi : k.hi - k.lo) / v,
       }
       if (better(hit, best)) best = hit
     }
@@ -691,13 +708,25 @@ export function matchPassage(text: string, c: QueryConstraints, before: string |
         row = pick.l
         shift = shiftOf(pick.at)
         // A line in the question's own words that states the value is an answer, not just a mention.
-        if (own.length && answers(pick.l)) quality = 2
+        if (own.length && answers(pick.l) && !garbled(pick.l)) quality = 2
       }
     }
-    const hit: ConstrainedHit = { quality, useScore: us, row, section: sectionAt(Math.max(ss, offset))?.label, shift }
+    // A line naming the asked topic first, then the one using more of the question's words.
+    const said = row
+      ? (c.topics.length && c.topics.every((k) => topicRes[k].some((re) => re.test(row!))) ? 10 : 0) +
+        c.words.filter((w) => fold(row!).includes(w)).length
+      : 0
+    const hit: ConstrainedHit = { quality, useScore: us, row, section: sectionAt(Math.max(ss, offset))?.label, shift, tieBreak: -said }
     if (better(hit, best)) best = hit
   }
   return best
+}
+
+/** OCR noise in a row ("65 170 | - | 70 | _160 | 3- |", "ई0सी0एस0 अनुवर्ती wares"):
+ * table rules and stray Latin fragments inside Hindi. Such a row may still be
+ * the right table, but its figures cannot be read, so a clean row comes first. */
+function garbled(row: string): boolean {
+  return /[|[\]{}_©®]/.test(row) || (/\p{Script=Devanagari}/u.test(row) && /(?<![\p{L}])[a-z]{3,}(?![\p{L}])/u.test(row))
 }
 
 /** A stated quantity: "1.5 ECS per 125 sqm", "3 / 100 sqm", "12 m", "40%" (not "Fig. 10"). */
