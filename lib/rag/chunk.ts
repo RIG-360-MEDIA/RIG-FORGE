@@ -54,6 +54,27 @@ export function chunkText(text: string, targetChars = TARGET_CHARS, overlapChars
 }
 
 /**
+ * A passage as stored, without the overlap written into it twice.
+ *
+ * When a paragraph longer than the target is hard-split, each piece already
+ * starts with the last OVERLAP_CHARS of the piece before; chunkText then
+ * prefixes the previous chunk's tail again, so the stored text begins with
+ * the same ~150 characters twice ("quirement shall be as follows. Building
+ * Height ... >21 quirement shall be as follows. Building Height ... >21 - 27").
+ * That breaks reading tables (a row seems to end where the copy starts) and
+ * shows a doubled fragment in search results. Changing chunkText would change
+ * every stored chunk, so the copy is removed when passages are read.
+ */
+export function cleanPassage(text: string): string {
+  const head = text.slice(0, 40)
+  if (head.length < 40) return text
+  const k = text.indexOf(head, 20)
+  if (k < 0 || k > OVERLAP_CHARS + 60) return text
+  const first = text.slice(0, k).trim()
+  return text.slice(k).startsWith(first) ? text.slice(k) : text
+}
+
+/**
  * Chunks with fewer letters than this are not indexed. PDF table extraction
  * leaves chunks that are almost nothing but digits and punctuation (",2016",
  * "(Ss)", columns of unit conversions). Their embeddings sit close to the

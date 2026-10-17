@@ -11,8 +11,9 @@
 import { createHash } from 'crypto'
 import { QdrantClient } from '@qdrant/js-client-rest'
 
-import { EMBEDDING_DIM } from './embeddings'
-import { analyzeQuery, isConstrained, matchPassage, type QueryConstraints } from './query-match'
+import { cleanPassage } from './chunk'
+import { EMBEDDING_DIM, embedQuery } from './embeddings'
+import { analyzeQuery, describeConstraints, documentPriority, isConstrained, matchPassage, mightMatch, rank, type QueryConstraints } from './query-match'
 
 const QDRANT_URL = process.env.QDRANT_URL?.trim()
 const QDRANT_API_KEY = process.env.QDRANT_API_KEY?.trim() || undefined // "" (local/no-auth) must not become a real header
@@ -229,7 +230,10 @@ export async function searchChunks(
     with_payload: true,
     score_threshold: minScore,
   }))
-  return res.map((r) => ({ ...(r.payload as unknown as ChunkPayload), score: r.score }))
+  return res.map((r) => {
+    const p = r.payload as unknown as ChunkPayload
+    return { ...p, text: cleanPassage(p.text ?? ''), score: r.score }
+  })
 }
 
 export interface HybridChunkSearchHit extends ChunkSearchHit {
@@ -311,6 +315,10 @@ export async function searchChunksHybrid(
 export interface ConstrainedSearchHit extends HybridChunkSearchHit {
   /** The table row / figure that made the passage apply (e.g. "> 1200 ... 1.25 2.0"). */
   matchedRow?: string
+  /** The clause the row is in, e.g. "3.2.4.1 Residential – Plotted Development". */
+  section?: string
+  /** The row read against its column labels, e.g. "Front 3 m, Rear 1.5 m, Side-1 0 m, Side-2 0 m". */
+  values?: string
 }
 
 export interface ConstrainedSearchResult {
@@ -328,9 +336,53 @@ export interface ConstrainedSearchResult {
 const CONSTRAINED_POOL_MARGIN = Number(process.env.RAG_CONSTRAINED_MARGIN ?? 0.04)
 const CONSTRAINED_POOL_SIZE = 200
 
+/** Passages read before a hit for its table's heading. Two: a long table
+ * (setbacks by building height runs over three passages) has its heading two
+ * passages up. */
+const CONTEXT_PASSAGES = 2
+/** Hits (best first) whose NEXT passage is also read: a table that starts
+ * in a hit often has the asked row in the next passage ("Office Buildings"
+ * in the parking table), which may not score into the pool itself. */
+const FOLLOWING_FOR_TOP = 60
+
+const passageKey = (server: string, path: string, chunkIndex: number) => `${server}\u0000${path}\u0000${chunkIndex}`
+
 /**
- * Search where every part of the question must hold for the SAME passage: the
- * regulation topics it names (FAR, setback, ...) and the plot area it gives.
+ * The passages around each hit in the same document. A table often starts
+ * in one passage and continues in the next; its heading (which use, which
+ * topic, which column holds the plot area) is then only in an earlier one,
+ * and its other rows in a later one. Point ids are deterministic, so they
+ * are fetched by id in one request (an id past the end of a document simply
+ * returns nothing). Best effort: on failure hits are matched on their own text.
+ */
+async function neighbourPassages(
+  organizationId: string,
+  hits: ChunkSearchHit[],
+  collection: string,
+): Promise<Map<string, ChunkPayload>> {
+  const out = new Map<string, ChunkPayload>()
+  const ids = new Set<string>()
+  hits.forEach((h, i) => {
+    for (let b = 1; b <= CONTEXT_PASSAGES && h.chunkIndex - b >= 0; b++) ids.add(pointId(organizationId, h.server, h.path, h.chunkIndex - b))
+    if (i < FOLLOWING_FOR_TOP) ids.add(pointId(organizationId, h.server, h.path, h.chunkIndex + 1))
+  })
+  if (!ids.size) return out
+  try {
+    const pts = await withCollection(collection, () => getClient().retrieve(collection, { ids: [...ids], with_payload: true, with_vector: false }))
+    for (const p of pts) {
+      const pl = p.payload as unknown as ChunkPayload
+      out.set(passageKey(pl.server, pl.path, pl.chunkIndex), { ...pl, text: cleanPassage(pl.text ?? '') })
+    }
+  } catch (e) {
+    console.warn('[rag] previous passages not fetched:', (e as Error).message)
+  }
+  return out
+}
+
+/**
+ * Search where every part of the question must hold for the SAME table row:
+ * the regulation topics it names (FAR, setback, ...), the use (residential,
+ * commercial, ...) and the plot area / building height / road width it gives.
  * See lib/rag/query-match.ts. Questions without such parts behave exactly like
  * searchChunksHybrid.
  */
@@ -345,18 +397,59 @@ export async function searchChunksConstrained(
   if (!isConstrained(constraints)) {
     return { hits: await searchChunksHybrid(organizationId, vector, queryText, limit, collection), constraints, allMatched: true }
   }
-  const pool = await searchChunks(organizationId, vector, CONSTRAINED_POOL_SIZE, collection, MIN_SCORE - CONSTRAINED_POOL_MARGIN)
-  const passing: Array<{ hit: ChunkSearchHit; quality: number; row?: string }> = []
-  for (const hit of pool) {
-    const m = matchPassage(hit.text, constraints)
-    if (m) passing.push({ hit, quality: m.quality, row: m.row })
+  let pool = await searchChunks(organizationId, vector, CONSTRAINED_POOL_SIZE, collection, MIN_SCORE - CONSTRAINED_POOL_MARGIN)
+  // A question in Hindi scores English table passages lower than Hindi
+  // prose, so the English tables that answer it can miss the pool. Search
+  // again with the same parts in English ("FAR for a 500 sq m plot") and
+  // merge, keeping each passage's better score.
+  if (/\p{Script=Devanagari}/u.test(queryText)) {
+    try {
+      const english = await embedQuery(describeConstraints(constraints))
+      const more = await searchChunks(organizationId, english, CONSTRAINED_POOL_SIZE, collection, MIN_SCORE - CONSTRAINED_POOL_MARGIN)
+      const byKey = new Map(pool.map((h) => [passageKey(h.server, h.path, h.chunkIndex), h]))
+      for (const h of more) {
+        const k = passageKey(h.server, h.path, h.chunkIndex)
+        const had = byKey.get(k)
+        if (!had || had.score < h.score) byKey.set(k, h)
+      }
+      pool = [...byKey.values()].sort((a, b) => b.score - a.score)
+    } catch (e) {
+      console.warn('[rag] English re-search failed:', (e as Error).message)
+    }
+  }
+  const candidates = pool.filter((h) => mightMatch(h.text, constraints))
+  const around = await neighbourPassages(organizationId, candidates, collection)
+  const passing: Array<ChunkSearchHit & { order: number; matchedRow?: string; section?: string; values?: string }> = []
+  for (const hit of candidates) {
+    const prev: ChunkPayload[] = []
+    for (let b = CONTEXT_PASSAGES; b >= 1; b--) {
+      const p = around.get(passageKey(hit.server, hit.path, hit.chunkIndex - b))
+      if (p) prev.push(p)
+    }
+    const next = around.get(passageKey(hit.server, hit.path, hit.chunkIndex + 1))
+    const m = matchPassage(hit.text, constraints, prev.map((p) => p.text), next?.text ?? '')
+    if (!m) continue
+    // The row is in another passage of the same table: show that passage,
+    // which has the row, with this hit's score.
+    const shown = !m.shift ? hit : m.shift > 0 ? next ?? hit : prev[prev.length + m.shift] ?? hit
+    passing.push({ ...hit, ...shown, score: hit.score, order: rank(m), matchedRow: m.row, section: m.section, values: m.values })
   }
   if (passing.length > 0) {
-    // Exact coverage first (a table row that applies), then meaning + keywords.
-    const ranked = rerankByKeyword(passing.map((p) => ({ ...p.hit, quality: p.quality, matchedRow: p.row })), queryText, passing.length)
-    ranked.sort((a, b) => b.quality - a.quality)
+    // The best kind of match first (the asked use, then an exact table row,
+    // then a residential table when no use was asked), then meaning + keywords.
+    const ranked = rerankByKeyword(passing, queryText, passing.length)
+    ranked.sort((a, b) => b.order - a.order || documentPriority(b.fileName) - documentPriority(a.fileName))
+    // The same row is often in two passages (overlap, or a table split
+    // across them): show it once.
+    const seen = new Set<string>()
+    const unique = ranked.filter((h) => {
+      const key = h.matchedRow ? `${h.fileName}\u0000${h.matchedRow.replace(/\s+/g, ' ').toLowerCase()}` : `${h.path}\u0000${h.chunkIndex}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
     return {
-      hits: ranked.slice(0, limit).map(({ quality: _q, ...h }) => ({ ...h, matchType: 'hybrid' as const })),
+      hits: unique.slice(0, limit).map(({ order: _o, ...h }) => ({ ...h, matchType: 'hybrid' as const })),
       constraints,
       allMatched: true,
     }

@@ -652,6 +652,78 @@ async function main() {
       qm.coversArea('Plot size (sqm) >1200 FAR 1.25 >1500 FAR 1.20', 2000)?.row === '>1500')
   }
 
+  // ── The row must come from the right table (query-match.ts, Oct 2026) ────
+  console.log('\n## Whole-question matching: right table, use, height / road width, Hindi ranges')
+  {
+    const qm = await import('../lib/rag/query-match')
+    const { cleanPassage } = await import('../lib/rag/chunk')
+    // Real text, 202504161857302632Bylaws_160425.pdf: the residential table and
+    // the healthcare table have the same shape; 200 sq m is in a row of both.
+    const residential = '3.2.4.1 Residential – Plotted Development (Single/Multi-units up to 15-meter height) Under plotted development, for all single/multi-units less than 300 square meters plot size, three floors with stilts up to 15 meter is allowed. The set-back shall be as follows: Plot Area (sqm) Setback (meter) Front Rear Side-1 Side-2 (a) Row-housing Up to 150 1 0 0 0 >150 to 300 3 1.5 0 0 >300 to 500 3 3 0 0 (b) Semi-detached >500 to 1200 4.5 4.5 1.5 0 (c) Detached >1200 6 6 1.5 1.5 Note-1: Construction shall be permitted on 40 percent of the rear setback.'
+    const healthcare = '3.2.4.5 Community Facilities – Healthcare buildings height up to 15-meters Plot Area (sqm) Setback (meter) Front Rear Side-1 Side-2 =>100 – 300 3 1.5 0 0 >300 – 1000 4.5 3 3 0 >1000 – 2000 6 3 3 3'
+    const farTable = '3.2.2.1 Residential – Plotted Development including EWS/ LIG/ Affordable Housing Sl. Use Types Ground Coverage (%) Plot Area (sq.m.) Base FAR Max. FAR 1 Plotted Development – Single Unit/Multi-Unit (Built-up/Non-Built-up) Max. coverage after ensuring setbacks Up to 150 2.0 2.0 >150 to 300 1.8 2.0 >300 to 500 1.75 2.0 >500 to 1200 1.5 2.0 >1200 1.25 2.0 Note: Maximum Permissible FAR (MFAR) is calculated as per Chapter-9.'
+
+    const resQ = qm.analyzeQuery('setback for a 200 sq m residential plot')
+    check('"residential" is a use, 200 is the plot area', resQ.uses.join() === 'residential' && resQ.area === 200, JSON.stringify(resQ))
+    const r = qm.matchPassage(residential, resQ)
+    check('residential table: the ">150 to 300" row', /^>150 to 300 3 1\.5 0 0$/.test(r?.row ?? ''), JSON.stringify(r))
+    check('  read out against its columns', r?.values === 'Front 3 m, Rear 1.5 m, Side-1 0 m, Side-2 0 m', r?.values)
+    check('  and labelled with its clause', /^3\.2\.4\.1 Residential/.test(r?.section ?? ''), r?.section)
+    check('healthcare table is NOT an answer to a residential question (same row shape)', qm.matchPassage(healthcare, resQ) === null)
+    const hosp = qm.matchPassage(healthcare, qm.analyzeQuery('setback for a hospital on 1500 sqm plot'))
+    check('but it is for a hospital: ">1000 - 2000"', /^>1000 - 2000 6 3 3 3/.test(hosp?.row ?? ''), JSON.stringify(hosp))
+    check('"Max. coverage after ensuring setbacks" does not make a FAR table a setback table',
+      qm.matchPassage(farTable, qm.analyzeQuery('setback for a 200 sq m plot')) === null)
+    const far = qm.matchPassage(farTable, qm.analyzeQuery('FAR for 2000 sq m plot'))
+    check('FAR table, 2000 sq m: ">1200 1.25 2.0", stopping before the note', far?.row === '>1200 1.25 2.0' && far?.values === 'Base FAR 1.25, Max. FAR 2.0', JSON.stringify(far))
+    check('a ground coverage question does not get the row read out as FAR',
+      qm.matchPassage(farTable, qm.analyzeQuery('ground coverage for 400 sq m plot'))?.values === undefined)
+
+    // A table split over two passages: heading in the one before.
+    const head = 'shall be as follows. 3.2.4.9 All occupancy buildings with height more than 15 meters For use occupancies with building height more than 15m, the minimum setback requirement shall be as follows. Building Height (in meters) Front (m) Rear (m) Side-1 (m) Side-2 (m) >15 – 17.5 5 5 5 5 >17.5 - 21 6 6 6 6'
+    const rest = '>21 - 27 7 7 7 7 >27 - 33 8 8 8 8 >33 - 39 9 9 9 9 >39 - 45 10 10 10 10 >45 - 51 11 11 11 11 >51 15 12 12 12 Note-1: For buildings situated on two roads'
+    const h40q = qm.analyzeQuery('setbacks for building height 40 meters')
+    check('"building height 40 meters" is a height of 40, not a topic', h40q.height === 40 && !h40q.topics.includes('height') && h40q.topics.join() === 'setback', JSON.stringify(h40q))
+    check('without the passage before, the rows have no heading: no match', qm.matchPassage(rest, h40q) === null)
+    const h40 = qm.matchPassage(rest, h40q, [head])
+    check('with it: ">39 - 45 10 10 10 10"', /^>39 - 45 10 10 10 10$/.test(h40?.row ?? '') && h40?.shift === 0, JSON.stringify(h40))
+    check('the last row keeps its last value before "Note-1"', qm.matchPassage(rest, qm.analyzeQuery('setback for a 60 m high building'), [head])?.row === '>51 15 12 12 12')
+    const fromBefore = qm.matchPassage(rest, qm.analyzeQuery('setback for a 20 m high building'), [head])
+    check('a row of the same table in the passage before is found, and says where it is', /^>17\.5 - 21 6 6 6 6/.test(fromBefore?.row ?? '') && fromBefore?.shift === -1, JSON.stringify(fromBefore))
+
+    // Road width, with rows for several uses in one table.
+    const roadTable = '3.2.2.3 Commercial – Shops / Convenience Shopping / Other Commercial Sl. Use Types Ground Coverage (%) Road Width (m) Base FAR Max. FAR 3(a) Shops / Convenience Shopping / Commercial Units (Built-up) Max. coverage after ensuring setbacks Up to 12m 1.5 2.1 >12 – 24m 1.5 3 >24 – 45m 1.5 5 >45m 1.5 Unrestricted 4(a) Commercial Complex (Built-up) Max. coverage after ensuring setbacks =>18 – 24m 2 4 >24 – 45m 2 7'
+    const shopQ = qm.analyzeQuery('FAR for shops on an 18 m road')
+    check('"18 m road" is a road width', shopQ.road === 18 && shopQ.area === null && shopQ.topics.join() === 'far', JSON.stringify(shopQ))
+    check('the row under "Shops", not the narrower one under "Commercial Complex"', /^>12 - 24m 1\.5 3/.test(qm.matchPassage(roadTable, shopQ)?.row ?? ''))
+
+    // Units, Hindi ranges, what is not a value.
+    check('2,000 sq ft is converted (185.8 sq m)', qm.analyzeQuery('setback for 2,000 sq ft plot').area === 185.81)
+    check('150 gaj is converted (125.4 sq m)', Math.round(qm.analyzeQuery('setback for 150 gaj plot').area ?? 0) === 125)
+    const hindiTable = '(स)-शिक्षण संस्थायें /चिकित्सा भूखण्ड का क्षेत्रफल सेट बैक (मीटर में) 1000 तक 6.0 4.5 1001 से 3000 तक 7.5 4.5 3001 से 8000 तक 9.0 6.0 35000 से अधिक 18.0 6.0'
+    check('Hindi "1001 से 3000 तक" covers 2000', /^1001 से 3000 तक/.test(qm.matchPassage(hindiTable, qm.analyzeQuery('स्कूल के लिए 2000 वर्गमीटर भूखंड पर सेट बैक'))?.row ?? ''))
+    check('Hindi "35000 से अधिक" covers 40000', /^35000 से अधिक/.test(qm.coversArea('भूखण्ड का क्षेत्रफल (वर्गमीटर में) 3001 से 8000 तक 9.0 35000 से अधिक 18.0', 40000)?.row ?? ''))
+    check('"up to 50 percent" is a share, not a road width',
+      qm.matchPassage('3.3.4.9 Podium Parking (ii) The minimum width of the road shall be 12 meters. (vi) Open space may be permitted on podium up to 50 percent.', qm.analyzeQuery('height limit on 12 m road')) === null)
+    check('a sentence with a range is not a table row ("100 -300 sqm, the permissible FAR is 1.75.")',
+      qm.matchPassage('3.2.2 Ground Coverage and Floor Area Ratio (FAR) For example, for plot size 100 -300 sqm, the permissible FAR is 1.75.', qm.analyzeQuery('FAR for 200 sq m plot'))?.quality === 2)
+
+    // A question with no value: the line that states the rule for the asked use.
+    const parking = '3.3.4.3 Parking standards (2) Commercial Sl. Commercial Use Type Parking Requirements in ECS/ unit area 1 Shops / Convenient Shopping / Commercial Units 1 / 100 sqm of floor area 2 Commercial Complex 2 / 100 sqm of floor area 3 Shopping mall 3 / 100 sqm of floor area 4 Hotels 2 / 100 sqm of floor area'
+    const mall = qm.matchPassage(parking, qm.analyzeQuery('parking for a shopping mall'))
+    check('"parking for a shopping mall": the "Shopping mall 3 / 100 sqm" line', /^3 Shopping mall 3 \/ 100 sqm of floor area$/.test(mall?.row ?? '') && mall?.quality === 2, JSON.stringify(mall))
+
+    check('reference books rank after the bylaws and the NBC',
+      qm.documentPriority('202504161857302632Bylaws_160425.pdf') > qm.documentPriority('NBC_Vol1.pdf') &&
+      qm.documentPriority('NBC_Vol1.pdf') > qm.documentPriority('NBC_MBBL.pdf') &&
+      qm.documentPriority('NBC_MBBL.pdf') > qm.documentPriority('Time-saver Standards for Building Types.pdf'))
+
+    // The overlap that chunkText writes twice into a hard-split paragraph.
+    const t = 'quirement shall be as follows. Building Height (in meters) Front (m) Rear (m)'
+    check('cleanPassage drops the doubled overlap', cleanPassage(`${t}\n\n${t} >21 - 27 7 7 7 7`) === `${t} >21 - 27 7 7 7 7`)
+    check('cleanPassage leaves ordinary text alone', cleanPassage(residential) === residential)
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`)
   process.exitCode = fail ? 1 : 0
 }

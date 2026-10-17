@@ -43,6 +43,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         server: h.server, path: h.path, fileName: h.fileName,
         score: Math.round(h.score * 1000) / 1000, excerpt: h.text,
         ...('matchedRow' in h && h.matchedRow ? { matchedRow: h.matchedRow } : {}),
+        ...('section' in h && h.section ? { section: h.section } : {}),
+        ...('values' in h && h.values ? { values: h.values } : {}),
       })),
     })
   } catch (error) {

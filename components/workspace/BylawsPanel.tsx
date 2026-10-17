@@ -9,8 +9,12 @@ interface BylawsMatch {
   fileName: string
   score: number
   excerpt: string
-  /** The table row that applies to the plot area in the question. */
+  /** The table row (or line) that answers the question, as printed. */
   matchedRow?: string
+  /** The clause it is in, e.g. "3.2.4.1 Residential – Plotted Development". */
+  section?: string
+  /** The row against its column labels, e.g. "Front 3 m, Rear 1.5 m, Side-1 0 m, Side-2 0 m". */
+  values?: string
 }
 
 interface BylawsResult {
@@ -122,9 +126,17 @@ export default function BylawsPanel() {
                 </a>
                 <span className="text-text-secondary text-xs font-mono shrink-0">{Math.round(m.score * 100)}% match</span>
               </div>
+              {m.section && (
+                <p className="text-xs text-text-secondary">
+                  Clause <span className="text-text-primary">{m.section}</span>
+                </p>
+              )}
+              {m.values && (
+                <p className="text-sm px-2 py-1 rounded bg-surface-raised text-text-primary font-medium">{m.values}</p>
+              )}
               {m.matchedRow && (
                 <p className="text-xs font-mono px-2 py-1 rounded bg-surface-raised text-text-primary">
-                  <span className="text-text-secondary">Matching row:</span> {m.matchedRow}
+                  <span className="text-text-secondary">{m.values ? 'Row as printed:' : 'Matching line:'}</span> {m.matchedRow}
                 </p>
               )}
               <p className="text-text-secondary text-xs leading-relaxed whitespace-pre-wrap">{m.excerpt}</p>

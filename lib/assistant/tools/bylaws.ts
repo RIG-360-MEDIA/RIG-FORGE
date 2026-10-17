@@ -18,7 +18,7 @@ export function buildBylawsTools(): ToolSet {
   return {
     bylaws_search: tool({
       description:
-        'Search Trijya\'s bylaws and building codes (local bylaws, NBC, Hindi government orders) by meaning, e.g. "setback for a 200 sq m residential plot" or "FAR for a 2000 sq m plot". Pass the user\'s whole question, including any plot area. Every passage returned mentions each regulation topic in the question and, when a plot area is given, covers that area; `matchedRow` is the table row that applies. Separate from general NAS file search.',
+        'Search Trijya\'s bylaws and building codes (local bylaws, NBC, Hindi government orders) by meaning, e.g. "setback for a 200 sq m residential plot" or "FAR for a 2000 sq m plot". Pass the user\'s whole question, including any plot area. Every passage returned mentions each regulation topic in the question and, when a plot area is given, covers that area, in a table for the use named (residential, commercial, hospital, ...); `matchedRow` is the table row that applies, `section` its clause and `values` the row read against its column labels. Separate from general NAS file search.',
       inputSchema: z.object({
         query: z.string().describe('A question or phrase describing the bylaw topic, e.g. "maximum building height in residential zones".'),
         limit: z.number().optional().describe('Max passages to return (default 6).'),
@@ -44,6 +44,8 @@ export function buildBylawsTools(): ToolSet {
               server: h.server, path: h.path, fileName: h.fileName,
               score: Math.round(h.score * 1000) / 1000, matchType: h.matchType, excerpt: h.text,
               ...('matchedRow' in h && h.matchedRow ? { matchedRow: h.matchedRow } : {}),
+              ...('section' in h && h.section ? { section: h.section } : {}),
+              ...('values' in h && h.values ? { values: h.values } : {}),
             })),
           }
         } catch (e) {
