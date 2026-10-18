@@ -740,8 +740,32 @@ async function main() {
       'what tasks are due this week', 'create a task for setback drawings', 'find the windlass drawings', 'where is the parking at the office',
       'what is the road project status', 'find the BOQ files', 'read the spec.pdf', 'summarize the tender document', 'hi',
     ]) check(`not a document question: "${q}"`, routed(q) === null, String(routed(q)))
+    // Every chat message of the NAS company passes through the router first:
+    // everyday uses of "far", "setback", "coverage", "basement", "go" and
+    // "files" must reach the normal chat path.
+    for (const q of [
+      'how far along is the Kudal project?', 'so far what has been done on the Imperial Hotel?',
+      'we had a setback on the IT park site, who is handling it', 'what is the insurance coverage for the site workers',
+      'should I go ahead with the elevation drawings', 'can we go to the site tomorrow', 'what files did Anjana upload today',
+      'which files are in the Kudal folder', 'what are my notes for today', 'who is working on the basement waterproofing task',
+      'what is the status of the basement work at Deulwadi', 'what letters did we send to the client this week',
+    ]) check(`everyday chat is not routed: "${q}"`, routed(q) === null, String(routed(q)))
+    for (const q of ['far 2000 sqm', 'area of one ECS in basement parking', 'what is the FAR for 2000 sq m plot', 'as per G.O. what is the setback'])
+      check(`still a bylaws question: "${q}"`, routed(q) === 'bylaws', String(routed(q)))
     check('a bylaws question goes to the normal path when the bylaws index is off',
       ans.ragSourceFor('FAR for a 500 sq m residential plot', { bylaws: false, nas: true }) === null)
+
+    // The model gets the merged question for a follow-up, not just "and for commercial?".
+    check('a follow-up is put to the model with the merged question',
+      ans.questionForAnswer('and for commercial?', 'setback (commercial) for a 200 sq m plot') === 'and for commercial?\n(That is: setback (commercial) for a 200 sq m plot)')
+    check('a standalone question is put to the model as asked', ans.questionForAnswer('FAR for 2000 sq m', 'FAR for 2000 sq m') === 'FAR for 2000 sq m')
+    check('answers have room for Gemini\'s reasoning plus a long answer (not 1,200 tokens)', ans.ANSWER_MAX_OUTPUT_TOKENS >= 3000)
+    const kinds = ans.renderPassages([
+      { server: 'WD', path: '/a', fileName: 'Time-saver Standards for Building Types.pdf', score: 0.8, text: '3 to 9 car spaces per 1000 sq ft' },
+      { server: 'WD', path: '/b', fileName: '202504161857302632Bylaws_160425.pdf', score: 0.8, text: 'Shopping mall 3 / 100 sqm' },
+    ])
+    check('a reference-book passage is marked as guidance, a bylaw passage is not',
+      /\[1\] Time-saver[^\n]*guidance, not a rule/.test(kinds) && /\[2\] 202504161857302632Bylaws_160425\.pdf\n/.test(kinds), kinds.slice(0, 200))
 
     for (const q of ['and for commercial?', 'what about 500 sq m?', 'aur hotel ke liye?', 'parking for hotels?', 'for commercial?'])
       check(`follow-up: "${q}"`, ans.isFollowUp(q))

@@ -1,6 +1,6 @@
 # Chat Answers from the Bylaws and NAS Documents: Changes (18 Oct 2026)
 
-Branch `feature/nas-rag-content-search`, on top of `main` at `de0cf0c`. Not committed yet.
+Branch `feature/nas-rag-content-search` (`c58ac26`, `be77de1`), merged into `main` on 18 Oct with the review fixes in section 11.
 Addresses open issue 2 in [`RAG_CHANGES_OCT_2026.md`](RAG_CHANGES_OCT_2026.md) ("Forgie chat does not answer bylaws questions").
 
 ---
@@ -197,3 +197,44 @@ Live check (18 Oct): one request through `streamPlainAnswer()` answered by `open
   - message order;
   - the source list format, citation order, and the top-3 fallback.
 - **Not tested against the live index.** The local `.env` points at a Qdrant on `localhost:6336`, which was not running, and the HuggingFace embedding fallback is out of credits (402). To test: run with the production Qdrant and connector settings, then ask in chat "What is the FAR for a 500 sq m residential plot?" followed by "and for commercial?", and compare with the Bylaws tab.
+
+## 11. Review at merge (18 Oct)
+
+Merged into `main` after review and a test against the production index. The design is kept as written; these were changed on top of it, each with checks in `scripts/test-rag.ts` (202 pass).
+
+**Lockfile.** `pnpm-lock.yaml` had `@ai-sdk/openai` with specifier `^3` while `package.json` says `^3.0.130`. A frozen install (pnpm 9, as on Render) failed with `ERR_PNPM_OUTDATED_LOCKFILE`. Only that line was changed.
+
+**Routing** (`ragSourceFor`). Every chat message of the NAS company passes through it before anything else. On 20 everyday messages it sent 12 to the bylaws or the NAS index, e.g.:
+- "how far along is the Kudal project?" ("far" read as FAR);
+- "we had a setback on the IT park site"; "what is the insurance coverage for the site workers";
+- "can we go to the site tomorrow" (`g\.?o\.?` matched "go");
+- "what files did Anjana upload today", "what are my notes for today".
+
+Now:
+- **FAR** routes only in capitals or spelt out ("floor area ratio"), or with a size ("far 2000 sqm").
+- **Other topics** need a use, a size, a rule word or a bylaws word.
+- **Messages about work** (tasks, status, progress, "who is working on", ...) are not routed unless they name the bylaws or give a size.
+- **"G.O."** needs its dots; "ECS" counts as a bylaws word.
+- **General document words** (files, documents, notes, letters) route only with a content question ("what does the document say about ..."), and never for who uploaded or sent something.
+
+Result: 0 of the 20 everyday messages routed; all 77 real questions of `scripts/bylaws-eval/cases.mjs` route to the bylaws; the 4 nonsense ones do not.
+
+**Answers cut off.** With `maxOutputTokens: 1200`, 4 of 12 real answers stopped mid-sentence: Gemini Flash spends 200 to 900 tokens reasoning first and they count against the limit. Now `ANSWER_MAX_OUTPUT_TOKENS` (4000; `RAG_ANSWER_MAX_OUTPUT_TOKENS`), used by the chat and the Bylaws tab.
+
+**Follow-ups answered about the previous question.** "and for commercial?" was searched correctly ("setback (commercial) for a 200 sq m plot") but the model got only "and for commercial?" and answered about residential plots. The model now gets the merged question too (`questionForAnswer`), and the prompt says to answer only the latest question.
+
+**Reference books as rules.** "parking for a shopping mall" listed Time-Saver Standards' "3 to 9 car spaces per 1,000 sq ft" next to the bylaw. Passages are now labelled with their kind (`documentPriority`): design reference books "guidance, not a rule", the model bye-laws "not in force", the NBC. The prompt says never to present guidance as the requirement.
+
+**Tested against the production index** (bylaws through Gemini as in production; NAS documents through the local model only). 12 of 12 answers had the right figures and were complete:
+- setback for 200 sq m residential; follow-ups "and for commercial?" and "and parking?";
+- FAR for 2000 sq m; minimum staircase width; hospital on 1500 sq m; building height 40 m;
+- FAR for shops on an 18 m road; parking for a shopping mall; group housing height;
+- Hindi setback for 200 sq m (answered in Hindi);
+- hospital FAR on a 2000 sq m plot (correctly says the exact rule is not in the bylaws);
+- "what does the BOQ say about flooring rates".
+
+Latency: 7 to 14 s per answer, mostly Gemini's reasoning.
+
+**Found while testing, not caused by this branch:** the production Groq settings fail on every call: one key is invalid, and the others answer "model `llama-3.3-70b-versatile` does not exist or you do not have access to it". Every cloud answer falls through to Gemini. Check the keys and the model id on Render.
+
+**Still Kavya's decision** (`RAG_CHANGES_OCT_2026.md` issue 3): document answers go to the cloud providers first. For NAS documents that means company file text goes to Gemini, or to OpenAI once its key and `openai` in `ASSISTANT_PROVIDER_ORDER` are set on Render. `RAG_ANSWER_LOCAL_FIRST=true` keeps them on the local model.

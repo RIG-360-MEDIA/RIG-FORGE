@@ -47,7 +47,8 @@ import { isNasEnabled } from '@/lib/nas/client'
 import { isBylawsIndexingEnabled } from '@/lib/rag/index-bylaws-file'
 import { isRagIndexingEnabled } from '@/lib/rag/index-nas-file'
 import {
-  RAG_TOOL, buildAnswerMessages, isFollowUp, notFoundMessage, ragSourceFor, retrieve, searchQueryFor, sourcesFooter,
+  ANSWER_MAX_OUTPUT_TOKENS, RAG_TOOL, buildAnswerMessages, isFollowUp, notFoundMessage, questionForAnswer, ragSourceFor, retrieve,
+  searchQueryFor, sourcesFooter,
   type RagRetrieval, type RagSource,
 } from '@/lib/rag/answer'
 
@@ -189,7 +190,7 @@ function buildResponseStream(args: BuildArgs): ReadableStream<Uint8Array> {
         // and before the cache, so the answer always reflects the index.
         const docs = await prepareDocumentAnswer(args.conversationId, args.content)
         if (docs) {
-          const answered = await streamDocumentAnswer(docs, args.content, (d) => write(controller, { type: 'text', delta: d }))
+          const answered = await streamDocumentAnswer(docs, (d) => write(controller, { type: 'text', delta: d }))
           write(controller, {
             type: 'done', provider: answered.provider ?? 'rag', model: answered.model ?? 'rag',
             fallback: false, latencyMs: answered.latencyMs, pendingActions: [], toolsUsed: [RAG_TOOL[docs.retrieval.source]],
@@ -667,6 +668,8 @@ function buildResponseStream(args: BuildArgs): ReadableStream<Uint8Array> {
 
 interface DocumentAnswerPlan {
   retrieval: RagRetrieval
+  /** The question for the model: the message, plus the merged question for a follow-up. */
+  question: string
   history: Array<{ role: 'user' | 'assistant'; content: string }>
 }
 
@@ -712,7 +715,7 @@ async function prepareDocumentAnswer(conversationId: string, content: string): P
     .slice(0, 4)
     .reverse()
     .map((m) => ({ role: m.role === 'USER' ? ('user' as const) : ('assistant' as const), content: m.content }))
-  return { retrieval, history }
+  return { retrieval, history, question: questionForAnswer(content, query) }
 }
 
 /** The search a previous assistant turn ran, from its stored tool calls. */
@@ -737,7 +740,6 @@ function previousDocumentSearch(toolCalls: unknown): { source: RagSource; query:
  */
 async function streamDocumentAnswer(
   plan: DocumentAnswerPlan,
-  question: string,
   emit: (delta: string) => void,
 ): Promise<{ text: string; provider: string | null; model: string | null; inputTokens: number | null; outputTokens: number | null; latencyMs: number }> {
   const t0 = Date.now()
@@ -750,9 +752,9 @@ async function streamDocumentAnswer(
   }
 
   const brand = await getOrgIdentity(getOrgId())
-  const messages = buildAnswerMessages(r, question, plan.history, brand.appName)
+  const messages = buildAnswerMessages(r, plan.question, plan.history, brand.appName)
   const deprioritize: ProviderName[] = process.env.RAG_ANSWER_LOCAL_FIRST === 'true' ? [] : ['local']
-  const { text, meta } = await streamPlainAnswer(messages, { deprioritize, temperature: 0.2, maxOutputTokens: 1200 }, emit)
+  const { text, meta } = await streamPlainAnswer(messages, { deprioritize, temperature: 0.2, maxOutputTokens: ANSWER_MAX_OUTPUT_TOKENS }, emit)
 
   let answer = text
   if (!answer.trim()) {
