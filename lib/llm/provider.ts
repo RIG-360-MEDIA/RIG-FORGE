@@ -2,7 +2,7 @@
  * Multi-provider LLM with key pools + cross-provider fallback.
  *
  * The picture:
- *   - Each provider (groq, gemini, cerebras) has a POOL of API keys.
+ *   - Each provider (openai, groq, gemini, cerebras) has a POOL of API keys.
  *   - Within a provider, keys are rotated round-robin.
  *   - When a key returns 429 (rate-limited), it's marked cooling-down
  *     for COOLDOWN_MS. Other keys in the pool keep serving.
@@ -11,16 +11,18 @@
  *     ASSISTANT_PROVIDER_ORDER.
  *   - If every provider fails, the caller gets a canned response.
  *
- * Add more keys later by appending to GROQ_API_KEYS / GEMINI_API_KEYS /
- * CEREBRAS_API_KEYS in .env (comma-separated). No code change needed.
+ * Add more keys later by appending to OPENAI_API_KEYS / GROQ_API_KEYS /
+ * GEMINI_API_KEYS / CEREBRAS_API_KEYS in .env (comma-separated). No code
+ * change needed.
  */
 
+import { createOpenAI } from '@ai-sdk/openai'
 import { createGroq } from '@ai-sdk/groq'
 import { createGoogleGenerativeAI } from '@ai-sdk/google'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import type { LanguageModel } from 'ai'
 
-export type ProviderName = 'local' | 'groq' | 'gemini' | 'cerebras'
+export type ProviderName = 'openai' | 'local' | 'groq' | 'gemini' | 'cerebras'
 
 const COOLDOWN_MS = 60_000  // mark a key cool for 60s after a 429
 
@@ -102,6 +104,21 @@ function initPools(): Map<ProviderName, ProviderPool> {
     })
   }
 
+  // ── OpenAI ── the official provider, not the OpenAI-compatible one: it
+  // knows which models are reasoning models (gpt-5 family) and drops the
+  // settings they reject, such as temperature, instead of failing the call.
+  // OPENAI_API_KEY (one key, OpenAI's own convention) is accepted too.
+  const openaiKeys = parseKeyList(process.env.OPENAI_API_KEYS || process.env.OPENAI_API_KEY)
+  if (openaiKeys.length > 0) {
+    map.set('openai', {
+      name: 'openai',
+      keys: openaiKeys.map((key) => ({ key, cooldownUntil: 0 })),
+      cursor: 0,
+      model: process.env.OPENAI_MODEL ?? 'gpt-4.1-mini',
+      buildModel: (apiKey, modelName) => createOpenAI({ apiKey })(modelName),
+    })
+  }
+
   const groqKeys = parseKeyList(process.env.GROQ_API_KEYS)
   if (groqKeys.length > 0) {
     map.set('groq', {
@@ -156,12 +173,13 @@ export function isAssistantEnabled(): boolean {
 }
 
 export function getProviderOrder(): ProviderName[] {
-  // Local first when configured, then the cloud fallbacks.
-  const raw = process.env.ASSISTANT_PROVIDER_ORDER ?? 'local,groq,gemini,cerebras'
+  // OpenAI first when it has keys, then local, then the other cloud fallbacks.
+  // A provider without keys is skipped, so the default order is safe anywhere.
+  const raw = process.env.ASSISTANT_PROVIDER_ORDER ?? 'openai,local,groq,gemini,cerebras'
   return raw
     .split(',')
     .map((s) => s.trim().toLowerCase())
-    .filter((s): s is ProviderName => s === 'local' || s === 'groq' || s === 'gemini' || s === 'cerebras')
+    .filter((s): s is ProviderName => s === 'openai' || s === 'local' || s === 'groq' || s === 'gemini' || s === 'cerebras')
 }
 
 // Pick the next available key in a pool. Returns null if all are cooling down.
