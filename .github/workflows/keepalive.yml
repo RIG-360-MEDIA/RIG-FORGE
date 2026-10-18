@@ -33,8 +33,11 @@ jobs:
             || echo " — bridge ping failed (will retry next run)"
 
       - name: Ping main app
+        env:
+          # Repository variable APP_URL when the app moves; see forgie-crons.yml.
+          APP_URL: ${{ vars.APP_URL || 'https://rig-forge.onrender.com' }}
         run: |
           echo "Pinging app /api/health..."
-          curl -sf --max-time 30 https://rig-forge.onrender.com/api/health \
+          curl -sf --max-time 30 "${APP_URL%/}/api/health" \
             && echo " — app OK" \
             || echo " — app ping failed (will retry next run)"

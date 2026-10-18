@@ -69,6 +69,9 @@ jobs:
       - name: POST to the cron endpoint
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          # The app's address. Set the repository variable APP_URL (Settings >
+          # Secrets and variables > Actions > Variables) when the app moves.
+          APP_URL: ${{ vars.APP_URL || 'https://rig-forge.onrender.com' }}
           ENDPOINT: ${{ github.event.inputs.endpoint || steps.pick.outputs.path }}
         run: |
           if [ -z "$CRON_SECRET" ]; then
@@ -78,4 +81,4 @@ jobs:
           echo "Triggering /api/cron/$ENDPOINT"
           curl -sS --fail-with-body --max-time 600 -X POST \
             -H "x-cron-secret: $CRON_SECRET" \
-            "https://rig-forge.onrender.com/api/cron/$ENDPOINT"
+            "${APP_URL%/}/api/cron/$ENDPOINT"
