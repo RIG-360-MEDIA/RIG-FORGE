@@ -1,6 +1,8 @@
 'use client'
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { ScrollText, Search } from 'lucide-react'
 
 interface BylawsMatch {
@@ -26,17 +28,29 @@ interface BylawsResult {
   matches: BylawsMatch[]
 }
 
-async function api<T>(url: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(url, { credentials: 'include', ...init })
-  const j = await r.json()
-  if (!r.ok || j.error) throw new Error(j.error || 'Request failed')
-  return j.data as T
+/** Read the NDJSON frames of /api/nas/bylaws/answer as they arrive. */
+async function readFrames(res: Response, onFrame: (frame: Record<string, unknown>) => void): Promise<void> {
+  if (!res.body) return
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    let nl: number
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim()
+      buf = buf.slice(nl + 1)
+      if (line) onFrame(JSON.parse(line))
+    }
+  }
 }
 
-// Direct semantic search over the separate bylaws RAG index (own Qdrant
-// collection — see lib/rag/index-bylaws-file.ts). Independent of the Forgie
-// chatbot: works even when ASSISTANT_ENABLED is off, since it only needs the
-// embedding + vector search pipeline, not an LLM.
+// Search over the separate bylaws RAG index (own Qdrant collection — see
+// lib/rag/index-bylaws-file.ts) with the whole question, then a written answer
+// from the passages found, citing them by number. The passages come first and
+// stay visible; without an LLM (ASSISTANT_ENABLED off) they are shown alone.
 export default function BylawsPanel() {
   const [q, setQ] = useState('')
   const [matches, setMatches] = useState<BylawsMatch[] | null>(null)
@@ -44,24 +58,48 @@ export default function BylawsPanel() {
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [notConfigured, setNotConfigured] = useState(false)
+  const [answer, setAnswer] = useState('')
+  const [answering, setAnswering] = useState(false)
+  const [asked, setAsked] = useState('')
+  // A newer search makes the frames of an older one stale.
+  const searchId = useRef(0)
 
   const runSearch = async () => {
-    if (!q.trim()) return
-    setLoading(true); setErr(null); setNotConfigured(false)
+    const query = q.trim()
+    if (!query) return
+    const id = ++searchId.current
+    setLoading(true); setErr(null); setNotConfigured(false); setAnswer(''); setMatches(null); setMeta(null); setAsked(query)
     try {
-      const r = await api<BylawsResult>('/api/nas/bylaws/search', {
+      const res = await fetch('/api/nas/bylaws/answer', {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: q.trim() }),
+        body: JSON.stringify({ query }),
       })
-      setMatches(r.matches || [])
-      setMeta({ requirement: r.requirement ?? null, allMatched: r.allMatched !== false })
+      if (!res.ok) {
+        const j = await res.json().catch(() => null)
+        throw new Error(j?.error || 'Request failed')
+      }
+      await readFrames(res, (f) => {
+        if (id !== searchId.current) return
+        if (f.type === 'matches') {
+          const r = f as unknown as BylawsResult
+          setMatches(r.matches || [])
+          setMeta({ requirement: r.requirement ?? null, allMatched: r.allMatched !== false })
+          setLoading(false)
+          setAnswering((r.matches || []).length > 0)
+        } else if (f.type === 'text') {
+          setAnswer((a) => a + String(f.delta ?? ''))
+        } else if (f.type === 'error') {
+          setErr(String(f.error ?? 'Could not write an answer'))
+        }
+      })
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Search failed'
       if (/not configured/i.test(msg)) setNotConfigured(true)
       else setErr(msg)
     } finally {
-      setLoading(false)
+      if (id === searchId.current) { setLoading(false); setAnswering(false) }
     }
   }
 
@@ -97,9 +135,22 @@ export default function BylawsPanel() {
       {matches && (
         <div className="border border-border-default rounded divide-y divide-border-default">
           <div className="px-3 py-2 text-xs font-mono text-text-secondary flex justify-between">
-            <span>{matches.length} result{matches.length === 1 ? '' : 's'} for “{q}”</span>
-            <button onClick={() => { setMatches(null); setMeta(null) }} className="hover:text-text-primary">✕ clear</button>
+            <span>{matches.length} result{matches.length === 1 ? '' : 's'} for “{asked}”</span>
+            <button onClick={() => { searchId.current++; setMatches(null); setMeta(null); setAnswer(''); setAnswering(false) }} className="hover:text-text-primary">✕ clear</button>
           </div>
+          {(answer || answering) && (
+            <div className="px-3 py-3 text-sm text-text-primary space-y-2">
+              <p className="text-xs font-medium text-text-secondary">Answer</p>
+              {answer ? (
+                <div className="prose prose-sm max-w-none text-text-primary prose-p:my-1 prose-ul:my-1 prose-li:my-0 prose-strong:text-text-primary">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{answer}</ReactMarkdown>
+                </div>
+              ) : (
+                <p className="text-xs text-text-secondary">Writing an answer from the passages below…</p>
+              )}
+              <p className="text-xs text-text-secondary">Numbers in brackets refer to the passages below. Check the figure in the document before relying on it.</p>
+            </div>
+          )}
           {meta?.requirement && (
             meta.allMatched ? (
               <div className="px-3 py-2 text-xs text-text-secondary">
@@ -122,6 +173,7 @@ export default function BylawsPanel() {
                   className="text-text-primary font-medium truncate hover:underline"
                   title={m.path}
                 >
+                  <span className="font-mono text-text-secondary mr-1.5">[{i + 1}]</span>
                   <ScrollText className="inline h-4 w-4 mr-1.5 -mt-0.5 align-middle" aria-hidden="true" />{m.fileName}
                 </a>
                 <span className="text-text-secondary text-xs font-mono shrink-0">{Math.round(m.score * 100)}% match</span>

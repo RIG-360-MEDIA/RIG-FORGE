@@ -28,14 +28,16 @@ keys (no spaces around `=`):
 ASSISTANT_ENABLED=true
 
 # Comma-separated lists — add more keys later by appending
+OPENAI_API_KEYS=sk-xxxx
 GROQ_API_KEYS=gsk_xxxx,gsk_yyyy
 GEMINI_API_KEYS=AIzaXxxx,AIzaYyyy
 CEREBRAS_API_KEYS=csk-xxxx,csk-yyyy
 
-# Provider preference, comma-separated
-ASSISTANT_PROVIDER_ORDER=groq,gemini,cerebras
+# Provider preference, comma-separated. OpenAI first; the rest are fallbacks.
+ASSISTANT_PROVIDER_ORDER=openai,groq,gemini,cerebras
 
 # Models per provider
+OPENAI_MODEL=gpt-4.1-mini
 GROQ_MODEL=llama-3.3-70b-versatile
 GEMINI_MODEL=gemini-flash-latest
 CEREBRAS_MODEL=gpt-oss-120b

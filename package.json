@@ -19,6 +19,7 @@
   "dependencies": {
     "@ai-sdk/google": "^3.0.79",
     "@ai-sdk/groq": "^3.0.39",
+    "@ai-sdk/openai": "^3.0.130",
     "@ai-sdk/openai-compatible": "^2.0.48",
     "@prisma/client": "5.16.1",
     "@qdrant/js-client-rest": "^1.18.0",
