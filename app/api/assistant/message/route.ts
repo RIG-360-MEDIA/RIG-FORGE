@@ -47,7 +47,7 @@ import { isNasEnabled } from '@/lib/nas/client'
 import { isBylawsIndexingEnabled } from '@/lib/rag/index-bylaws-file'
 import { isRagIndexingEnabled } from '@/lib/rag/index-nas-file'
 import {
-  ANSWER_MAX_OUTPUT_TOKENS, RAG_TOOL, buildAnswerMessages, isFollowUp, notFoundMessage, questionForAnswer, ragSourceFor, retrieve,
+  ANSWER_MAX_OUTPUT_TOKENS, RAG_TOOL, answerProviders, buildAnswerMessages, isFollowUp, notFoundMessage, questionForAnswer, ragSourceFor, retrieve,
   searchQueryFor, sourcesFooter,
   type RagRetrieval, type RagSource,
 } from '@/lib/rag/answer'
@@ -753,8 +753,7 @@ async function streamDocumentAnswer(
 
   const brand = await getOrgIdentity(getOrgId())
   const messages = buildAnswerMessages(r, plan.question, plan.history, brand.appName)
-  const deprioritize: ProviderName[] = process.env.RAG_ANSWER_LOCAL_FIRST === 'true' ? [] : ['local']
-  const { text, meta } = await streamPlainAnswer(messages, { deprioritize, temperature: 0.2, maxOutputTokens: ANSWER_MAX_OUTPUT_TOKENS }, emit)
+  const { text, meta } = await streamPlainAnswer(messages, { ...answerProviders(), temperature: 0.2, maxOutputTokens: ANSWER_MAX_OUTPUT_TOKENS }, emit)
 
   let answer = text
   if (!answer.trim()) {

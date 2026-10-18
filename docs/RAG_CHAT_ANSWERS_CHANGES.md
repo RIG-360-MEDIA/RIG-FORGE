@@ -235,6 +235,18 @@ Result: 0 of the 20 everyday messages routed; all 77 real questions of `scripts/
 
 Latency: 7 to 14 s per answer, mostly Gemini's reasoning.
 
+**After the first live deploy (same day).** In production the answers were slow (up to 100 s) or written by the local 3B model, which misread "a >12 - 24 m road" as "12 - 24 m from the road". Checked each provider's keys directly:
+- **Groq:** `GROQ_MODEL=llama-3.3-70b-versatile` no longer exists on Groq (it offers `openai/gpt-oss-120b`, `qwen/qwen3.8-27b`, ...), and key 2 of 5 is invalid. Every Groq call fails.
+- **Gemini:** key 1 of 5 is out of quota; the others answered "Say OK" in 29 to 53 s that day.
+- **Cerebras:** every key now returns "Payment Required".
+
+Changes on top:
+- **No local model for regulation answers.** `answerProviders()` leaves the local model out of document answers. A new `exclude` option in `selectNextModel` / `startStream` makes that possible. With no cloud model, the passages are shown instead. `RAG_ANSWER_LOCAL_FIRST=true` still keeps answers on the local model.
+- **Reply language set in code:** Hindi only for a question written in Devanagari. `gpt-oss` answered English questions in Hindi when the passages were Hindi.
+- **`【1】` citations** (as `gpt-oss` writes them) count like `[1]` for the source list.
+
+With `GROQ_MODEL=openai/gpt-oss-120b`, the 12 production-index questions: 11 with the expected figures, 2 to 5 s each. Gemini: 12 of 12, 7 to 25 s.
+
 **Found while testing, not caused by this branch:** the production Groq settings fail on every call: one key is invalid, and the others answer "model `llama-3.3-70b-versatile` does not exist or you do not have access to it". Every cloud answer falls through to Gemini. Check the keys and the model id on Render.
 
 **Still Kavya's decision** (`RAG_CHANGES_OCT_2026.md` issue 3): document answers go to the cloud providers first. For NAS documents that means company file text goes to Gemini, or to OpenAI once its key and `openai` in `ASSISTANT_PROVIDER_ORDER` are set on Render. `RAG_ANSWER_LOCAL_FIRST=true` keeps them on the local model.

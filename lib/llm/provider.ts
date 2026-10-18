@@ -213,8 +213,14 @@ export interface SelectedModel {
   apiKey: string
 }
 
-export function selectNextModel(opts?: { deprioritize?: ProviderName[] }): SelectedModel | null {
+export function selectNextModel(opts?: { deprioritize?: ProviderName[]; exclude?: ProviderName[] }): SelectedModel | null {
   let order = getProviderOrder()
+  // Leave some providers out entirely, e.g. the small local model for answers
+  // about regulations, where a wrong figure is worse than no written answer.
+  if (opts?.exclude?.length) {
+    const skip = new Set(opts.exclude)
+    order = order.filter((p) => !skip.has(p))
+  }
   // Move certain providers to the back without dropping them (still a last
   // resort). Used to keep Groq off the tool-calling path — Groq streams the
   // first tool step fine but hangs the agentic CONTINUATION (feeding the tool

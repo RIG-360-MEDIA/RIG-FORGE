@@ -764,6 +764,24 @@ async function main() {
       { server: 'WD', path: '/a', fileName: 'Time-saver Standards for Building Types.pdf', score: 0.8, text: '3 to 9 car spaces per 1000 sq ft' },
       { server: 'WD', path: '/b', fileName: '202504161857302632Bylaws_160425.pdf', score: 0.8, text: 'Shopping mall 3 / 100 sqm' },
     ])
+    // Citations written 【1】 (gpt-oss) count like [1] for the source list.
+    const two = [
+      { server: 'WD', path: '/a', fileName: 'a.pdf', score: 0.8, text: 'x' },
+      { server: 'WD', path: '/b', fileName: 'b.pdf', score: 0.8, text: 'y' },
+    ]
+    check('【2】 citations are read like [2]', ans.citedPassages('FAR is 2.0【2】', two as never)[0]?.fileName === 'b.pdf')
+    // The reply language is set by the question's script, not left to the model.
+    const r0 = { source: 'bylaws' as const, query: 'q', passages: [], requirement: null, allMatched: true }
+    const sysFor = (q: string) => String(ans.buildAnswerMessages(r0, q, [], 'X')[0]!.content)
+    check('an English question is answered in English', /Reply in English/.test(sysFor('FAR for 2000 sq m plot')) && !/Reply in Hindi/.test(sysFor('FAR for 2000 sq m plot')))
+    check('a Hindi question is answered in Hindi', /Reply in Hindi/.test(sysFor('200 वर्ग मीटर भूखंड का सेटबैक')))
+    // The small local model does not write regulation answers unless asked to.
+    const keepLocal = process.env.RAG_ANSWER_LOCAL_FIRST
+    delete process.env.RAG_ANSWER_LOCAL_FIRST
+    check('document answers leave out the local model by default', JSON.stringify(ans.answerProviders()) === '{"exclude":["local"]}')
+    process.env.RAG_ANSWER_LOCAL_FIRST = 'true'
+    check('RAG_ANSWER_LOCAL_FIRST=true allows it', !ans.answerProviders().exclude)
+    if (keepLocal === undefined) delete process.env.RAG_ANSWER_LOCAL_FIRST; else process.env.RAG_ANSWER_LOCAL_FIRST = keepLocal
     check('a reference-book passage is marked as guidance, a bylaw passage is not',
       /\[1\] Time-saver[^\n]*guidance, not a rule/.test(kinds) && /\[2\] 202504161857302632Bylaws_160425\.pdf\n/.test(kinds), kinds.slice(0, 200))
 

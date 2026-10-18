@@ -92,6 +92,8 @@ export interface StreamOptions {
   // read-integration tools (nas_search, gh_list, …) need. Chat + simple
   // proposals leave this empty so the fast local model stays first.
   deprioritize?: ProviderName[]
+  // Providers not to use at all for this call.
+  exclude?: ProviderName[]
   // Defaults suit chat. Answers written from retrieved documents pass a low
   // temperature, so figures are copied rather than paraphrased into new ones.
   temperature?: number
@@ -122,7 +124,9 @@ export async function startStream(
 
   for (let attempt = 0; attempt < MAX_FALLBACK_ATTEMPTS; attempt++) {
     const selection = selectNextModel(
-      options.deprioritize?.length ? { deprioritize: options.deprioritize } : undefined,
+      options.deprioritize?.length || options.exclude?.length
+        ? { deprioritize: options.deprioritize, exclude: options.exclude }
+        : undefined,
     )
     if (!selection) {
       return { success: false, reason: 'all_keys_cooling_down' }

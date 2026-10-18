@@ -15,6 +15,8 @@
  */
 import type { ModelMessage } from 'ai'
 
+import type { ProviderName } from '@/lib/llm/provider'
+
 import { getOrgId } from '@/lib/tenant-context'
 
 import { embedQuery } from './embeddings'
@@ -235,6 +237,18 @@ const CONTEXT_CHARS = 12_000
  * by building type) were cut off mid-sentence. */
 export const ANSWER_MAX_OUTPUT_TOKENS = Number(process.env.RAG_ANSWER_MAX_OUTPUT_TOKENS ?? 4000)
 
+/**
+ * Which models may write a document answer. By default the cloud models
+ * only: the small local model (qwen2.5 3B) misreads tables ("a >12 - 24 m
+ * road" became "12 - 24 m from the road"), and a wrong figure about a
+ * regulation is worse than none; with no cloud model available the
+ * matching passages are shown instead. RAG_ANSWER_LOCAL_FIRST=true keeps
+ * document text on the local model (docs/RAG_CHANGES_OCT_2026.md, issue 3).
+ */
+export function answerProviders(): { exclude?: ProviderName[] } {
+  return process.env.RAG_ANSWER_LOCAL_FIRST === 'true' ? {} : { exclude: ['local'] }
+}
+
 /** What kind of document a passage is from, for the model (see documentPriority). */
 function documentKind(fileName: string): string {
   switch (documentPriority(fileName)) {
@@ -305,7 +319,12 @@ export function buildAnswerMessages(
     '- If documents differ (a local bylaw and the NBC, or two years of a bylaw), say which document says what. Local bylaws apply over the NBC.',
     '- A passage marked as a design reference book is guidance, not a rule: never present its figures as the requirement, and use it only when no bylaw or code passage answers, saying that it is guidance.',
     '- If the passages do not answer the question, say that it was not found in the documents and what they do cover. Never fill a gap from general knowledge, and never invent a figure or a clause number.',
-    '- Reply in the language of the question (Hindi to a Hindi question). Be concise. Do not mention passages, scores, searches or JSON; say "the bylaws" or the document name instead.',
+    // The language is decided here, not left to the model: gpt-oss answered
+    // English questions in Hindi when the passages were Hindi.
+    /\p{Script=Devanagari}/u.test(question)
+      ? '- Reply in Hindi (Devanagari script), keeping figures and units as written.'
+      : '- Reply in English, even when passages are in Hindi.',
+    '- Cite with plain square brackets like [1], not other bracket styles. Be concise. Do not mention passages, scores, searches or JSON; say "the bylaws" or the document name instead.',
     caution,
     '',
     '--- PASSAGES ---',
@@ -321,7 +340,8 @@ export function buildAnswerMessages(
 /** The passages the answer cited, in citation order; the top three when it cited none. */
 export function citedPassages(answer: string, passages: RagPassage[]): RagPassage[] {
   const order: number[] = []
-  for (const m of answer.matchAll(/\[(\d{1,2})\]/g)) {
+  // [1], and 【1】 as some models (gpt-oss) write it.
+  for (const m of answer.matchAll(/[[【](\d{1,2})[\]】]/g)) {
     const n = Number(m[1])
     if (n >= 1 && n <= passages.length && !order.includes(n)) order.push(n)
   }
