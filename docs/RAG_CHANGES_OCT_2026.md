@@ -416,6 +416,18 @@ The Bylaws tab works; chat does not. Kavya asked to leave chat alone until now.
 **Done when:** the questions in `cases.mjs` asked in chat give the same row
 and figures as the Bylaws tab, and no raw JSON is shown.
 
+**Update 18 Oct (not yet tested against the live index):** chat no longer
+leaves retrieval to the model. `lib/rag/answer.ts` routes bylaws questions
+and "what does the document say" questions; the route searches with the whole
+message (a follow-up such as "and for commercial?" inherits the topic, use
+and plot size of the previous question), then one no-tools call at
+temperature 0.2 answers from the numbered passages only, citing them, with a
+source list built from the passages. Runs before the filename fast-lane and
+the reply cache. The answer goes to the cloud providers first;
+`RAG_ANSWER_LOCAL_FIRST=true` keeps it on the local model (issue 3). The
+Bylaws tab now calls `POST /api/nas/bylaws/answer`: same passages, plus a
+written answer above them. Routing cases are in `scripts/test-rag.ts`.
+
 ### 3. Which LLM answers, and what data leaves the network. **Kavya decides.**
 
 **What:** Forgie tries `local` (qwen2.5:3b on TRIJYA-3), then Groq, Gemini and

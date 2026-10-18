@@ -30,6 +30,7 @@ import {
   isAssistantEnabled,
   selectNextModel,
   reportRateLimit,
+  reportProviderExhausted,
   type ProviderName,
 } from './provider'
 
@@ -91,6 +92,10 @@ export interface StreamOptions {
   // read-integration tools (nas_search, gh_list, …) need. Chat + simple
   // proposals leave this empty so the fast local model stays first.
   deprioritize?: ProviderName[]
+  // Defaults suit chat. Answers written from retrieved documents pass a low
+  // temperature, so figures are copied rather than paraphrased into new ones.
+  temperature?: number
+  maxOutputTokens?: number
 }
 
 /**
@@ -128,8 +133,8 @@ export async function startStream(
         model: selection.model,
         ...(systemText && { system: systemText }),
         messages: convo,
-        temperature: 0.85,
-        maxOutputTokens: MAX_OUTPUT_TOKENS,
+        temperature: options.temperature ?? 0.85,
+        maxOutputTokens: options.maxOutputTokens ?? MAX_OUTPUT_TOKENS,
         abortSignal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         ...(options.tools && {
           tools: options.tools,
@@ -225,6 +230,37 @@ export async function consumeStream(
     finishReason: finishReason ?? null,
     fallback: false,
   }
+}
+
+/**
+ * One no-tools generation, retried on the next provider when one fails or
+ * returns nothing before any text was shown. Once text has been streamed the
+ * answer is kept, as in the main loop.
+ */
+export async function streamPlainAnswer(
+  messages: ModelMessage[],
+  options: Omit<StreamOptions, 'tools'>,
+  emit: (delta: string) => void,
+): Promise<{ text: string; meta: StreamMetadata | null }> {
+  let text = ''
+  for (let a = 0; a < 8; a++) {
+    const st = await startStream(messages, options) // no tools → no hang
+    if (!st.success) break
+    try {
+      const meta = await consumeStream(st, (d) => { text += d; emit(d) })
+      if (text.trim()) return { text, meta }
+      reportRateLimit(st.provider, st.apiKey)
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e)
+      if (/request too large|tokens per minute|context length|too many tokens|\b413\b/i.test(reason)) {
+        reportProviderExhausted(st.provider)
+      } else {
+        reportRateLimit(st.provider, st.apiKey)
+      }
+      if (text.trim()) return { text, meta: null }
+    }
+  }
+  return { text, meta: null }
 }
 
 // Join all role:'system' messages into one string for the AI SDK's `system`

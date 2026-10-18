@@ -724,6 +724,57 @@ async function main() {
     check('cleanPassage leaves ordinary text alone', cleanPassage(residential) === residential)
   }
 
+  // ── Retrieve-then-answer: which questions are searched, and with what ─────
+  console.log('\n## Chat answers from the documents (lib/rag/answer.ts)')
+  {
+    const ans = await import('../lib/rag/answer')
+    const both = { bylaws: true, nas: true }
+    const routed = (q: string) => ans.ragSourceFor(q, both)
+    for (const q of [
+      'FAR for a 500 sq m residential plot', 'what is the minimum staircase width', 'parking requirement for hospital',
+      'what does the NBC say about fire exits', 'आवासीय भूखंड 200 वर्गमीटर पर सेटबैक कितना होगा', 'What are the setback rules?',
+    ]) check(`bylaws question is searched: "${q}"`, routed(q) === 'bylaws', String(routed(q)))
+    for (const q of ['what does the spec say about fire rating for the lobby', 'which contract has a penalty clause', 'what are the payment terms in the agreement with ABC'])
+      check(`document question is searched: "${q}"`, routed(q) === 'nas', String(routed(q)))
+    for (const q of [
+      'what tasks are due this week', 'create a task for setback drawings', 'find the windlass drawings', 'where is the parking at the office',
+      'what is the road project status', 'find the BOQ files', 'read the spec.pdf', 'summarize the tender document', 'hi',
+    ]) check(`not a document question: "${q}"`, routed(q) === null, String(routed(q)))
+    check('a bylaws question goes to the normal path when the bylaws index is off',
+      ans.ragSourceFor('FAR for a 500 sq m residential plot', { bylaws: false, nas: true }) === null)
+
+    for (const q of ['and for commercial?', 'what about 500 sq m?', 'aur hotel ke liye?', 'parking for hotels?', 'for commercial?'])
+      check(`follow-up: "${q}"`, ans.isFollowUp(q))
+    for (const q of ['thanks', 'who is on hotel?', 'create a ticket for that', 'what is the minimum staircase width'])
+      check(`not a follow-up: "${q}"`, !ans.isFollowUp(q))
+    const prev = 'setback for a 200 sq m residential plot'
+    check('follow-up keeps the topic and plot size, swaps the use',
+      ans.searchQueryFor('bylaws', 'and for commercial?', prev) === 'setback (commercial) for a 200 sq m plot', ans.searchQueryFor('bylaws', 'and for commercial?', prev))
+    check('follow-up keeps the use and plot size, swaps the topic',
+      ans.searchQueryFor('bylaws', 'and parking?', prev) === 'parking (residential) for a 200 sq m plot', ans.searchQueryFor('bylaws', 'and parking?', prev))
+    check('a question with its own topic and use is searched as asked',
+      ans.searchQueryFor('bylaws', 'parking for hotels?', prev) === 'parking for hotels?')
+    check('document follow-up searches both questions',
+      ans.searchQueryFor('nas', 'and the warranty?', 'what does the spec say about lifts') === 'what does the spec say about lifts and the warranty?')
+
+    const passages = [
+      { server: 'WD', path: '/By_Laws/a.pdf', fileName: 'a.pdf', score: 0.9, text: 'FAR table', section: '3.2.2 FAR', values: 'FAR 1.75' },
+      { server: 'WD', path: '/By_Laws/b.pdf', fileName: 'b.pdf', score: 0.88, text: 'x'.repeat(5000) },
+      { server: 'WD', path: '/By_Laws/c b.pdf', fileName: 'c b.pdf', score: 0.86, text: 'parking' },
+    ]
+    const r = { source: 'bylaws' as const, query: 'FAR', passages, requirement: 'FAR for a 200 sq m plot', allMatched: false }
+    const msgs = ans.buildAnswerMessages(r, 'FAR for 200 sq m?', [{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'hello' }], 'Trijya')
+    const sys = String(msgs[0]?.content)
+    check('prompt numbers the passages and gives the applicable row', sys.includes('[1] a.pdf — clause 3.2.2 FAR') && sys.includes('Applicable row, read against its column labels: FAR 1.75'))
+    check('prompt cuts a long passage', !sys.includes('x'.repeat(2000)) && sys.includes('x'.repeat(1800)))
+    check('prompt says the exact rule was not found when not every part matched', sys.includes('no passage covers FAR for a 200 sq m plot together'))
+    check('the conversation and then the question follow the prompt', msgs.length === 4 && msgs[3]?.role === 'user' && msgs[3]?.content === 'FAR for 200 sq m?')
+    check('sources list the cited passages, in citation order, with their numbers',
+      ans.sourcesFooter('FAR is 1.75 [3][1], also [1]; not [9]', passages) ===
+        '\n\n**Sources**\n- [3] [c b.pdf](/api/nas/download?server=WD&path=%2FBy_Laws%2Fc%20b.pdf&inline=1)\n- [1] [a.pdf](/api/nas/download?server=WD&path=%2FBy_Laws%2Fa.pdf&inline=1) — clause 3.2.2 FAR')
+    check('sources fall back to the top three when nothing is cited', ans.citedPassages('no citations', passages).length === 3)
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`)
   process.exitCode = fail ? 1 : 0
 }

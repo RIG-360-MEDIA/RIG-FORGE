@@ -30,7 +30,7 @@ import { prisma } from '@/lib/db'
 import { getTokenFromCookies, verifyToken } from '@/lib/auth'
 import { errorResponse } from '@/lib/api-helpers'
 import { isAssistantEnabled, reportRateLimit, reportProviderExhausted, type ProviderName } from '@/lib/llm/provider'
-import { startStream, consumeStream } from '@/lib/llm/stream'
+import { startStream, consumeStream, streamPlainAnswer } from '@/lib/llm/stream'
 import { buildSystemPrompt } from '@/lib/assistant/prompts'
 import { getOrgId } from '@/lib/tenant-context'
 import { getOrgIdentity } from '@/lib/org-branding'
@@ -43,6 +43,13 @@ import { buildAllToolsAsync, selectRelevantTools, usesIntegrationTools, TOOL_USE
 import { signActionToken } from '@/lib/assistant/action-token'
 import { tryNasFastLane, tryNasReadIntent } from '@/lib/nas/fastlane'
 import { tryPeopleFastLane } from '@/lib/people/fastlane'
+import { isNasEnabled } from '@/lib/nas/client'
+import { isBylawsIndexingEnabled } from '@/lib/rag/index-bylaws-file'
+import { isRagIndexingEnabled } from '@/lib/rag/index-nas-file'
+import {
+  RAG_TOOL, buildAnswerMessages, isFollowUp, notFoundMessage, ragSourceFor, retrieve, searchQueryFor, sourcesFooter,
+  type RagRetrieval, type RagSource,
+} from '@/lib/rag/answer'
 
 const MAX_HISTORY_MESSAGES = 10
 
@@ -174,6 +181,37 @@ function buildResponseStream(args: BuildArgs): ReadableStream<Uint8Array> {
           where: { conversationId: args.conversationId, role: { in: ['USER', 'ASSISTANT'] } },
         })
 
+        // ── Answers from the bylaws and NAS documents (pre-cache) ──────────
+        // Questions about the bylaws or what a document says: search the index
+        // with the whole message, then have the model answer from the passages
+        // found, with no tools. Runs before the filename fast-lane (which
+        // would treat "find the parking rules in the bylaws" as a filename)
+        // and before the cache, so the answer always reflects the index.
+        const docs = await prepareDocumentAnswer(args.conversationId, args.content)
+        if (docs) {
+          const answered = await streamDocumentAnswer(docs, args.content, (d) => write(controller, { type: 'text', delta: d }))
+          write(controller, {
+            type: 'done', provider: answered.provider ?? 'rag', model: answered.model ?? 'rag',
+            fallback: false, latencyMs: answered.latencyMs, pendingActions: [], toolsUsed: [RAG_TOOL[docs.retrieval.source]],
+          })
+          await persistAssistant(args.conversationId, answered.text, {
+            provider: answered.provider ?? 'rag',
+            model: answered.model ?? 'rag',
+            inputTokens: answered.inputTokens,
+            outputTokens: answered.outputTokens,
+            latencyMs: answered.latencyMs,
+            toolCalls: [{
+              name: RAG_TOOL[docs.retrieval.source],
+              args: { query: docs.retrieval.query },
+              result: { passages: docs.retrieval.passages.length, allMatched: docs.retrieval.allMatched },
+              errored: false,
+            }],
+          })
+          await maybeAutoTitle(args.conversationId, args.content, priorCount)
+          controller.close()
+          return
+        }
+
         // ── NAS search fast-lane (pre-LLM, pre-cache) ──────────────────────
         // "find <term> on the NAS" answers straight from the connector's
         // filename index in ~ms, no LLM. Runs before the cache so file results
@@ -227,27 +265,12 @@ function buildResponseStream(args: BuildArgs): ReadableStream<Uint8Array> {
             { role: 'system', content: sys },
             { role: 'user', content: args.content },
           ]
-          let readText = ''
-          let readMeta: Awaited<ReturnType<typeof consumeStream>> | null = null
-          for (let a = 0; a < 8; a++) {
-            const st = await startStream(readMessages, {}) // no tools → no hang
-            if (!st.success) break
-            try {
-              readMeta = await consumeStream(st, (d) => { readText += d; write(controller, { type: 'text', delta: d }) })
-              if (readText.trim()) break
-              reportRateLimit(st.provider, st.apiKey)
-              readMeta = null
-            } catch (e) {
-              const reason = e instanceof Error ? e.message : String(e)
-              if (/request too large|tokens per minute|context length|too many tokens|\b413\b/i.test(reason)) {
-                reportProviderExhausted(st.provider)
-              } else {
-                reportRateLimit(st.provider, st.apiKey)
-              }
-            }
-          }
+          const read = await streamPlainAnswer(readMessages, {}, (d) => write(controller, { type: 'text', delta: d }))
+          let readText = read.text
+          const readMeta = read.meta
           if (!readText.trim()) {
             readText = `I found ${nasRead.name} on the ${nasRead.server} NAS but couldn't read it just now.`
+            write(controller, { type: 'text', delta: readText })
           }
           const link = `\n\n[Download ${nasRead.name}](/api/nas/download?server=${encodeURIComponent(nasRead.server)}&path=${encodeURIComponent(nasRead.path)})`
           write(controller, { type: 'text', delta: link })
@@ -641,6 +664,114 @@ function buildResponseStream(args: BuildArgs): ReadableStream<Uint8Array> {
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+interface DocumentAnswerPlan {
+  retrieval: RagRetrieval
+  history: Array<{ role: 'user' | 'assistant'; content: string }>
+}
+
+/**
+ * Decide whether this message is answered from the documents, and if so run
+ * the search. A follow-up to such an answer ("and for commercial?") stays in
+ * the same index and inherits what it leaves out from the previous question.
+ * Null: not a document question, or the search failed (the normal path then
+ * answers, and can still call the search tools itself).
+ */
+async function prepareDocumentAnswer(conversationId: string, content: string): Promise<DocumentAnswerPlan | null> {
+  if (!isNasEnabled()) return null
+  const available = { bylaws: isBylawsIndexingEnabled(), nas: isRagIndexingEnabled() }
+  if (!available.bylaws && !available.nas) return null
+
+  // Newest first; [0] is the message being answered, saved in step 6.
+  const recent = await prisma.assistantMessage.findMany({
+    where: { conversationId, role: { in: ['USER', 'ASSISTANT'] } },
+    orderBy: { createdAt: 'desc' },
+    take: 5,
+    select: { role: true, content: true, toolCalls: true },
+  })
+  const earlier = recent.slice(1)
+  const previous = previousDocumentSearch(earlier[0]?.toolCalls)
+
+  let source = ragSourceFor(content, available)
+  const followUp = previous !== null && available[previous.source] && isFollowUp(content)
+  if (!source && followUp) source = previous.source
+  if (!source) return null
+
+  const query = searchQueryFor(source, content, followUp && previous.source === source ? previous.query : null)
+  let retrieval: RagRetrieval
+  try {
+    retrieval = await retrieve(source, query)
+  } catch (e) {
+    console.warn(`[docs-answer] ${source} search failed, using the normal path:`, e instanceof Error ? e.message : e)
+    return null
+  }
+  // Nothing inside the NAS documents: the normal path may still find the file by name.
+  if (retrieval.passages.length === 0 && source === 'nas') return null
+
+  const history = earlier
+    .slice(0, 4)
+    .reverse()
+    .map((m) => ({ role: m.role === 'USER' ? ('user' as const) : ('assistant' as const), content: m.content }))
+  return { retrieval, history }
+}
+
+/** The search a previous assistant turn ran, from its stored tool calls. */
+function previousDocumentSearch(toolCalls: unknown): { source: RagSource; query: string } | null {
+  if (!Array.isArray(toolCalls)) return null
+  for (const c of toolCalls as Array<{ name?: unknown; args?: { query?: unknown } }>) {
+    const source = (Object.keys(RAG_TOOL) as RagSource[]).find((s) => RAG_TOOL[s] === c?.name)
+    if (source && typeof c.args?.query === 'string') return { source, query: c.args.query }
+  }
+  return null
+}
+
+/**
+ * Write the answer from the retrieved passages, then the list of documents
+ * it cited. Never empty: with no passages it says nothing was found, and if
+ * no model answers it shows the best passages themselves.
+ *
+ * The answer goes to the cloud providers first, like the agentic path does
+ * for NAS tools, because the small local model answers these badly. Set
+ * RAG_ANSWER_LOCAL_FIRST=true to keep document text on the local model when
+ * it is available (docs/RAG_CHANGES_OCT_2026.md, open issue 3).
+ */
+async function streamDocumentAnswer(
+  plan: DocumentAnswerPlan,
+  question: string,
+  emit: (delta: string) => void,
+): Promise<{ text: string; provider: string | null; model: string | null; inputTokens: number | null; outputTokens: number | null; latencyMs: number }> {
+  const t0 = Date.now()
+  const r = plan.retrieval
+  const none = { provider: null, model: null, inputTokens: null, outputTokens: null }
+  if (r.passages.length === 0) {
+    const msg = notFoundMessage(r)
+    emit(msg)
+    return { text: msg, ...none, latencyMs: Date.now() - t0 }
+  }
+
+  const brand = await getOrgIdentity(getOrgId())
+  const messages = buildAnswerMessages(r, question, plan.history, brand.appName)
+  const deprioritize: ProviderName[] = process.env.RAG_ANSWER_LOCAL_FIRST === 'true' ? [] : ['local']
+  const { text, meta } = await streamPlainAnswer(messages, { deprioritize, temperature: 0.2, maxOutputTokens: 1200 }, emit)
+
+  let answer = text
+  if (!answer.trim()) {
+    // No provider answered: show the passages that would have been used.
+    answer = 'I found these in the documents but could not write up an answer just now:\n\n' +
+      r.passages.slice(0, 3).map((p, i) => `[${i + 1}] ${p.values ?? p.matchedRow ?? p.text.slice(0, 300)}`).join('\n\n')
+    emit(answer)
+  }
+  const footer = sourcesFooter(answer, r.passages)
+  emit(footer)
+  return {
+    text: answer + footer,
+    provider: meta?.provider ?? null,
+    model: meta?.model ?? null,
+    inputTokens: meta?.inputTokens ?? null,
+    outputTokens: meta?.outputTokens ?? null,
+    latencyMs: Date.now() - t0,
+  }
+}
 
 /**
  * Title a conversation after its first exchange. priorCount includes the
