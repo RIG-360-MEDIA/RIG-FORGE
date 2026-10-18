@@ -750,7 +750,11 @@ async function main() {
       'which files are in the Kudal folder', 'what are my notes for today', 'who is working on the basement waterproofing task',
       'what is the status of the basement work at Deulwadi', 'what letters did we send to the client this week',
     ]) check(`everyday chat is not routed: "${q}"`, routed(q) === null, String(routed(q)))
-    for (const q of ['far 2000 sqm', 'area of one ECS in basement parking', 'what is the FAR for 2000 sq m plot', 'as per G.O. what is the setback'])
+    // Asking for the bylaws FILES is the filename fast-lane's job (list with links).
+    for (const q of ['find the byelaws', 'where are the by laws files', 'find parking bylaws pdf', 'show me the bylaws folder'])
+      check(`a request for the bylaws files is not routed: "${q}"`, routed(q) === null, String(routed(q)))
+    for (const q of ['far 2000 sqm', 'area of one ECS in basement parking', 'what is the FAR for 2000 sq m plot', 'as per G.O. what is the setback',
+      'find the parking rules in the bylaws', 'find setback rules for 200sq meter plot?', 'search the bylaws for minimum staircase width'])
       check(`still a bylaws question: "${q}"`, routed(q) === 'bylaws', String(routed(q)))
     check('a bylaws question goes to the normal path when the bylaws index is off',
       ans.ragSourceFor('FAR for a 500 sq m residential plot', { bylaws: false, nas: true }) === null)

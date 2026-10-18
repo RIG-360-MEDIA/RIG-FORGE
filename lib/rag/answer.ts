@@ -71,6 +71,8 @@ const DOC_TYPES = words([
  * ("what does the document say about ..."); "what files did Anjana upload"
  * and "what are my notes" are not. */
 const DOC_GENERIC = words(['documents?', 'docs?', 'letters?', 'notes', 'files?'])
+/** Names files rather than their content: "find parking bylaws pdf". */
+const FILE_WORDS = words(['pdfs?', 'files?', 'folders?', 'copy', 'copies', 'download'])
 /** Who did what with a file: the normal chat path answers that. */
 const FILE_ACTIVITY = words(['upload(?:ed|s)?', 'sent', 'shared', 'created', 'added', 'modified', 'changed', 'renamed', 'moved', 'deleted'])
 /** Asks what a document says, as opposed to where a file is. */
@@ -110,8 +112,12 @@ export function ragSourceFor(content: string, available: RagAvailability): RagSo
  * unless it names the bylaws or gives a size.
  */
 function isBylawsQuestion(c: string, q: QueryConstraints): boolean {
-  if (BYLAWS_WORDS.test(c)) return true
   const sized = hasDims(q)
+  // "find the byelaws", "where are the by laws files", "find parking bylaws
+  // pdf": asks for the FILES, which the filename fast-lane lists with links.
+  // "find the parking rules in the bylaws" still asks for a rule.
+  if (FILE_LOOKUP.test(c) && !sized && !RULE_WORDS.test(c) && (q.topics.length === 0 || FILE_WORDS.test(c))) return false
+  if (BYLAWS_WORDS.test(c)) return true
   if (WORK_TALK.test(c) && !sized) return false
   if (FAR_RATIO.test(c)) return true
   // "where is the parking at the office" asks for a place, not a rule.
