@@ -47,6 +47,60 @@ async function readFrames(res: Response, onFrame: (frame: Record<string, unknown
   }
 }
 
+/** Passages above this length start collapsed. */
+const COLLAPSE_CHARS = 700
+
+/** Blank-line runs from PDF extraction collapsed, so the passage reads as text. */
+const tidy = (text: string) => text.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
+
+/**
+ * Where the matched row is printed in the passage. Matched with any
+ * whitespace between its parts, since extraction often breaks a row over
+ * lines or spaces it differently.
+ */
+function findRow(text: string, row: string | undefined): [number, number] | null {
+  const parts = row?.trim().split(/\s+/).filter(Boolean)
+  if (!parts?.length) return null
+  const re = new RegExp(parts.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+'))
+  const m = re.exec(text)
+  return m ? [m.index, m.index + m[0].length] : null
+}
+
+/** The passage text, readable, with the row that answers the question marked. */
+function Excerpt({ text, row }: { text: string; row?: string }) {
+  const [open, setOpen] = useState(false)
+  const body = tidy(text)
+  const at = findRow(body, row)
+  const long = body.length > COLLAPSE_CHARS
+  return (
+    <div className="mt-1 rounded border border-border-default bg-surface-raised/60">
+      <p className="px-3 pt-2 text-[11px] font-medium uppercase tracking-wide text-text-secondary">From the document</p>
+      <div className={`relative px-3 pb-2 pt-1 ${long && !open ? 'max-h-48 overflow-hidden' : ''}`}>
+        <p className="text-sm leading-6 text-text-primary whitespace-pre-wrap [overflow-wrap:anywhere]">
+          {at ? (
+            <>
+              {body.slice(0, at[0])}
+              <mark className="rounded-sm bg-accent/20 px-0.5 text-text-primary font-medium">{body.slice(at[0], at[1])}</mark>
+              {body.slice(at[1])}
+            </>
+          ) : body}
+        </p>
+        {long && !open && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-surface-raised to-transparent" />
+        )}
+      </div>
+      {long && (
+        <button
+          onClick={() => setOpen((o) => !o)}
+          className="w-full border-t border-border-default px-3 py-1.5 text-left text-xs font-medium text-text-secondary hover:text-text-primary"
+        >
+          {open ? 'Show less' : 'Show full passage'}
+        </button>
+      )}
+    </div>
+  )
+}
+
 // Search over the separate bylaws RAG index (own Qdrant collection — see
 // lib/rag/index-bylaws-file.ts) with the whole question, then a written answer
 // from the passages found, citing them by number. The passages come first and
@@ -191,7 +245,7 @@ export default function BylawsPanel() {
                   <span className="text-text-secondary">{m.values ? 'Row as printed:' : 'Matching line:'}</span> {m.matchedRow}
                 </p>
               )}
-              <p className="text-text-secondary text-xs leading-relaxed whitespace-pre-wrap">{m.excerpt}</p>
+              <Excerpt text={m.excerpt} row={m.matchedRow} />
             </div>
           ))}
           {matches.length === 0 && !loading && (
