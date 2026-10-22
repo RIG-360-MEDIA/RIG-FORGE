@@ -8,7 +8,7 @@ import { getOrgIdentity } from '@/lib/org-branding'
 import { isAssistantEnabled } from '@/lib/llm/provider'
 import { streamPlainAnswer } from '@/lib/llm/stream'
 import { isBylawsIndexingEnabled } from '@/lib/rag/index-bylaws-file'
-import { ANSWER_MAX_OUTPUT_TOKENS, answerProviders, buildAnswerMessages, retrieve } from '@/lib/rag/answer'
+import { ANSWER_MAX_OUTPUT_TOKENS, answerProviders, buildAnswerMessages, cleanCitations, retrieve } from '@/lib/rag/answer'
 
 export const runtime = 'nodejs'
 
@@ -60,7 +60,7 @@ export async function POST(request: NextRequest): Promise<Response> {
           const brand = await getOrgIdentity(orgId)
           const messages = buildAnswerMessages(retrieval, query, [], brand.appName)
           // Cloud first, as in chat; see streamDocumentAnswer in app/api/assistant/message/route.ts.
-          ;({ meta } = await streamPlainAnswer(messages, { ...answerProviders(), temperature: 0.2, maxOutputTokens: ANSWER_MAX_OUTPUT_TOKENS }, (delta) => write({ type: 'text', delta })))
+          ;({ meta } = await streamPlainAnswer(messages, { ...answerProviders(), temperature: 0.2, maxOutputTokens: ANSWER_MAX_OUTPUT_TOKENS }, (delta) => write({ type: 'text', delta: cleanCitations(delta) })))
         }
         write({ type: 'done', provider: meta?.provider ?? null, model: meta?.model ?? null })
       } catch (error) {

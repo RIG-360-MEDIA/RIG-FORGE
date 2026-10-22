@@ -47,7 +47,7 @@ import { isNasEnabled } from '@/lib/nas/client'
 import { isBylawsIndexingEnabled } from '@/lib/rag/index-bylaws-file'
 import { isRagIndexingEnabled } from '@/lib/rag/index-nas-file'
 import {
-  ANSWER_MAX_OUTPUT_TOKENS, RAG_TOOL, answerProviders, buildAnswerMessages, isFollowUp, notFoundMessage, questionForAnswer, ragSourceFor, retrieve,
+  ANSWER_MAX_OUTPUT_TOKENS, RAG_TOOL, answerProviders, buildAnswerMessages, cleanCitations, isFollowUp, notFoundMessage, questionForAnswer, ragSourceFor, retrieve,
   searchQueryFor, sourcesFooter,
   type RagRetrieval, type RagSource,
 } from '@/lib/rag/answer'
@@ -753,9 +753,9 @@ async function streamDocumentAnswer(
 
   const brand = await getOrgIdentity(getOrgId())
   const messages = buildAnswerMessages(r, plan.question, plan.history, brand.appName)
-  const { text, meta } = await streamPlainAnswer(messages, { ...answerProviders(), temperature: 0.2, maxOutputTokens: ANSWER_MAX_OUTPUT_TOKENS }, emit)
+  const { text, meta } = await streamPlainAnswer(messages, { ...answerProviders(), temperature: 0.2, maxOutputTokens: ANSWER_MAX_OUTPUT_TOKENS }, (d) => emit(cleanCitations(d)))
 
-  let answer = text
+  let answer = cleanCitations(text)
   if (!answer.trim()) {
     // No provider answered: show the passages that would have been used.
     answer = 'I found these in the documents but could not write up an answer just now:\n\n' +

@@ -779,6 +779,12 @@ async function main() {
     const sysFor = (q: string) => String(ans.buildAnswerMessages(r0, q, [], 'X')[0]!.content)
     check('an English question is answered in English', /Reply in English/.test(sysFor('FAR for 2000 sq m plot')) && !/Reply in Hindi/.test(sysFor('FAR for 2000 sq m plot')))
     check('a Hindi question is answered in Hindi', /Reply in Hindi/.test(sysFor('200 वर्ग मीटर भूखंड का सेटबैक')))
+    // The worked example only when the question gives a plot area to work it on.
+    check('a question with a plot area gets a worked example', /show the arithmetic for the plot area/.test(sysFor('FAR for 2000 sq m plot')))
+    check('a question without one is told not to assume an area', /Worked example: leave this part out/.test(sysFor('Parking requirement for a hospital'))
+      && !/show the arithmetic/.test(sysFor('FAR for a hotel on a 24 m road')))
+    check('the prompt carries one example answer, marked as invented', /EXAMPLE of the shape only[\s\S]*END OF EXAMPLE/.test(sysFor('FAR for 2000 sq m plot')))
+    check('【n】 citations are shown as [n]', ans.cleanCitations('FAR 2.0【1】【4】.') === 'FAR 2.0[1][4].')
     // The small local model does not write regulation answers unless asked to.
     const keepLocal = process.env.RAG_ANSWER_LOCAL_FIRST
     delete process.env.RAG_ANSWER_LOCAL_FIRST
