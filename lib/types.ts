@@ -239,6 +239,9 @@ export interface TaskSummary {
   assigneeId: string | null
   assigneeName: string | null
   assigneeAvatar: string | null
+  /** The kind of work (Electrical, Plumbing...); null when the task has none. */
+  categoryId: string | null
+  categoryName: string | null
   /** 1 (small), 2 (bigger), 5 (payment related). Null when unmarked. */
   points: number | null
   startDate: Date | null
@@ -246,6 +249,14 @@ export interface TaskSummary {
   completedAt: Date | null
   createdAt: Date
   updatedAt: Date
+}
+
+/** A company-wide kind of work that a project's tasks are grouped by. */
+export interface TaskCategorySummary {
+  id: string
+  name: string
+  sortOrder: number
+  isActive: boolean
 }
 
 // ─── Tickets ──────────────────────────────────────────────────────────────────

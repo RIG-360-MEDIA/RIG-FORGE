@@ -42,6 +42,20 @@ export function priorityForPoints(points: number | null | undefined, requested: 
   return requested === 'CRITICAL' ? 'CRITICAL' : 'HIGH'
 }
 
+/**
+ * Parse a submitted categoryId. Returns `undefined` when the caller did not
+ * mention it (leave the field alone), `null` to clear it, the id of an active
+ * category in the caller's company, or 'invalid'. findFirst, so the org-scope
+ * extension keeps one company from filing tasks under another's category.
+ */
+export async function parseTaskCategory(raw: unknown): Promise<string | null | undefined | 'invalid'> {
+  if (raw === undefined) return undefined
+  if (raw === null || raw === '') return null
+  if (typeof raw !== 'string') return 'invalid'
+  const found = await prisma.taskCategory.findFirst({ where: { id: raw, isActive: true }, select: { id: true } })
+  return found ? found.id : 'invalid'
+}
+
 /** Task row + relations required to build TaskSummary. */
 export type TaskForSummary = {
   id: string
@@ -60,7 +74,17 @@ export type TaskForSummary = {
   updatedAt: Date
   project: { name: string }
   assignee: { name: string; avatarUrl: string | null } | null
+  /** Optional so older call sites that do not include it still compile; they report no category. */
+  categoryId?: string | null
+  category?: { name: string } | null
 }
+
+/** The include every task read needs for buildTaskSummary. */
+export const TASK_SUMMARY_INCLUDE = {
+  project: { select: { name: true } },
+  assignee: { select: { name: true, avatarUrl: true } },
+  category: { select: { name: true } },
+} as const
 
 
 /**
@@ -78,6 +102,8 @@ export function buildTaskSummary(task: TaskForSummary): TaskSummary {
     assigneeId: task.assigneeId,
     assigneeName: task.assignee?.name ?? null,
     assigneeAvatar: task.assignee?.avatarUrl ?? null,
+    categoryId: task.categoryId ?? null,
+    categoryName: task.category?.name ?? null,
     expectedOutput: task.expectedOutput,
     points: task.points,
     startDate: task.startDate,

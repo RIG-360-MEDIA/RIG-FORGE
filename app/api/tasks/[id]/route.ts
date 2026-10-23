@@ -6,7 +6,8 @@ import { getTokenFromCookies, verifyToken } from '@/lib/auth'
 import { tokenCan } from '@/lib/permissions'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
 import { canBeAssigned } from '@/lib/projects'
-import { buildTaskSummary, parseTaskPoints, priorityForPoints, VALID_TASK_POINTS } from '@/lib/tasks'
+import { buildTaskSummary, parseTaskCategory, parseTaskPoints, priorityForPoints, TASK_SUMMARY_INCLUDE, VALID_TASK_POINTS } from '@/lib/tasks'
+import { notifyTasksAssigned } from '@/lib/task-notify'
 
 const VALID_TASK_STATUSES: TaskStatus[] = ['TODO', 'IN_PROGRESS', 'DONE']
 const VALID_PRIORITIES: Priority[]      = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']
@@ -86,7 +87,7 @@ export async function PATCH(
     // we use the looser status-change permissions; otherwise the caller must
     // be an admin or the project lead.
     const writableKeys = ['title', 'description', 'expectedOutput', 'priority', 'points',
-                          'assigneeId', 'startDate', 'dueDate', 'status'] as const
+                          'assigneeId', 'startDate', 'dueDate', 'status', 'categoryId'] as const
     const touched = writableKeys.filter((k) => k in data)
     if (touched.length === 0) {
       return errorResponse('No editable fields provided', 400)
@@ -171,6 +172,12 @@ export async function PATCH(
       }
     }
 
+    if ('categoryId' in data) {
+      const categoryId = await parseTaskCategory(data.categoryId)
+      if (categoryId === 'invalid') return errorResponse('categoryId is not an active task category', 400)
+      update.categoryId = categoryId ?? null
+    }
+
     if ('dueDate' in data) {
       if (data.dueDate === null || data.dueDate === '') {
         update.dueDate = null
@@ -219,11 +226,15 @@ export async function PATCH(
 
     const full = await prisma.task.findUniqueOrThrow({
       where: { id: task.id },
-      include: {
-        project: { select: { name: true } },
-        assignee: { select: { name: true, avatarUrl: true } },
-      },
+      include: TASK_SUMMARY_INCLUDE,
     })
+    // Tell the new assignee, only when the task changed hands.
+    if (full.assigneeId && full.assigneeId !== task.assigneeId) {
+      await notifyTasksAssigned(
+        [{ title: full.title, projectId: full.projectId, projectName: full.project.name, assigneeId: full.assigneeId }],
+        { userId: payload.userId },
+      )
+    }
     return successResponse(buildTaskSummary(full))
   } catch (error) {
     console.error('[PATCH /api/tasks/[id]]', error)

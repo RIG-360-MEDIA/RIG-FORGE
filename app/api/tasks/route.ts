@@ -6,19 +6,23 @@ import { getTokenFromCookies, verifyToken } from '@/lib/auth'
 import { tokenCan } from '@/lib/permissions'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
 import { isMemberOfProject, canBeAssigned } from '@/lib/projects'
-import { buildTaskSummary, parseTaskPoints, priorityForPoints, VALID_TASK_POINTS } from '@/lib/tasks'
+import { buildTaskSummary, parseTaskCategory, parseTaskPoints, priorityForPoints, TASK_SUMMARY_INCLUDE, VALID_TASK_POINTS } from '@/lib/tasks'
+import { notifyTasksAssigned } from '@/lib/task-notify'
 import type { PaginatedResponse, TaskSummary } from '@/lib/types'
 
 const DEFAULT_LIMIT = 20
 const MAX_LIMIT = 50
+// A project's own list is read whole: a project made from a template can hold
+// well over 50 tasks, and the Tasks tab groups them by category on the client.
+const MAX_PROJECT_LIMIT = 500
 
 const VALID_TASK_STATUSES: TaskStatus[] = ['TODO', 'IN_PROGRESS', 'DONE']
 const VALID_PRIORITIES: Priority[] = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']
 
-function parseLimit(raw: string | null): number {
+function parseLimit(raw: string | null, max: number): number {
   const n = parseInt(raw ?? String(DEFAULT_LIMIT), 10)
   if (Number.isNaN(n)) return DEFAULT_LIMIT
-  return Math.min(Math.max(1, n), MAX_LIMIT)
+  return Math.min(Math.max(1, n), max)
 }
 
 export async function GET(request: NextRequest) {
@@ -35,7 +39,7 @@ export async function GET(request: NextRequest) {
     const statusParam = searchParams.get('status') ?? undefined
     const priorityParam = searchParams.get('priority') ?? undefined
     const cursor = searchParams.get('cursor') ?? undefined
-    const limit = parseLimit(searchParams.get('limit'))
+    const limit = parseLimit(searchParams.get('limit'), projectId ? MAX_PROJECT_LIMIT : MAX_LIMIT)
 
     if (payload.role === 'EMPLOYEE' && !projectId) {
       return errorResponse('projectId is required', 400)
@@ -66,10 +70,7 @@ export async function GET(request: NextRequest) {
       take: limit + 1,
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-      include: {
-        project: { select: { name: true } },
-        assignee: { select: { name: true, avatarUrl: true } },
-      },
+      include: TASK_SUMMARY_INCLUDE,
     })
 
     const hasNext = raw.length > limit
@@ -165,6 +166,9 @@ export async function POST(request: NextRequest) {
       assigneeId = data.assigneeId
     }
 
+    const categoryId = await parseTaskCategory(data.categoryId)
+    if (categoryId === 'invalid') return errorResponse('categoryId is not an active task category', 400)
+
     let dueDate: Date | null = null
     if (typeof data.dueDate === 'string' && data.dueDate.length > 0) {
       const parsed = new Date(data.dueDate)
@@ -205,6 +209,7 @@ export async function POST(request: NextRequest) {
           startDate,
           dueDate,
           completedAt,
+          categoryId: categoryId ?? null,
         },
       })
       return task
@@ -212,11 +217,15 @@ export async function POST(request: NextRequest) {
 
     const full = await prisma.task.findUniqueOrThrow({
       where: { id: created.id },
-      include: {
-        project: { select: { name: true } },
-        assignee: { select: { name: true, avatarUrl: true } },
-      },
+      include: TASK_SUMMARY_INCLUDE,
     })
+
+    if (full.assigneeId) {
+      await notifyTasksAssigned(
+        [{ title: full.title, projectId: full.projectId, projectName: full.project.name, assigneeId: full.assigneeId }],
+        { userId: payload.userId },
+      )
+    }
 
     return successResponse(buildTaskSummary(full), 201)
   } catch (error) {
