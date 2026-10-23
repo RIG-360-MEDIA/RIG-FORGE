@@ -8,6 +8,7 @@ import { userCan } from '@/lib/permissions'
 import ProjectHeader from '@/components/projects/detail/ProjectHeader'
 import { useProjectTab } from '@/components/projects/detail/ProjectTabs'
 import OverviewTab from '@/components/projects/detail/OverviewTab'
+import TaskListTab from '@/components/projects/detail/TaskListTab'
 import TasksTab from '@/components/projects/detail/TasksTab'
 import UpdatesTab from '@/components/projects/detail/UpdatesTab'
 import EditProjectModal from '@/components/projects/detail/EditProjectModal'
@@ -198,14 +199,19 @@ export default function ProjectDetailPage() {
             onProjectChange={setProject}
           />
         )}
+        {tab === 'tasklist' && (
+          <TaskListTab
+            projectId={project.id}
+            canManage={!user?.isExternal && (isAdmin || isLead || userCan(user, 'tasks.manage'))}
+            canManageCategories={userCan(user, 'tasks.manage')}
+          />
+        )}
         {tab === 'tasks' && (
           <TasksTab
             projectId={project.id}
-            isAdmin={isAdmin}
-            isLead={isLead}
+            canManage={isAdmin || isLead || userCan(user, 'tasks.manage')}
             currentUserId={userId ?? ''}
             canCreate={!user?.isExternal}
-            canManageAllTasks={userCan(user, 'tasks.manage')}
           />
         )}
         {tab === 'updates' && (

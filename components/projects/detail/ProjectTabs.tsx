@@ -2,11 +2,11 @@
 
 import { useEffect, useState, useCallback } from 'react'
 
-export type ProjectTabId = 'overview' | 'tasks' | 'updates'
+export type ProjectTabId = 'overview' | 'tasklist' | 'tasks' | 'updates'
 
 function parseHash(hash: string): ProjectTabId {
   const h = hash.replace(/^#/, '').toLowerCase()
-  if (h === 'tasks' || h === 'updates') return h
+  if (h === 'tasklist' || h === 'tasks' || h === 'updates') return h
   return 'overview'
 }
 
@@ -31,6 +31,7 @@ export default function ProjectTabs() {
 
   const tabs: { id: ProjectTabId; label: string }[] = [
     { id: 'overview', label: 'OVERVIEW' },
+    { id: 'tasklist', label: 'TASK LIST' },
     { id: 'tasks', label: 'TASKS' },
     { id: 'updates', label: 'UPDATES' },
   ]
