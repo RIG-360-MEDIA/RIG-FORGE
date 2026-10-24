@@ -2,14 +2,16 @@
  * Readable layout for text extracted from bylaws PDFs, for display only (the
  * index and the search keep the text as extracted).
  *
- * PyMuPDF writes a table one cell per line, separates blocks with blank lines
- * that also fall inside sentences ("... 1200 sqmt" / "in plains."), and puts
- * a clause number on its own line above its title. This rebuilds paragraphs
- * and tables from that. Pure and dependency-free, so client components use it.
+ * PyMuPDF writes a table one cell per line, wraps prose at the PDF's line
+ * width, breaks sentences at blank lines ("... 1200 sqmt" / "in plains.")
+ * and puts a clause number on its own line above its text. This rebuilds
+ * clauses, paragraphs and tables from that, line by line. Pure and
+ * dependency-free, so client components use it.
  */
 
 export type PassageBlock =
-  | { kind: 'text'; text: string }
+  /** A paragraph; `clause` is its number ("1.4", "1.6.1") when it has one. */
+  | { kind: 'text'; text: string; clause?: string }
   | { kind: 'table'; header: string[]; rows: TableRow[] }
 
 /** A table row: cells, or a group label spanning the table ("Plains", "Hills"). */
@@ -18,19 +20,40 @@ export type TableRow = { cells: string[] } | { group: string }
 /** Table cells are short; longer lines are prose. */
 const CELL_CHARS = 48
 
-/** "33.3%", "1.25", "6.0* mt", "1200-1500", ">1200", "Nil". Not "Side-1". */
+/**
+ * A cell holding a value: "33.3%", "1.25", "6.0* mt", "1200-1500", ">1200",
+ * "Above 1500", "Up to 300", "Nil". Not a label such as "Side-1".
+ */
 function isValue(cell: string): boolean {
-  return /^[<>≤≥~±]?\s*\d/.test(cell) || /^(?:nil|n\.?a\.?|-|—|–)$/i.test(cell)
+  return /^[<>≤≥~±]?\s*\d/.test(cell) ||
+    /^(?:above|below|over|under|up\s*to|upto|less than|more than|exceeding|beyond)\s*[<>]?\s*\d/i.test(cell) ||
+    /^(?:nil|n\.?a\.?|-|—|–)$/i.test(cell)
 }
 
-/** A clause number alone on its line: "1.4", "3.2.2.1", "(ii)". */
-const CLAUSE_NO = /^(?:\d{1,2}(?:\.\d{1,2}){0,4}\.?|\((?:[ivx]+|[a-z])\))$/i
+/** A clause number alone on its line: "1.4", "3.2.2.1", "1.". */
+const CLAUSE_ALONE = /^(\d{1,2}(?:\.\d{1,2}){0,4})\.?$/
+/** A clause number starting a line of text: "1.6.1 Minimum 10% ...", "1. Origin ...". */
+const CLAUSE_LEAD = /^(\d{1,2}(?:\.\d{1,2}){0,4})\.?\s+(?=[A-Z(\p{Script=Devanagari}])/u
 
 /**
- * The cells of a block as a table: column headings (the labels before the
- * first value), then rows. A label followed by exactly one row of values is
- * a row heading; followed by several rows' worth, it is a group label above
- * them. Null when the cells do not fall into rows of one width.
+ * Whether `cur` can follow clause `prev`: its first child (1.6 → 1.6.1), or
+ * the next number at its level or a level above (1.4 → 1.5, 1.6.2 → 1.7).
+ * Values look like clause numbers ("1.25", "4.5 mt"); real clauses come in
+ * sequence, which is how they are told apart.
+ */
+function follows(prev: string | null, cur: string): boolean {
+  if (!prev) return true
+  const p = prev.split('.').map(Number)
+  const c = cur.split('.').map(Number)
+  const same = (n: number) => c.slice(0, n).every((x, i) => x === p[i])
+  if (c.length === p.length + 1 && same(p.length) && c[c.length - 1] === 1) return true
+  return c.length <= p.length && same(c.length - 1) && c[c.length - 1] === p[c.length - 1]! + 1
+}
+
+/**
+ * The cells of a run as a table: column headings (the labels before the
+ * first value), then rows. Null when the cells do not fall into rows of one
+ * width.
  */
 function asTable(cells: string[]): { header: string[]; rows: TableRow[] } | null {
   let h = 0
@@ -56,7 +79,7 @@ function rowsUnder(header: string[], rest: string[]): { header: string[]; rows: 
     else if (last) last.values.push(cell)
     else runs.push({ label: null, values: [cell] })
   }
-  // A label over several rows ("Plains" above three plot sizes) is a group:
+  // A label over several rows ("Plains" above two plot sizes) is a group:
   // then every label in this table is one, even over a single row.
   const grouped = runs.some((r) => r.label !== null && r.values.length >= 2 * k && r.values.length % k === 0)
 
@@ -82,60 +105,92 @@ function rowsUnder(header: string[], rest: string[]): { header: string[]; rows: 
   return { header: labelled ? ['', ...header] : header, rows }
 }
 
-/** Lines that are all short and include values look like table cells. */
-function looksTabular(lines: string[]): boolean {
-  return lines.length >= 4 && lines.every((l) => l.length <= CELL_CHARS) && lines.filter(isValue).length >= 2
+interface Line {
+  text: string
+  clause?: string
+  /** A blank line came before it. */
+  gap: boolean
 }
 
-export function formatPassage(raw: string): PassageBlock[] {
-  const blocks = raw
-    .replace(/\r/g, '')
-    .split(/\n[ \t]*\n+/)
-    .map((b) => b.split('\n').map((l) => l.trim()).filter(Boolean))
-    .filter((b) => b.length > 0)
-
-  // Rejoin what the blank lines split: a clause number with its title, and a
-  // sentence that runs on into a block starting in lower case ("in plains.").
-  const merged: string[][] = []
-  for (const block of blocks) {
-    const prev = merged[merged.length - 1]
-    const prevLast = prev?.[prev.length - 1] ?? ''
-    if (prev && prev.length === 1 && CLAUSE_NO.test(prevLast)) {
-      merged[merged.length - 1] = [`${prevLast} ${block[0]}`, ...block.slice(1)]
-    } else if (prev && /^[a-z(]/.test(block[0]!) && !/[.:;!?]$/.test(prevLast) && !looksTabular(prev)) {
-      prev[prev.length - 1] = `${prevLast} ${block[0]}`
-      prev.push(...block.slice(1))
+/** Lines with each lone clause number moved onto the line it numbers. */
+function clauseLines(raw: string): Line[] {
+  const all = raw.replace(/\r/g, '').split('\n').map((x) => x.trim())
+  const out: Line[] = []
+  let gap = false
+  let last: string | null = null
+  for (let i = 0; i < all.length; i++) {
+    const l = all[i]!
+    if (!l) { gap = true; continue }
+    // "1.4" alone, numbering the next line of text (not a value in a table:
+    // "1.25" above "Hills" does not follow clause 1.4).
+    const alone = CLAUSE_ALONE.exec(l)
+    const next = all.slice(i + 1).find((x) => x.length > 0) ?? ''
+    if (alone && follows(last, alone[1]!) && next && !isValue(next) && /^[A-Z(\p{Script=Devanagari}]/u.test(next)) {
+      let j = i + 1
+      while (!all[j]) j++
+      out.push({ text: all[j]!, clause: alone[1]!, gap })
+      last = alone[1]!
+      i = j
+      gap = false
+      continue
+    }
+    const lead = CLAUSE_LEAD.exec(l)
+    if (lead && follows(last, lead[1]!)) {
+      out.push({ text: l.slice(lead[0].length), clause: lead[1]!, gap })
+      last = lead[1]!
     } else {
-      merged.push([...block])
+      out.push({ text: l, gap })
     }
+    gap = false
+  }
+  return out
+}
+
+/** Short, unnumbered lines that may be table cells. */
+const isCell = (l: Line) => !l.clause && l.text.length <= CELL_CHARS
+
+export function formatPassage(raw: string): PassageBlock[] {
+  const lines = clauseLines(raw)
+  const out: PassageBlock[] = []
+  let para: Line[] = []
+
+  const flushPara = () => {
+    if (!para.length) return
+    const first = para[0]!
+    const text = para.map((l) => l.text).join(' ').replace(/\s+/g, ' ').trim()
+    out.push({ kind: 'text', text, ...(first.clause ? { clause: first.clause } : {}) })
+    para = []
   }
 
-  // Consecutive tabular blocks are one table: headings and each group are
-  // often separated by blank lines.
-  const out: PassageBlock[] = []
-  let cells: string[] = []
-  const flush = () => {
-    if (!cells.length) return
-    const table = asTable(cells)
-    out.push(table ? { kind: 'table', ...table } : { kind: 'text', text: cells.join('\n') })
-    cells = []
-  }
-  for (const block of merged) {
-    const short = block.every((l) => l.length <= CELL_CHARS)
-    const continues = cells.length > 0 && (block.some(isValue) || block.length === 1)
-    if (short && (looksTabular(block) || continues)) {
-      cells.push(...block)
-      continue
+  for (let i = 0; i < lines.length;) {
+    // A run of short unnumbered lines with values in it: try it as a table.
+    if (isCell(lines[i]!)) {
+      let j = i
+      while (j < lines.length && isCell(lines[j]!)) j++
+      const run = lines.slice(i, j)
+      const values = run.filter((l) => isValue(l.text)).length
+      const table = run.length >= 4 && values >= 2 ? asTable(run.map((l) => l.text)) : null
+      if (table) {
+        flushPara()
+        out.push({ kind: 'table', ...table })
+        i = j
+        continue
+      }
     }
-    // Short label lines just before a table are its headings.
-    if (short && block.length >= 2 && !block.some(isValue)) {
-      flush()
-      cells.push(...block)
-      continue
-    }
-    flush()
-    out.push({ kind: 'text', text: block.join('\n') })
+    const line = lines[i]!
+    // A new paragraph at a clause number, after a sentence ends, or after a
+    // blank line unless the sentence runs on ("1200 sqmt" / "in plains.").
+    const prev = para[para.length - 1]
+    const ended = !prev || /[.:;!?]$/.test(prev.text)
+    const runsOn = prev && !ended && /^[a-z(]/.test(line.text)
+    if (line.clause || (para.length && ended) || (line.gap && !runsOn)) flushPara()
+    para.push(line)
+    i++
   }
-  flush()
+  flushPara()
+
+  // A passage starting mid-sentence ("n Terminal Points.") is marked as cut.
+  const first = out[0]
+  if (first?.kind === 'text' && !first.clause && /^[a-z]/.test(first.text)) first.text = `…${first.text}`
   return out
 }

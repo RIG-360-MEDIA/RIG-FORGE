@@ -856,7 +856,20 @@ async function main() {
     const blocks = formatPassage(cellText)
     const tables = blocks.filter((b) => b.kind === 'table')
     check('a sentence split by a blank line is rejoined, with its clause number',
-      blocks[0]?.kind === 'text' && blocks[0].text === '1.3 The Minimum Plot Size shall be 850 sqmt in hill and 1200 sqmt in plains.', JSON.stringify(blocks[0]))
+      JSON.stringify(blocks[0]) === JSON.stringify({ kind: 'text', text: 'The Minimum Plot Size shall be 850 sqmt in hill and 1200 sqmt in plains.', clause: '1.3' }), JSON.stringify(blocks[0]))
+    // The same bylaw as printed in production: no blank lines around the
+    // tables, clause numbers on their own lines, "Above 1500" plot sizes.
+    const dense = formatPassage('n Terminal Points.\n1.4\nMaximum Ground Coverage and FAR shall be as follows:\n\nMax. Ground Coverage\nMax FAR\nPlain\n33.3%\n1.25\nHills\n35%\n1.0*\n1.5\nSletback: Minimum setbacks shall be as follows:\n\nPlot Size (Sqmt)\nFront\nRear\nSide-1\nSide-2\nPlains\n1200-1500\n6.0* mt\n4.5 mt\n4.5 mt\n3.5 mt\nAbove 1500\n7.0* mt\n4.5 mt\n5.0* mt\n4.5 mt\nHills\n850-1200\n5.0* mt\n3.0* mt\n4.5 mt\n3.0* mt\n1.6\nOpen Area :\n1.6.1 Minimum 10% of the total site area shall be developmed as or\nganized landscaped area.')
+    check('clause numbers come in sequence, so values like 1.25 and 4.5 mt are not taken for clauses',
+      dense.filter((b) => b.kind === 'text' && b.clause).map((b) => (b as { clause: string }).clause).join(' ') === '1.4 1.5 1.6 1.6.1', JSON.stringify(dense.map((b) => b.kind === 'text' ? b.clause ?? '-' : 'T')))
+    check('tables without blank lines around them are rebuilt; "Above 1500" is a plot size, not a label',
+      dense.filter((b) => b.kind === 'table').length === 2 &&
+      JSON.stringify((dense.filter((b) => b.kind === 'table')[1] as { rows: unknown[] }).rows.slice(0, 3)) ===
+        JSON.stringify([{ group: 'Plains' }, { cells: ['1200-1500', '6.0* mt', '4.5 mt', '4.5 mt', '3.5 mt'] }, { cells: ['Above 1500', '7.0* mt', '4.5 mt', '5.0* mt', '4.5 mt'] }]),
+      JSON.stringify(dense.filter((b) => b.kind === 'table')))
+    check('a passage cut mid-word is marked with an ellipsis, and wrapped lines are joined',
+      dense[0]?.kind === 'text' && dense[0].text === '…n Terminal Points.' &&
+      dense.some((b) => b.kind === 'text' && b.clause === '1.6.1' && b.text.endsWith('as or ganized landscaped area.')))
     check('a one-cell-per-line table with row headings is rebuilt (FAR: Plain / Hills)',
       JSON.stringify(tables[0]) === JSON.stringify({ kind: 'table', header: ['', 'Max. Ground Coverage', 'Max FAR'], rows: [{ cells: ['Plain', '33.3%', '1.25'] }, { cells: ['Hills', '35%', '1.0*'] }] }), JSON.stringify(tables[0]))
     check('a table with group labels is rebuilt (setbacks: Plains / Hills groups)',
