@@ -251,9 +251,46 @@ model TaskCategory {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  tasks Task[]
+  tasks         Task[]
+  templateItems TaskTemplateItem[]
 
   @@unique([organizationId, name])
+  @@index([organizationId])
+}
+
+/// A ready-made task list (e.g. "Architectural design", 41 items) that is
+/// copied into a project's Task List in one step, then assigned there.
+/// Company-wide; admins create, edit and archive them (or import them from
+/// an Excel sheet). Applying copies the items: later edits to a template do
+/// not change projects it was already applied to.
+model TaskTemplate {
+  id             String   @id @default(cuid())
+  organizationId String   @default("rig360")
+  name           String
+  description    String?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  items TaskTemplateItem[]
+
+  @@index([organizationId])
+}
+
+/// One line of a task template: the task title and the category it is filed
+/// under when applied. sortOrder keeps the order the list was written in.
+model TaskTemplateItem {
+  id             String   @id @default(cuid())
+  organizationId String   @default("rig360")
+  templateId     String
+  title          String
+  categoryId     String?
+  sortOrder      Int      @default(0)
+
+  template TaskTemplate  @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  category TaskCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  @@index([templateId])
   @@index([organizationId])
 }
 

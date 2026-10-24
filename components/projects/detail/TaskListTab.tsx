@@ -5,6 +5,7 @@ import type { TaskSummary, TaskCategorySummary } from '@/lib/types'
 import TaskFormModal, { type Member } from './tasks/TaskFormModal'
 import ManageCategoriesModal from './tasks/ManageCategoriesModal'
 import DeleteTaskDialog from './tasks/DeleteTaskDialog'
+import ApplyTemplateModal from './tasks/ApplyTemplateModal'
 import { useProjectTasks } from './tasks/useProjectTasks'
 import {
   NONE, PAYMENT_POINTS, PRIORITIES, PRIORITY_STYLES, STATUS_LABELS, SUGGESTED_CATEGORIES,
@@ -327,7 +328,7 @@ function BulkBar({ count, members, categories, busy, onApply, onClear }: BulkBar
 
 export default function TaskListTab({ projectId, canManage, canManageCategories }: TaskListTabProps) {
   const {
-    tasks, members, categories, loading, error, setError, notice, flash,
+    tasks, setTasks, members, categories, loading, error, setError, notice, flash,
     fetchTasks, fetchCategories, replaceTasks, patchTask, createOne, createMany, bulkUpdate, addCategory, deleteTask,
   } = useProjectTasks(projectId)
 
@@ -343,6 +344,7 @@ export default function TaskListTab({ projectId, canManage, canManageCategories 
   const [addingCategory, setAddingCategory] = useState(false)
   const [categoryDraft, setCategoryDraft]   = useState('')
   const [manageCategories, setManageCategories] = useState(false)
+  const [applyingTemplate, setApplyingTemplate] = useState(false)
   const [editingTask, setEditingTask]   = useState<TaskSummary | null>(null)
   const [deletingTask, setDeletingTask] = useState<TaskSummary | null>(null)
   const quickAddInputs = useRef(new Map<string, HTMLInputElement>())
@@ -494,6 +496,15 @@ export default function TaskListTab({ projectId, canManage, canManageCategories 
         {canManage && (
           <button
             type="button"
+            onClick={() => setApplyingTemplate(true)}
+            className="px-3 py-1.5 text-xs font-medium rounded bg-surface-raised text-primary border border-border-default hover:border-accent transition-colors"
+          >
+            Add from template
+          </button>
+        )}
+        {canManage && (
+          <button
+            type="button"
             onClick={() => setAddingCategory((v) => !v)}
             className="px-3 py-1.5 text-xs font-medium rounded bg-accent text-white hover:bg-accent/80 transition-colors"
           >
@@ -559,6 +570,15 @@ export default function TaskListTab({ projectId, canManage, canManageCategories 
 
       {!loading && totals.items === 0 && !canManage && (
         <p className="text-sm text-muted">No task list for this project yet.</p>
+      )}
+      {!loading && totals.items === 0 && canManage && (
+        <div className="border border-dashed border-border-default rounded-lg px-6 py-6 text-center space-y-2">
+          <p className="text-sm text-primary">This project has no task list yet.</p>
+          <p className="text-xs text-muted">Start from a template, or add items below and paste lists in.</p>
+          <button type="button" onClick={() => setApplyingTemplate(true)} className="mt-1 px-4 py-1.5 text-xs font-medium rounded bg-accent text-white hover:bg-accent-hover">
+            Add from template
+          </button>
+        </div>
       )}
 
       {/* Category groups */}
@@ -665,6 +685,18 @@ export default function TaskListTab({ projectId, canManage, canManageCategories 
           task={editingTask}
           onClose={() => setEditingTask(null)}
           onSaved={(task) => replaceTasks([task])}
+        />
+      )}
+
+      {applyingTemplate && (
+        <ApplyTemplateModal
+          projectId={projectId}
+          existing={tasks}
+          onClose={() => setApplyingTemplate(false)}
+          onApplied={(added, skipped) => {
+            setTasks((prev) => [...prev, ...added])
+            flash(`Added ${added.length} items from the template${skipped ? `; ${skipped} were already here` : ''}.`)
+          }}
         />
       )}
 

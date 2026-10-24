@@ -259,6 +259,33 @@ export interface TaskCategorySummary {
   isActive: boolean
 }
 
+/** A ready-made task list, as listed for choosing one. */
+export interface TaskTemplateSummary {
+  id: string
+  name: string
+  description: string | null
+  isActive: boolean
+  itemCount: number
+  /** Category names in the order they first appear in the list. */
+  categories: string[]
+}
+
+export interface TaskTemplateItemSummary {
+  id: string
+  title: string
+  categoryId: string | null
+  categoryName: string | null
+  sortOrder: number
+}
+
+export interface TaskTemplateDetail {
+  id: string
+  name: string
+  description: string | null
+  isActive: boolean
+  items: TaskTemplateItemSummary[]
+}
+
 // ─── Tickets ──────────────────────────────────────────────────────────────────
 
 export interface TicketSummary {

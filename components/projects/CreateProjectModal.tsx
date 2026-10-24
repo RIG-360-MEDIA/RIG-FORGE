@@ -31,6 +31,9 @@ export default function CreateProjectModal({
   const [client, setClient] = useState<ClientSummary | null>(null)
   const [siteLocation, setSiteLocation] = useState('')
   const [links, setLinks] = useState<ProjectLink[]>([])
+  // Optional task template: its items fill the new project's Task List.
+  const [templates, setTemplates] = useState<{ id: string; name: string; itemCount: number }[]>([])
+  const [templateId, setTemplateId] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -41,6 +44,17 @@ export default function CreateProjectModal({
   const [showMemberDropdown, setShowMemberDropdown] = useState(false)
   const [usersLoading, setUsersLoading] = useState(false)
   const memberSearchRef = useRef<HTMLInputElement>(null)
+
+  // ── Fetch task templates on open ────────────────────────────────────────────
+  useEffect(() => {
+    if (!isOpen) return
+    fetch('/api/task-templates', { credentials: 'include' })
+      .then((r) => r.json())
+      .then((json: ApiResponse<{ id: string; name: string; itemCount: number }[]>) => {
+        if (json.data) setTemplates(json.data)
+      })
+      .catch(() => { /* optional — the project can be created without one */ })
+  }, [isOpen])
 
   // ── Fetch users on open ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -63,6 +77,7 @@ export default function CreateProjectModal({
       setStatus('ACTIVE')
       setPriority('MEDIUM')
       setDeadline('')
+      setTemplateId('')
       setLeadId('')
       setClient(null)
       setSiteLocation('')
@@ -152,7 +167,26 @@ export default function CreateProjectModal({
       })
       const json = await res.json() as { data: ProjectDetail | null; error: string | null }
       if ((res.status === 201 || res.ok) && json.data) {
-        onCreated(json.data)
+        // Fill the Task List from the chosen template. The project already
+        // exists, so a failure here is reported but does not undo it; the
+        // template can be added again from the project's Task List.
+        let project = json.data
+        if (templateId) {
+          const applied = await fetch(`/api/projects/${project.id}/apply-template`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ templateId }),
+          }).catch(() => null)
+          const result = applied?.ok ? await applied.json().catch(() => null) as { data?: { added?: unknown[] } } | null : null
+          if (!result?.data) {
+            window.alert('The project was created, but its task list template could not be added. Open the project and use "Add from template" in its Task List.')
+          } else {
+            // The project came back before its tasks existed; count them in.
+            project = { ...project, totalTasks: project.totalTasks + (result.data.added?.length ?? 0) }
+          }
+        }
+        onCreated(project)
         onClose()
       } else {
         setError(json.error ?? 'Failed to create project')
@@ -285,6 +319,29 @@ export default function CreateProjectModal({
                 className="w-full bg-background-primary border border-border-default px-4 py-3 font-mono text-sm text-primary focus:border-accent focus:outline-none transition-colors duration-150 [color-scheme:light]"
               />
             </div>
+
+            {/* Task template */}
+            {templates.length > 0 && (
+              <div>
+                <label htmlFor="create-project-template" className="block font-mono text-xs text-secondary tracking-widest uppercase mb-2">
+                  Task list template
+                </label>
+                <select
+                  id="create-project-template"
+                  value={templateId}
+                  onChange={(e) => setTemplateId(e.target.value)}
+                  className="w-full bg-background-primary border border-border-default px-4 py-3 font-mono text-sm text-primary focus:border-accent focus:outline-none transition-colors duration-150 [color-scheme:light]"
+                >
+                  <option value="">None, start with an empty task list</option>
+                  {templates.map((t) => (
+                    <option key={t.id} value={t.id}>{t.name} ({t.itemCount} items)</option>
+                  ))}
+                </select>
+                <p className="mt-1 font-mono text-[11px] text-muted">
+                  Its items are added to the project&apos;s Task List, unassigned. More templates or extra items can be added later.
+                </p>
+              </div>
+            )}
 
             {/* Client */}
             <div>

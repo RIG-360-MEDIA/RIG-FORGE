@@ -6,7 +6,7 @@ import { getTokenFromCookies, verifyToken } from '@/lib/auth'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
 import { canBeAssigned } from '@/lib/projects'
 import { canManageProjectTasks } from '@/lib/task-categories'
-import { buildTaskSummary, parseTaskCategory, TASK_SUMMARY_INCLUDE } from '@/lib/tasks'
+import { buildTaskSummary, createTasks, parseTaskCategory, TASK_SUMMARY_INCLUDE } from '@/lib/tasks'
 import { notifyTasksAssigned } from '@/lib/task-notify'
 import type { TaskSummary } from '@/lib/types'
 
@@ -78,14 +78,10 @@ export async function POST(request: NextRequest) {
     const dueDate = data.dueDate === undefined ? null : parseDate(data.dueDate)
     if (dueDate === 'invalid') return errorResponse('dueDate is not a valid date', 400)
 
-    // One transaction of plain creates (not createMany) so each row comes back
-    // with its id, in the order pasted.
-    const created = await prisma.$transaction(
-      titles.map((title) => prisma.task.create({
-        data: { title, projectId, status: 'TODO', priority, assigneeId, dueDate, categoryId: categoryId ?? null },
-        include: TASK_SUMMARY_INCLUDE,
-      })),
-    )
+    // In the order pasted.
+    const created = await createTasks(titles.map((title) => ({
+      title, projectId, status: 'TODO' as const, priority, assigneeId, dueDate, categoryId: categoryId ?? null,
+    })))
 
     if (assigneeId) {
       await notifyTasksAssigned(
@@ -93,7 +89,7 @@ export async function POST(request: NextRequest) {
         { userId: payload.userId },
       )
     }
-    return successResponse<TaskSummary[]>(created.map((t) => buildTaskSummary(t)), 201)
+    return successResponse<TaskSummary[]>(created, 201)
   } catch (error) {
     console.error('[POST /api/tasks/bulk]', error)
     return errorResponse('An unexpected error occurred', 500)

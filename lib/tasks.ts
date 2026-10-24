@@ -1,4 +1,5 @@
-import type { Priority, TaskStatus } from '@prisma/client'
+import { randomUUID } from 'node:crypto'
+import type { Prisma, Priority, TaskStatus } from '@prisma/client'
 
 import { prisma } from '@/lib/db'
 import type { TaskSummary } from '@/lib/types'
@@ -54,6 +55,25 @@ export async function parseTaskCategory(raw: unknown): Promise<string | null | u
   if (typeof raw !== 'string') return 'invalid'
   const found = await prisma.taskCategory.findFirst({ where: { id: raw, isActive: true }, select: { id: true } })
   return found ? found.id : 'invalid'
+}
+
+/**
+ * Create many tasks in two database round trips instead of four per task
+ * (a 20-item template took 26 s one by one against the Tokyo database).
+ * Ids are made here so the new rows can be read back in the order given;
+ * createMany is stamped with the caller's company by the org-scope
+ * extension (createManyAndReturn is not, so it is not used).
+ */
+export async function createTasks(rows: Omit<Prisma.TaskCreateManyInput, 'id'>[]): Promise<TaskSummary[]> {
+  if (rows.length === 0) return []
+  // createdAt a millisecond apart: lists sort ties by it, and one insert
+  // would give every row the same time and lose the template's order.
+  const base = Date.now()
+  const withIds = rows.map((r, i) => ({ ...r, id: randomUUID(), createdAt: new Date(base + i) }))
+  await prisma.task.createMany({ data: withIds })
+  const created = await prisma.task.findMany({ where: { id: { in: withIds.map((r) => r.id) } }, include: TASK_SUMMARY_INCLUDE })
+  const byId = new Map(created.map((t) => [t.id, t]))
+  return withIds.map((r) => byId.get(r.id)).filter((t): t is NonNullable<typeof t> => !!t).map((t) => buildTaskSummary(t))
 }
 
 /** Task row + relations required to build TaskSummary. */
