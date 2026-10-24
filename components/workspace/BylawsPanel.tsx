@@ -5,7 +5,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { FileSearch, ScrollText, Search } from 'lucide-react'
 
-import MarkedText from '@/components/workspace/MarkedText'
+import PassageText from '@/components/workspace/PassageText'
 import { tidy } from '@/lib/rag/highlight'
 
 interface BylawsMatch {
@@ -64,7 +64,7 @@ function Excerpt({ text, row }: { text: string; row?: string }) {
     <div className="mt-1 rounded border border-border-default bg-surface-raised/60">
       <p className="px-3 pt-2 text-[11px] font-medium uppercase tracking-wide text-text-secondary">From the document</p>
       <div className={`relative px-3 pb-2 pt-1 ${long && !open ? 'max-h-48 overflow-hidden' : ''}`}>
-        <MarkedText text={body} marks={row ? [row] : []} />
+        <PassageText text={body} marks={row ? [row] : []} />
         {long && !open && (
           <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-surface-raised to-transparent" />
         )}

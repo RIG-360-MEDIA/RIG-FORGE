@@ -297,3 +297,10 @@ Example:
   - four lookups downloaded the file once.
 - The footer markdown was rendered through the chat's ReactMarkdown setup.
 - **Not yet tested** against the production index and TRIJYA-3.
+
+**Readable layout (24 Oct).** PDF extraction puts every table cell on its own line, splits sentences at blank lines and leaves clause numbers on their own line. `formatPassage()` in `lib/rag/format.ts` rebuilds this for display only; the index and the search are unchanged. `components/workspace/PassageText.tsx` renders the result in the Bylaws tab cards and the source view, highlighting the matched row.
+- **Tables:** column headings are taken from the labels before the first value. A label followed by one row's values becomes the row heading ("Plain 33.3% 1.25"). A label above several rows becomes a group row ("Plains", "Hills").
+- **Text:** a sentence that runs on after a blank line is rejoined, and a clause number goes back on the line of its title.
+- **Fallback:** anything that does not fall into rows stays as text.
+
+The chat key lines now keep a one-cell-per-line row whole, with its column headings, e.g. `Plot Size (Sqmt) Front Rear Side-1 Side-2 Plains … 1500-3000 9.0 mt 6.0 mt 6.0 mt 6.0 mt`.

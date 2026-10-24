@@ -489,14 +489,20 @@ export function keyLines(answer: string, n: number, p: Pick<RagPassage, 'text' |
     return { ...seg, score: relevant ? (inRow ? 100 : 0) + nums * 3 + hits : 0 }
   }).filter((seg) => seg.score > 0)
 
+  // The matched row always; then its headings and clause, then up to three
+  // other lines, while they fit. Counted in characters, not lines: a table
+  // extracted one cell per line spends a line on every cell.
   const picked: typeof scored = []
   let length = 0
+  let extras = 0
   for (const seg of [...scored].sort((a, b) => b.score - a.score || a.start - b.start)) {
-    if (picked.length >= 4) break
     const t = seg.text.trim()
-    if (picked.length > 0 && length + t.length > KEY_LINES_CHARS) continue
-    picked.push(seg)
-    length += t.length + QUOTE_GAP.length
+    const fits = length + t.length <= KEY_LINES_CHARS
+    if (seg.score >= 100 || (seg.score >= 50 && fits) || (extras < 3 && fits && picked.length > 0) || picked.length === 0) {
+      if (seg.score < 50) extras++
+      picked.push(seg)
+      length += t.length + 1
+    }
   }
   if (picked.length > 0) {
     // Lines next to each other in the passage (a row the PDF split over two
@@ -514,17 +520,36 @@ export function keyLines(answer: string, n: number, p: Pick<RagPassage, 'text' |
   return text.length > 250 ? `${text.slice(0, 250).replace(/\s+\S*$/, '')}…` : text
 }
 
-/** The span of the nearest line above `at` that has words and is not a row of figures. */
+/**
+ * The span of the table headings above `at`. Either the nearest line with
+ * words that is not a row of figures ("Sl. Plot Size (sqm) ... Base FAR Max.
+ * FAR"), or, where extraction put one cell per line, the run of short label
+ * lines above the row ("Plot Size (Sqmt)", "Front", "Rear", ..., "Plains").
+ */
 function headerLineBefore(text: string, at: number): [number, number] | null {
   let end = text.lastIndexOf('\n', at - 1)
-  while (end > 0) {
+  let span: [number, number] | null = null
+  let labels = 0
+  while (end > 0 && labels < 10) {
     const start = text.lastIndexOf('\n', end - 1) + 1
-    const line = text.slice(start, end)
-    const figures = line.match(/\d+(?:\.\d+)?/g)?.length ?? 0
-    if (/[\p{L}]{3,}/u.test(line) && figures <= 1) return [start, end]
+    const line = text.slice(start, end).trim()
     end = start - 1
+    if (!line) continue
+    const figures = line.match(/\d+(?:\.\d+)?/g)?.length ?? 0
+    const label = /[\p{L}]{3,}/u.test(line) && figures <= 1 && !/^[<>]?\s*\d/.test(line)
+    if (!label) {
+      // A value cell ("4.5 mt") above the row: keep walking only while no labels were found.
+      if (labels === 0 && line.length <= 48) continue
+      break
+    }
+    if (line.length > 48) {
+      if (labels === 0) return [start, start + text.slice(start).indexOf(line) + line.length]
+      break
+    }
+    span = [start, span ? span[1] : start + text.slice(start).indexOf(line) + line.length]
+    labels++
   }
-  return null
+  return span
 }
 
 /** Markdown-safe: document text must show as printed, not as markup ("4 >1200" is not a quote, "1." not a list). */

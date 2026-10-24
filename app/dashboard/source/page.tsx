@@ -4,7 +4,7 @@ import { Suspense, useEffect, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { ExternalLink, FileText } from 'lucide-react'
 
-import MarkedText from '@/components/workspace/MarkedText'
+import PassageText from '@/components/workspace/PassageText'
 import { quotePhrases, tidy } from '@/lib/rag/highlight'
 
 interface SourceView {
@@ -97,12 +97,14 @@ function SourceInner() {
       {view && (
         <>
           <Section title="Whole passage" hint="key lines highlighted">
-            <MarkedText text={tidy(view.passage)} marks={marks} />
+            <PassageText text={tidy(view.passage)} marks={marks} />
           </Section>
 
           {view.page && view.pageText ? (
             <Section title={`Full page ${view.page}${view.pageCount ? ` of ${view.pageCount}` : ''}`} hint="as printed in the PDF">
-              <MarkedText text={tidy(view.pageText)} marks={marks} className="max-h-[70vh] overflow-y-auto" />
+              <div className="max-h-[70vh] overflow-y-auto">
+                <PassageText text={tidy(view.pageText)} marks={marks} />
+              </div>
             </Section>
           ) : (
             <div className="rounded border border-border-default px-4 py-3 text-sm text-text-secondary">

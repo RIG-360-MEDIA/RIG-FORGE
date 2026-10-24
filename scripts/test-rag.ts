@@ -850,6 +850,25 @@ async function main() {
     check('key lines fall back to the row when the answer cites nothing from it',
       ans.keyLines('no figures here', 1, { text: 'zzz', matchedRow: '>1200 1.25 2.0' }) === '>1200 1.25 2.0')
     check('key lines fall back to the start of the passage', ans.keyLines('nothing', 1, { text: 'a'.repeat(300) }).endsWith('…'))
+    // One-cell-per-line tables (as PyMuPDF extracts them) shown as tables.
+    const { formatPassage } = await import('../lib/rag/format')
+    const cellText = '1.3\n\nThe Minimum Plot Size shall be 850 sqmt in hill and 1200 sqmt\n\nin plains.\n\n1.4\n\nMaximum Ground Coverage and FAR shall be as follows:\n\nMax. Ground Coverage\nMax FAR\nPlain\n33.3%\n1.25\nHills\n35%\n1.0*\n\n1.5\n\nSletback: Minimum setbacks shall be as follows:\n\nPlot Size (Sqmt)\nFront\nRear\nSide-1\nSide-2\n\nPlains\n1200-1500\n6.0* mt\n4.5 mt\n4.5 mt\n4.5 mt\n1500-3000\n9.0 mt\n6.0 mt\n6.0 mt\n6.0 mt\n\nHills\n850-1200\n4.5 mt\n3.0 mt\n3.0 mt\n3.0 mt'
+    const blocks = formatPassage(cellText)
+    const tables = blocks.filter((b) => b.kind === 'table')
+    check('a sentence split by a blank line is rejoined, with its clause number',
+      blocks[0]?.kind === 'text' && blocks[0].text === '1.3 The Minimum Plot Size shall be 850 sqmt in hill and 1200 sqmt in plains.', JSON.stringify(blocks[0]))
+    check('a one-cell-per-line table with row headings is rebuilt (FAR: Plain / Hills)',
+      JSON.stringify(tables[0]) === JSON.stringify({ kind: 'table', header: ['', 'Max. Ground Coverage', 'Max FAR'], rows: [{ cells: ['Plain', '33.3%', '1.25'] }, { cells: ['Hills', '35%', '1.0*'] }] }), JSON.stringify(tables[0]))
+    check('a table with group labels is rebuilt (setbacks: Plains / Hills groups)',
+      tables[1]?.kind === 'table' && tables[1].header.join('|') === 'Plot Size (Sqmt)|Front|Rear|Side-1|Side-2' &&
+      JSON.stringify(tables[1].rows) === JSON.stringify([{ group: 'Plains' }, { cells: ['1200-1500', '6.0* mt', '4.5 mt', '4.5 mt', '4.5 mt'] }, { cells: ['1500-3000', '9.0 mt', '6.0 mt', '6.0 mt', '6.0 mt'] }, { group: 'Hills' }, { cells: ['850-1200', '4.5 mt', '3.0 mt', '3.0 mt', '3.0 mt'] }]), JSON.stringify(tables[1]))
+    check('prose and tables that do not fall into rows are left as text',
+      formatPassage('Chapter 3\nDefinitions\n\nIn these bye-laws, unless the context otherwise requires.').every((b) => b.kind === 'text') &&
+      formatPassage(farPassage.text).every((b) => b.kind === 'text'))
+    const setbackKl = ans.keyLines('In the plains the setbacks are front 9.0 m, rear 6.0 m [1].', 1,
+      { text: cellText, matchedRow: '1500-3000 9.0 mt 6.0 mt 6.0 mt 6.0 mt', section: '1.5 Sletback: Minimum setbacks shall be as follows:' })
+    check('key lines of a one-cell-per-line table keep the whole row and its column headings',
+      setbackKl.includes('Plot Size (Sqmt) Front Rear Side-1 Side-2') && setbackKl.endsWith('1500-3000 9.0 mt 6.0 mt 6.0 mt 6.0 mt'), setbackKl)
     const nasLocate = (await import('../lib/nas/client')).nasLocate
     globalThis.fetch = (async () => new Response('Not Found', { status: 404 })) as typeof fetch
     check('page lookup is skipped (null) when the connector has no /locate yet', (await asTrijya(() => nasLocate('WD', '/x.pdf', ['some anchor text']))) === null)
