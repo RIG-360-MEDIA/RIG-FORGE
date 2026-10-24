@@ -623,6 +623,100 @@ def extract_status(job_id: str):
         return _job_view(job_id, job)
 
 
+# ── Locate a passage's page (Forge's source view) ────────────────────────────
+# The RAG index stores passages without page numbers. To let a user check an
+# answer against the PDF, Forge sends a few exact snippets of the passage and
+# this returns the page holding the most of them, with that page's text.
+# Pages are read from the PDF's text layer, so a scanned page that was OCR'd
+# at index time is not found (no text layer to match): Forge then says so.
+# The page texts of the last few documents are cached, keyed by size and
+# modification time, so opening several sources from one document downloads
+# it once.
+from collections import OrderedDict
+
+LOCATE_CACHE_DOCS = int(os.environ.get("NAS_LOCATE_CACHE_DOCS", "4"))
+LOCATE_PAGE_CHARS = 12_000
+_locate_cache = OrderedDict()   # (server, path, size, mtime) -> (raw pages, folded pages)
+_locate_lock = threading.Lock()
+_WS = re.compile(r"\s+")
+
+
+def _fold(t: str) -> str:
+    """Whitespace-insensitive, case-insensitive form for matching."""
+    return _WS.sub(" ", t).strip().lower()
+
+
+def _pdf_pages(server: str, path: str):
+    """(raw page texts, folded page texts) of a PDF on the NAS. Raises on failure."""
+    conn, share = _connect(server)
+    tmp = None
+    try:
+        a = conn.getAttributes(share, _norm(path))
+        key = (server, _norm(path), a.file_size, a.last_write_time)
+        with _locate_lock:
+            hit = _locate_cache.get(key)
+            if hit is not None:
+                _locate_cache.move_to_end(key)
+                return hit
+        tmp = tempfile.NamedTemporaryFile(delete=False)
+        try:
+            conn.retrieveFile(share, _norm(path), tmp)
+        finally:
+            tmp.close()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    try:
+        doc = fitz.open(tmp.name)
+        try:
+            raw = [page.get_text() for page in doc]
+        finally:
+            doc.close()
+    finally:
+        _unlink(tmp.name)
+    pages = (raw, [_fold(t) for t in raw])
+    with _locate_lock:
+        _locate_cache[key] = pages
+        while len(_locate_cache) > LOCATE_CACHE_DOCS:
+            _locate_cache.popitem(last=False)
+    return pages
+
+
+@app.post("/locate")
+def locate(body: dict):
+    """{"server", "path", "anchors": [exact snippets]} -> the page holding the
+    most anchors: {"page" (1-based), "pageCount", "pageText", "matched", "of"},
+    or {"page": null, "reason"}. Never an error for a document problem."""
+    server = str(body.get("server") or "")
+    path = str(body.get("path") or "")
+    anchors = [_fold(str(x)) for x in (body.get("anchors") or [])][:12]
+    anchors = [x for x in anchors if len(x) >= 12]
+    if not path.lower().endswith(".pdf"):
+        return {"page": None, "reason": "not a PDF: pages exist only for PDFs"}
+    if not _HAVE_FITZ:
+        return {"page": None, "reason": "PyMuPDF (pymupdf) is not installed on the connector"}
+    if not anchors:
+        return {"page": None, "reason": "no text to look for"}
+    try:
+        raw, folded = _pdf_pages(server, path)
+    except HTTPException as e:
+        return {"page": None, "reason": f"connector could not reach {server}: {e.detail}"}
+    except Exception as e:
+        return {"page": None, "reason": f"cannot read '{path}': {type(e).__name__}"}
+    best, best_n = None, 0
+    for i, page in enumerate(folded):
+        n = sum(1 for x in anchors if x in page)
+        if n > best_n:
+            best, best_n = i, n
+    if best is None:
+        return {"page": None, "pageCount": len(raw),
+                "reason": "the passage is not in the PDF's text layer (often a scanned page read by OCR)"}
+    return {"page": best + 1, "pageCount": len(raw), "pageText": raw[best][:LOCATE_PAGE_CHARS],
+            "matched": best_n, "of": len(anchors)}
+
+
 # ── Embeddings for Forge's RAG (see rag_embed.py) ────────────────────────────
 # Forge sends {"model": "...", "texts": [...]} and gets one vector per text.
 # It names the model it expects; a different model here is refused (400), so

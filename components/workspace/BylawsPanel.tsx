@@ -3,12 +3,17 @@
 import { useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ScrollText, Search } from 'lucide-react'
+import { FileSearch, ScrollText, Search } from 'lucide-react'
+
+import MarkedText from '@/components/workspace/MarkedText'
+import { tidy } from '@/lib/rag/highlight'
 
 interface BylawsMatch {
   server: string
   path: string
   fileName: string
+  /** Position in its document: with server + path, the passage's id for the source view. */
+  chunkIndex?: number
   score: number
   excerpt: string
   /** The table row (or line) that answers the question, as printed. */
@@ -50,41 +55,16 @@ async function readFrames(res: Response, onFrame: (frame: Record<string, unknown
 /** Passages above this length start collapsed. */
 const COLLAPSE_CHARS = 700
 
-/** Blank-line runs from PDF extraction collapsed, so the passage reads as text. */
-const tidy = (text: string) => text.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
-
-/**
- * Where the matched row is printed in the passage. Matched with any
- * whitespace between its parts, since extraction often breaks a row over
- * lines or spaces it differently.
- */
-function findRow(text: string, row: string | undefined): [number, number] | null {
-  const parts = row?.trim().split(/\s+/).filter(Boolean)
-  if (!parts?.length) return null
-  const re = new RegExp(parts.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+'))
-  const m = re.exec(text)
-  return m ? [m.index, m.index + m[0].length] : null
-}
-
 /** The passage text, readable, with the row that answers the question marked. */
 function Excerpt({ text, row }: { text: string; row?: string }) {
   const [open, setOpen] = useState(false)
   const body = tidy(text)
-  const at = findRow(body, row)
   const long = body.length > COLLAPSE_CHARS
   return (
     <div className="mt-1 rounded border border-border-default bg-surface-raised/60">
       <p className="px-3 pt-2 text-[11px] font-medium uppercase tracking-wide text-text-secondary">From the document</p>
       <div className={`relative px-3 pb-2 pt-1 ${long && !open ? 'max-h-48 overflow-hidden' : ''}`}>
-        <p className="text-sm leading-6 text-text-primary whitespace-pre-wrap [overflow-wrap:anywhere]">
-          {at ? (
-            <>
-              {body.slice(0, at[0])}
-              <mark className="rounded-sm bg-accent/20 px-0.5 text-text-primary font-medium">{body.slice(at[0], at[1])}</mark>
-              {body.slice(at[1])}
-            </>
-          ) : body}
-        </p>
+        <MarkedText text={body} marks={row ? [row] : []} />
         {long && !open && (
           <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-surface-raised to-transparent" />
         )}
@@ -156,6 +136,10 @@ export default function BylawsPanel() {
       if (id === searchId.current) { setLoading(false); setAnswering(false) }
     }
   }
+
+  // The source view: this passage and the PDF page it is on, the row highlighted.
+  const sourceUrl = (m: BylawsMatch) =>
+    `/dashboard/source?${new URLSearchParams({ c: 'bylaws', s: m.server, p: m.path, i: String(m.chunkIndex), k: m.matchedRow ?? '' })}`
 
   const viewUrl = (server: string, path: string) =>
     `/api/nas/download?server=${encodeURIComponent(server)}&path=${encodeURIComponent(path)}&inline=1`
@@ -246,6 +230,16 @@ export default function BylawsPanel() {
                 </p>
               )}
               <Excerpt text={m.excerpt} row={m.matchedRow} />
+              {typeof m.chunkIndex === 'number' && (
+                <a
+                  href={sourceUrl(m)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 text-xs font-medium text-text-secondary hover:text-text-primary hover:underline"
+                >
+                  <FileSearch className="h-3.5 w-3.5" aria-hidden="true" />Show page in the PDF
+                </a>
+              )}
             </div>
           ))}
           {matches.length === 0 && !loading && (

@@ -765,13 +765,13 @@ async function main() {
     check('a standalone question is put to the model as asked', ans.questionForAnswer('FAR for 2000 sq m', 'FAR for 2000 sq m') === 'FAR for 2000 sq m')
     check('answers have room for Gemini\'s reasoning plus a long answer (not 1,200 tokens)', ans.ANSWER_MAX_OUTPUT_TOKENS >= 3000)
     const kinds = ans.renderPassages([
-      { server: 'WD', path: '/a', fileName: 'Time-saver Standards for Building Types.pdf', score: 0.8, text: '3 to 9 car spaces per 1000 sq ft' },
-      { server: 'WD', path: '/b', fileName: '202504161857302632Bylaws_160425.pdf', score: 0.8, text: 'Shopping mall 3 / 100 sqm' },
+      { server: 'WD', path: '/a', fileName: 'Time-saver Standards for Building Types.pdf', chunkIndex: 0, score: 0.8, text: '3 to 9 car spaces per 1000 sq ft' },
+      { server: 'WD', path: '/b', fileName: '202504161857302632Bylaws_160425.pdf', chunkIndex: 0, score: 0.8, text: 'Shopping mall 3 / 100 sqm' },
     ])
     // Citations written 【1】 (gpt-oss) count like [1] for the source list.
     const two = [
-      { server: 'WD', path: '/a', fileName: 'a.pdf', score: 0.8, text: 'x' },
-      { server: 'WD', path: '/b', fileName: 'b.pdf', score: 0.8, text: 'y' },
+      { server: 'WD', path: '/a', fileName: 'a.pdf', chunkIndex: 0, score: 0.8, text: 'x' },
+      { server: 'WD', path: '/b', fileName: 'b.pdf', chunkIndex: 0, score: 0.8, text: 'y' },
     ]
     check('【2】 citations are read like [2]', ans.citedPassages('FAR is 2.0【2】', two as never)[0]?.fileName === 'b.pdf')
     // The reply language is set by the question's script, not left to the model.
@@ -810,9 +810,9 @@ async function main() {
       ans.searchQueryFor('nas', 'and the warranty?', 'what does the spec say about lifts') === 'what does the spec say about lifts and the warranty?')
 
     const passages = [
-      { server: 'WD', path: '/By_Laws/a.pdf', fileName: 'a.pdf', score: 0.9, text: 'FAR table', section: '3.2.2 FAR', values: 'FAR 1.75' },
-      { server: 'WD', path: '/By_Laws/b.pdf', fileName: 'b.pdf', score: 0.88, text: 'x'.repeat(5000) },
-      { server: 'WD', path: '/By_Laws/c b.pdf', fileName: 'c b.pdf', score: 0.86, text: 'parking' },
+      { server: 'WD', path: '/By_Laws/a.pdf', fileName: 'a.pdf', chunkIndex: 7, score: 0.9, text: 'FAR table', section: '3.2.2 FAR', values: 'FAR 1.75' },
+      { server: 'WD', path: '/By_Laws/b.pdf', fileName: 'b.pdf', chunkIndex: 0, score: 0.88, text: 'x'.repeat(5000) },
+      { server: 'WD', path: '/By_Laws/c b.pdf', fileName: 'c b.pdf', chunkIndex: 12, score: 0.86, text: 'parking requirements are 2 ECS per 100 sqm' },
     ]
     const r = { source: 'bylaws' as const, query: 'FAR', passages, requirement: 'FAR for a 200 sq m plot', allMatched: false }
     const msgs = ans.buildAnswerMessages(r, 'FAR for 200 sq m?', [{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'hello' }], 'Trijya')
@@ -821,9 +821,39 @@ async function main() {
     check('prompt cuts a long passage', !sys.includes('x'.repeat(2000)) && sys.includes('x'.repeat(1800)))
     check('prompt says the exact rule was not found when not every part matched', sys.includes('no passage covers FAR for a 200 sq m plot together'))
     check('the conversation and then the question follow the prompt', msgs.length === 4 && msgs[3]?.role === 'user' && msgs[3]?.content === 'FAR for 200 sq m?')
+    const footer = ans.sourcesFooter('FAR is 1.75 [3][1], also [1]; not [9]', passages, 'bylaws')
     check('sources list the cited passages, in citation order, with their numbers',
-      ans.sourcesFooter('FAR is 1.75 [3][1], also [1]; not [9]', passages) ===
-        '\n\n**Sources**\n- [3] [c b.pdf](/api/nas/download?server=WD&path=%2FBy_Laws%2Fc%20b.pdf&inline=1)\n- [1] [a.pdf](/api/nas/download?server=WD&path=%2FBy_Laws%2Fa.pdf&inline=1) — clause 3.2.2 FAR')
+      /\*\*Sources\*\*\n- \[3\] \[c b\.pdf\]\(\/api\/nas\/download\?server=WD&path=%2FBy_Laws%2Fc%20b\.pdf&inline=1\)\n/.test(footer) &&
+      footer.indexOf('- [3]') < footer.indexOf('- [1] [a.pdf](/api/nas/download?server=WD&path=%2FBy_Laws%2Fa.pdf&inline=1) — clause 3.2.2 FAR'), footer)
+    check('each source quotes its passage and links to the source view',
+      footer.includes('  > parking requirements are 2 ECS per 100 sqm') &&
+      footer.includes('[Show passage and page](/dashboard/source?c=bylaws&s=WD&p=%2FBy_Laws%2Fc%20b.pdf&i=12&k=parking%20requirements%20are%202%20ECS%20per%20100%20sqm)'), footer)
+    check('parentheses in a path cannot end a markdown link early',
+      ans.downloadUrl({ server: 'WD', path: '/Bylaws (2016.pdf' }) === '/api/nas/download?server=WD&path=%2FBylaws%20%282016.pdf&inline=1')
+
+    // Key lines: the exact lines of the passage the answer used.
+    const farPassage = {
+      matchedRow: '>1200 1.25 2.0',
+      section: '3.2.2.1 Residential – Plotted Development including EWS/ LIG/ Affordable Housing',
+      text: 'tive Example:\nFor example, for a plot size of 100 square meters, permissible FAR is 2.0 and for plot size 100 -300\nsqm, the permissible FAR is 1.75.\n\n\n46\n\nThe ground coverage and FAR for various use occupancies shall be as follows.\n3.2.2.1 Residential – Plotted Development including EWS/ LIG/ Affordable Housing\nSl. Plot Size (sqm) Max. coverage after ensuring setbacks Base FAR Max. FAR\n3 >300 - 1200 1.5 2.0\n4 >1200 1.25\n2.0',
+    }
+    const farAnswer = '**The answer:** For a 2,000 sq m residential plot, Base FAR is 1.25 and Max FAR is 2.0 [1].\n\n**Worked example:** 2,000 × 1.25 = 2,500 sq m [1].'
+    const kl = ans.keyLines(farAnswer, 1, farPassage)
+    const { quotePhrases, findSpan } = await import('../lib/rag/highlight')
+    check('key lines include the matched table row, split over two lines', kl.includes('4 >1200 1.25') && kl.includes('2.0'), kl)
+    check('key lines are copied from the passage, never from the answer',
+      quotePhrases(kl).every((ph) => findSpan(farPassage.text, ph) !== null) && !kl.includes('2,500'), kl)
+    check('key lines quote the clause, the column headings and the row, in document order',
+      kl === '3.2.2.1 Residential – Plotted Development including EWS/ LIG/ Affordable Housing Sl. Plot Size (sqm) Max. coverage after ensuring setbacks Base FAR Max. FAR … 4 >1200 1.25 2.0', kl)
+    check('key lines stay short', kl.length <= 401, String(kl.length))
+    check('key lines leave out the unrelated lines (the stray page number, the 100 sqm example)', !/(^| )46( |$)/.test(kl) && !kl.includes('100 square meters'), kl)
+    check('key lines fall back to the row when the answer cites nothing from it',
+      ans.keyLines('no figures here', 1, { text: 'zzz', matchedRow: '>1200 1.25 2.0' }) === '>1200 1.25 2.0')
+    check('key lines fall back to the start of the passage', ans.keyLines('nothing', 1, { text: 'a'.repeat(300) }).endsWith('…'))
+    const nasLocate = (await import('../lib/nas/client')).nasLocate
+    globalThis.fetch = (async () => new Response('Not Found', { status: 404 })) as typeof fetch
+    check('page lookup is skipped (null) when the connector has no /locate yet', (await asTrijya(() => nasLocate('WD', '/x.pdf', ['some anchor text']))) === null)
+    globalThis.fetch = realFetch
     check('sources fall back to the top three when nothing is cited', ans.citedPassages('no citations', passages).length === 3)
   }
 

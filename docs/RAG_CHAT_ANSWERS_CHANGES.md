@@ -250,3 +250,50 @@ With `GROQ_MODEL=openai/gpt-oss-120b`, the 12 production-index questions: 11 wit
 **Found while testing, not caused by this branch:** the production Groq settings fail on every call: one key is invalid, and the others answer "model `llama-3.3-70b-versatile` does not exist or you do not have access to it". Every cloud answer falls through to Gemini. Check the keys and the model id on Render.
 
 **Still Kavya's decision** (`RAG_CHANGES_OCT_2026.md` issue 3): document answers go to the cloud providers first. For NAS documents that means company file text goes to Gemini, or to OpenAI once its key and `openai` in `ASSISTANT_PROVIDER_ORDER` are set on Render. `RAG_ANSWER_LOCAL_FIRST=true` keeps them on the local model.
+
+---
+
+## 12. Exact source text: key lines, whole passage, full page (24 Oct)
+
+Each source under a chat answer now shows the exact words the answer came from, so it can be checked against the document without searching hundreds of pages.
+
+**In the chat** (`sourcesFooter()` in `lib/rag/answer.ts`), under each cited source:
+- a quote of the **key lines**, copied verbatim from the passage by `keyLines()`, never from the answer:
+  - the matched table row (rejoined when the PDF split it over two lines);
+  - that table's column-heading line and the clause heading;
+  - other lines holding at least two of the figures, or a figure and two words, from the answer's sentences that cite this source.
+  Lines appear in document order, separate places are joined by ` … `, and the quote is at most 400 characters.
+- a **Show passage and page** link to the source view.
+
+Example:
+```
+- [1] Bylaws_160425.pdf — clause 3.2.2.1 Residential – Plotted Development …
+  > 3.2.2.1 Residential – Plotted Development … Sl. Plot Size (sqm) … Base FAR Max. FAR … 4 >1200 1.25 2.0
+  Show passage and page
+```
+
+**Source view** `/dashboard/source?c=bylaws|nas&s=<server>&p=<path>&i=<chunkIndex>&k=<key lines>` (`app/dashboard/source/page.tsx`, API `GET /api/nas/source`):
+- the key lines, the **whole passage** with them highlighted, and the **full PDF page** it is on, also highlighted;
+- an **Open PDF at page N** button (`#page=N`, which Chrome's PDF viewer honours);
+- the passage is loaded by its id, `getPassage()` in `lib/rag/qdrant.ts`. The id includes the organisation, and the payload's organisation is checked again.
+- When the page cannot be found, the view shows the passage and says why: a scanned page that was OCR'd at index time (no text layer to match), a Word or Excel file, or the connector unreachable or not yet updated.
+
+**Bylaws tab:** each passage card has a **Show page in the PDF** link to the same view.
+
+**Connector** (`scripts/nas-connector/connector.py`): new `POST /locate` `{server, path, anchors}`.
+- It reads the PDF's pages with PyMuPDF and returns the page containing the most anchors, with that page's text (12,000 characters at most), matching without regard to whitespace or case.
+- The page texts of the last 4 documents (`NAS_LOCATE_CACHE_DOCS`) are cached by size and modification time.
+- It never errors for a document problem: it returns `{page: null, reason}` instead.
+- Forge calls it through `nasLocate()` in `lib/nas/client.ts` (90 s, `NAS_LOCATE_TIMEOUT_MS`). A 404 from an older connector gives no page, not a failure.
+- **Needs a connector restart on TRIJYA-3** (`TRIJYA_CONNECTOR_DEPLOY.md`). There are no new Python dependencies. Until the restart, the view shows the key lines and the passage, without the page.
+
+**Shared:** `lib/rag/highlight.ts` (whitespace-tolerant phrase finding, used by the chat, the source view and the Bylaws tab) and `components/workspace/MarkedText.tsx`. `RagPassage` now carries `chunkIndex`. Links escape `(` and `)`, so a file name like `Bylaws (2016).pdf` no longer ends a markdown link early. Chat quotes render as plain document text (no italics or quote marks).
+
+**Tested:**
+- `scripts/test-rag.ts`: 222 pass, plus the 2 known chunker failures. New checks cover the key lines (row, headings, verbatim, order, length, fallbacks), the footer format, the escaping of `(` and `)`, and `nasLocate` returning null on a 404.
+- `/locate` was run against a generated 3-page PDF with the connector's NAS connection stubbed:
+  - the FAR row split over two lines was found on page 2;
+  - text not in the PDF, a Word file, too-short anchors and an unreachable NAS each returned a reason;
+  - four lookups downloaded the file once.
+- The footer markdown was rendered through the chat's ReactMarkdown setup.
+- **Not yet tested** against the production index and TRIJYA-3.

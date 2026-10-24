@@ -762,7 +762,7 @@ async function streamDocumentAnswer(
       r.passages.slice(0, 3).map((p, i) => `[${i + 1}] ${p.values ?? p.matchedRow ?? p.text.slice(0, 300)}`).join('\n\n')
     emit(answer)
   }
-  const footer = sourcesFooter(answer, r.passages)
+  const footer = sourcesFooter(answer, r.passages, r.source)
   emit(footer)
   return {
     text: answer + footer,

@@ -190,6 +190,29 @@ export async function pruneStaleChunks(
   }))
 }
 
+/**
+ * One passage, by where it is: (server, path, chunkIndex). Point ids are
+ * deterministic, so this is a single lookup. The id includes the
+ * organisation, and the payload's organisation is checked again, so a
+ * passage of another organisation is never returned. Null when not indexed.
+ */
+export async function getPassage(
+  organizationId: string,
+  server: string,
+  path: string,
+  chunkIndex: number,
+  collection: string = COLLECTION,
+): Promise<ChunkPayload | null> {
+  const pts = await withCollection(collection, () => getClient().retrieve(collection, {
+    ids: [pointId(organizationId, server, path, chunkIndex)],
+    with_payload: true,
+    with_vector: false,
+  }))
+  const pl = pts[0]?.payload as unknown as ChunkPayload | undefined
+  if (!pl || pl.organizationId !== organizationId) return null
+  return { ...pl, text: cleanPassage(pl.text ?? '') }
+}
+
 export interface ChunkSearchHit extends ChunkPayload {
   score: number
 }

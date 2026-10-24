@@ -362,6 +362,36 @@ export async function nasExtractText(
   return toResult(job.result)
 }
 
+export interface NasLocateResult {
+  /** 1-based page holding the passage, or null when it could not be found. */
+  page: number | null
+  pageCount?: number
+  pageText?: string
+  reason?: string
+}
+
+/**
+ * The PDF page holding a passage: the connector looks for these exact
+ * snippets of it in each page's text layer (POST /locate). Null when the
+ * connector is unreachable or predates /locate (404), so the caller shows the
+ * passage without its page. Up to 90 s: a big PDF is downloaded and read
+ * once on the box, inside Cloudflare's ~100 s limit.
+ */
+export async function nasLocate(server: string, path: string, anchors: string[]): Promise<NasLocateResult | null> {
+  try {
+    const r = await nasFetch('/locate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ server, path, anchors }),
+      signal: AbortSignal.timeout(Number(process.env.NAS_LOCATE_TIMEOUT_MS ?? 90_000)),
+    })
+    if (!r.ok) return null
+    return (await r.json()) as NasLocateResult
+  } catch {
+    return null
+  }
+}
+
 export async function nasUpload(server: string, path: string, file: Blob, filename: string): Promise<{ ok: boolean; path: string }> {
   const form = new FormData()
   form.append('file', file, filename)

@@ -20,6 +20,7 @@ import type { ProviderName } from '@/lib/llm/provider'
 import { getOrgId } from '@/lib/tenant-context'
 
 import { embedQuery } from './embeddings'
+import { QUOTE_GAP, findSpan, tidy } from './highlight'
 import { BYLAWS_COLLECTION, COLLECTION, searchChunksConstrained } from './qdrant'
 import { analyzeQuery, describeConstraints, documentPriority, isConstrained, type QueryConstraints } from './query-match'
 
@@ -195,6 +196,8 @@ export interface RagPassage {
   server: string
   path: string
   fileName: string
+  /** Position in its document; with server + path it identifies the passage in the index. */
+  chunkIndex: number
   score: number
   text: string
   matchedRow?: string
@@ -222,7 +225,7 @@ export async function retrieve(source: RagSource, query: string, limit = 8): Pro
     requirement: isConstrained(constraints) ? describeConstraints(constraints) : null,
     allMatched,
     passages: hits.map((h) => ({
-      server: h.server, path: h.path, fileName: h.fileName, score: h.score, text: h.text,
+      server: h.server, path: h.path, fileName: h.fileName, chunkIndex: h.chunkIndex, score: h.score, text: h.text,
       ...('matchedRow' in h && h.matchedRow ? { matchedRow: h.matchedRow } : {}),
       ...('section' in h && h.section ? { section: h.section } : {}),
       ...('values' in h && h.values ? { values: h.values } : {}),
@@ -404,19 +407,150 @@ export function citedPassages(answer: string, passages: RagPassage[]): RagPassag
   return order.length ? order.map((n) => passages[n - 1]!) : passages.slice(0, 3)
 }
 
+/** Encoded for a URL inside a markdown link: encodeURIComponent leaves ( and )
+ * alone, and an unbalanced one ("Bylaws (2016.pdf") ends the link early. */
+const enc = (v: string) => encodeURIComponent(v).replace(/\(/g, '%28').replace(/\)/g, '%29')
+
 export function downloadUrl(p: Pick<RagPassage, 'server' | 'path'>): string {
-  return `/api/nas/download?server=${encodeURIComponent(p.server)}&path=${encodeURIComponent(p.path)}&inline=1`
+  return `/api/nas/download?server=${enc(p.server)}&path=${enc(p.path)}&inline=1`
 }
 
-/** Markdown source list for the passages the answer cited, keeping their numbers. */
-export function sourcesFooter(answer: string, passages: RagPassage[]): string {
+/** The source view: key lines, the whole passage and the PDF page it is on. */
+export function sourceViewUrl(source: RagSource, p: Pick<RagPassage, 'server' | 'path' | 'chunkIndex'>, quote: string): string {
+  return `/dashboard/source?c=${source}&s=${enc(p.server)}&p=${enc(p.path)}&i=${p.chunkIndex}&k=${enc(quote)}`
+}
+
+/** Longest key-lines quote shown under a source. */
+const KEY_LINES_CHARS = 400
+/** A line longer than this is split into sentences, so one fact is quoted, not a whole page of run-on text. */
+const LONG_LINE = 220
+/** A figure as written: 2,000 is one number, not 2 and 000. */
+const NUMBER = /\d[\d,]*(?:\.\d+)?/g
+const WORD = /[\p{L}\p{M}]{4,}/gu
+const COMMON = new Set(['with', 'from', 'that', 'this', 'which', 'shall', 'their', 'there', 'these', 'those', 'have', 'will', 'also', 'into', 'than', 'when', 'where', 'such', 'each', 'other', 'plot', 'answer', 'details', 'bylaws'])
+
+/** The parts of the answer that cite passage n ([n] or 【n】); the whole answer when none do. */
+function citingText(answer: string, n: number): string {
+  const re = new RegExp(`[[【]${n}[\\]】]`)
+  // Bold headings ("**Worked example:**") are the answer's own words, not the document's.
+  const plain = answer.replace(/\*\*[^*\n]*\*\*/g, ' ')
+  const parts = plain.split(/\n+|(?<=[.;])\s+/).filter((part) => re.test(part))
+  return parts.length ? parts.join('\n') : plain
+}
+
+/** The passage as lines, and long lines as sentences, with their positions. */
+function segments(text: string): Array<{ start: number; text: string }> {
+  const out: Array<{ start: number; text: string }> = []
+  for (const line of text.matchAll(/[^\n]+/g)) {
+    if (line[0].length <= LONG_LINE) {
+      out.push({ start: line.index!, text: line[0] })
+      continue
+    }
+    for (const sentence of line[0].matchAll(/[^.;]+(?:[.;]+|$)/g)) out.push({ start: line.index! + sentence.index!, text: sentence[0] })
+  }
+  return out.filter((seg) => seg.text.trim().length > 0)
+}
+
+/**
+ * The lines of passage `n` the answer was taken from, copied exactly from the
+ * passage: the table row that applies, then the lines holding the figures
+ * and words of the answer's sentences that cite [n]. In document order,
+ * joined by QUOTE_GAP, at most KEY_LINES_CHARS. Never text from the answer.
+ */
+export function keyLines(answer: string, n: number, p: Pick<RagPassage, 'text' | 'matchedRow' | 'section'>): string {
+  const text = tidy(p.text)
+  const lower = text.toLowerCase()
+  const cited = citingText(answer, n)
+  // Figures and words the answer used that the passage also has. 2,000 in
+  // the answer is the user's plot, not a passage figure, unless printed there.
+  const figure = (x: string) => new RegExp(`(?<![\\d.,])${x.replace(/[.,]/g, '\\$&')}(?![\\d]|[.,]\\d)`)
+  const numbers = [...new Set([...cited.matchAll(NUMBER)].map((m) => m[0].replace(/[.,]$/, '')))]
+    .filter((x) => figure(x).test(text))
+  const words = [...new Set([...cited.toLowerCase().matchAll(WORD)].map((m) => m[0]))]
+    .filter((w) => !COMMON.has(w) && lower.includes(w))
+  const row = findSpan(text, p.matchedRow)
+  // A row alone ("4 >1200 1.25 2.0") cannot be read: quote its table's
+  // column headings (the nearest line above that is not itself a row of
+  // figures) and the clause heading with it.
+  const header = row ? headerLineBefore(text, row[0]) : null
+  const clause = row ? findSpan(text, p.section) : null
+
+  const scored = segments(text).map((seg) => {
+    const t = seg.text.toLowerCase()
+    const end = seg.start + seg.text.length
+    const nums = numbers.filter((x) => figure(x).test(t)).length
+    const hits = words.filter((w) => t.includes(w)).length
+    const inRow = row !== null && seg.start < row[1] && end > row[0]
+    const overlaps = (span: [number, number] | null) => span !== null && seg.start < span[1] && end > span[0]
+    if (!inRow && (overlaps(header) || overlaps(clause))) return { ...seg, score: 50 }
+    // Outside the matched row, one shared figure is not enough: "2.0" is in
+    // many rows and examples. Two figures, or a figure and two words, are.
+    const relevant = inRow || nums >= 2 || (nums >= 1 && hits >= 2) || hits >= 4
+    return { ...seg, score: relevant ? (inRow ? 100 : 0) + nums * 3 + hits : 0 }
+  }).filter((seg) => seg.score > 0)
+
+  const picked: typeof scored = []
+  let length = 0
+  for (const seg of [...scored].sort((a, b) => b.score - a.score || a.start - b.start)) {
+    if (picked.length >= 4) break
+    const t = seg.text.trim()
+    if (picked.length > 0 && length + t.length > KEY_LINES_CHARS) continue
+    picked.push(seg)
+    length += t.length + QUOTE_GAP.length
+  }
+  if (picked.length > 0) {
+    // Lines next to each other in the passage (a row the PDF split over two
+    // lines) are joined with a space; separate places with QUOTE_GAP.
+    let quote = ''
+    let prevEnd = -1
+    for (const seg of picked.sort((a, b) => a.start - b.start)) {
+      const adjacent = prevEnd >= 0 && /^\s*$/.test(text.slice(prevEnd, seg.start))
+      quote += (quote ? (adjacent ? ' ' : QUOTE_GAP) : '') + seg.text.trim()
+      prevEnd = seg.start + seg.text.length
+    }
+    return quote.length > KEY_LINES_CHARS ? `${quote.slice(0, KEY_LINES_CHARS).trimEnd()}…` : quote
+  }
+  if (p.matchedRow) return p.matchedRow.trim()
+  return text.length > 250 ? `${text.slice(0, 250).replace(/\s+\S*$/, '')}…` : text
+}
+
+/** The span of the nearest line above `at` that has words and is not a row of figures. */
+function headerLineBefore(text: string, at: number): [number, number] | null {
+  let end = text.lastIndexOf('\n', at - 1)
+  while (end > 0) {
+    const start = text.lastIndexOf('\n', end - 1) + 1
+    const line = text.slice(start, end)
+    const figures = line.match(/\d+(?:\.\d+)?/g)?.length ?? 0
+    if (/[\p{L}]{3,}/u.test(line) && figures <= 1) return [start, end]
+    end = start - 1
+  }
+  return null
+}
+
+/** Markdown-safe: document text must show as printed, not as markup ("4 >1200" is not a quote, "1." not a list). */
+function mdText(s: string): string {
+  return s.replace(/\s+/g, ' ').replace(/([\\`*_[\]<>#|~])/g, '\\$1').replace(/^(\d+)\./, '$1\\.').replace(/^([-+])/, '\\$1')
+}
+
+/**
+ * Markdown source list for the passages the answer cited, keeping their
+ * numbers. Under each: the exact lines the answer was taken from, and a link
+ * to the source view (the whole passage and the PDF page it is on).
+ */
+export function sourcesFooter(answer: string, passages: RagPassage[], source: RagSource): string {
   const cited = citedPassages(answer, passages)
   if (!cited.length) return ''
-  const lines = cited.map((p) => {
+  const items = cited.map((p) => {
     const n = passages.indexOf(p) + 1
-    return `- [${n}] [${p.fileName}](${downloadUrl(p)})${p.section ? ` — clause ${p.section}` : ''}`
+    const quote = keyLines(answer, n, p)
+    return [
+      `- [${n}] [${p.fileName}](${downloadUrl(p)})${p.section ? ` — clause ${p.section}` : ''}`,
+      `  > ${mdText(quote)}`,
+      '',
+      `  [Show passage and page](${sourceViewUrl(source, p, quote)})`,
+    ].join('\n')
   })
-  return `\n\n**Sources**\n${lines.join('\n')}`
+  return `\n\n**Sources**\n${items.join('\n')}`
 }
 
 /** Said without a model call when the index has nothing for the question. */
