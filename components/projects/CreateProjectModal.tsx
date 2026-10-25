@@ -33,7 +33,7 @@ export default function CreateProjectModal({
   const [links, setLinks] = useState<ProjectLink[]>([])
   // Optional task template: its items fill the new project's Task List.
   const [templates, setTemplates] = useState<{ id: string; name: string; itemCount: number }[]>([])
-  const [templateId, setTemplateId] = useState('')
+  const [templateIds, setTemplateIds] = useState<string[]>([])
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -77,7 +77,7 @@ export default function CreateProjectModal({
       setStatus('ACTIVE')
       setPriority('MEDIUM')
       setDeadline('')
-      setTemplateId('')
+      setTemplateIds([])
       setLeadId('')
       setClient(null)
       setSiteLocation('')
@@ -167,24 +167,29 @@ export default function CreateProjectModal({
       })
       const json = await res.json() as { data: ProjectDetail | null; error: string | null }
       if ((res.status === 201 || res.ok) && json.data) {
-        // Fill the Task List from the chosen template. The project already
-        // exists, so a failure here is reported but does not undo it; the
-        // template can be added again from the project's Task List.
+        // Fill the Task List from the chosen templates, one after another in
+        // the order picked (a line an earlier template already added, same category, is skipped).
+        // The project already exists, so a template that fails is reported
+        // but does not undo it; it can be added from the project's Task List.
         let project = json.data
-        if (templateId) {
+        const failed: string[] = []
+        for (const id of templateIds) {
           const applied = await fetch(`/api/projects/${project.id}/apply-template`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
-            body: JSON.stringify({ templateId }),
+            body: JSON.stringify({ templateId: id }),
           }).catch(() => null)
           const result = applied?.ok ? await applied.json().catch(() => null) as { data?: { added?: unknown[] } } | null : null
           if (!result?.data) {
-            window.alert('The project was created, but its task list template could not be added. Open the project and use "Add from template" in its Task List.')
+            failed.push(templates.find((t) => t.id === id)?.name ?? 'a template')
           } else {
             // The project came back before its tasks existed; count them in.
             project = { ...project, totalTasks: project.totalTasks + (result.data.added?.length ?? 0) }
           }
+        }
+        if (failed.length) {
+          window.alert(`The project was created, but these task list templates could not be added: ${failed.join(', ')}. Open the project and use "Add from template" in its Task List.`)
         }
         onCreated(project)
         onClose()
@@ -323,22 +328,32 @@ export default function CreateProjectModal({
             {/* Task template */}
             {templates.length > 0 && (
               <div>
-                <label htmlFor="create-project-template" className="block font-mono text-xs text-secondary tracking-widest uppercase mb-2">
-                  Task list template
-                </label>
-                <select
-                  id="create-project-template"
-                  value={templateId}
-                  onChange={(e) => setTemplateId(e.target.value)}
-                  className="w-full bg-background-primary border border-border-default px-4 py-3 font-mono text-sm text-primary focus:border-accent focus:outline-none transition-colors duration-150 [color-scheme:light]"
-                >
-                  <option value="">None, start with an empty task list</option>
-                  {templates.map((t) => (
-                    <option key={t.id} value={t.id}>{t.name} ({t.itemCount} items)</option>
-                  ))}
-                </select>
+                <p id="create-project-templates" className="block font-mono text-xs text-secondary tracking-widest uppercase mb-2">
+                  Task list templates
+                </p>
+                {/* Any number of templates; ticked ones are added in the order ticked. */}
+                <div role="group" aria-labelledby="create-project-templates" className="border border-border-default divide-y divide-border-default">
+                  {templates.map((t) => {
+                    const on = templateIds.includes(t.id)
+                    return (
+                      <label key={t.id} className={`flex items-center gap-3 px-4 py-2.5 cursor-pointer font-mono text-sm transition-colors duration-150 ${on ? 'bg-accent/10 text-primary' : 'text-secondary hover:bg-surface-raised'}`}>
+                        <input
+                          type="checkbox"
+                          checked={on}
+                          onChange={() => setTemplateIds((prev) => (on ? prev.filter((x) => x !== t.id) : [...prev, t.id]))}
+                          className="accent-[rgb(var(--c-accent))] h-4 w-4 shrink-0"
+                        />
+                        <span className="flex-1">{t.name}</span>
+                        <span className="text-xs text-muted">{t.itemCount} items</span>
+                      </label>
+                    )
+                  })}
+                </div>
                 <p className="mt-1 font-mono text-[11px] text-muted">
-                  Its items are added to the project&apos;s Task List, unassigned. More templates or extra items can be added later.
+                  {templateIds.length === 0
+                    ? 'None ticked: the project starts with an empty task list.'
+                    : `${templateIds.length} ticked, up to ${templates.filter((t) => templateIds.includes(t.id)).reduce((n, t) => n + t.itemCount, 0)} items (a line already added under the same category is skipped).`}
+                  {' '}Items are added to the Task List unassigned; more templates or extra items can be added later.
                 </p>
               </div>
             )}
