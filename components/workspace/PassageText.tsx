@@ -81,10 +81,11 @@ function Table({ block, marks, aligned }: { block: Extract<PassageBlock, { kind:
  * (lib/rag/format.ts), with the phrases in `marks` highlighted, whole table
  * rows included.
  */
-export default function PassageText({ text, marks }: { text: string; marks: string[] }) {
+export default function PassageText({ text, marks, compact = false }: { text: string; marks: string[]; compact?: boolean }) {
   const blocks = formatPassage(text)
-  // Unnumbered text and tables line up with clause text only when there are clauses.
-  const aligned = blocks.some((b) => b.kind === 'text' && b.clause)
+  // Unnumbered text and tables line up with clause text only when there are
+  // clauses, and not in narrow places (compact: the chat dock).
+  const aligned = !compact && blocks.some((b) => b.kind === 'text' && b.clause)
   return (
     <div className="space-y-2.5">
       {blocks.map((b, i) =>

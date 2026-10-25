@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ChatMessage } from '@/store/assistantStore'
 import ActionCard from './ActionCard'
+import SourceDetails, { isSourceLink } from './SourceDetails'
 
 export default function Message({
   msg,
@@ -31,6 +32,15 @@ export default function Message({
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               components={{
+                // A document answer's source link (its own paragraph under each
+                // source) becomes the Exact line / Paragraph / Page dropdowns.
+                p: ({ node, children, ...props }) => {
+                  const only = node?.children.filter((c) => !(c.type === 'text' && !c.value.trim()))
+                  const link = only?.length === 1 && only[0]?.type === 'element' && only[0].tagName === 'a' ? only[0] : null
+                  const href = link ? String(link.properties?.href ?? '') : ''
+                  if (isSourceLink(href)) return <SourceDetails href={href} />
+                  return <p {...props}>{children}</p>
+                },
                 // Force every link to open in a new tab and add safe rel attrs.
                 // remark-gfm autolinks bare URLs as <a>, so this covers
                 // both `[label](url)` and raw `https://...` mentions.

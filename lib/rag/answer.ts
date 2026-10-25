@@ -552,15 +552,11 @@ function headerLineBefore(text: string, at: number): [number, number] | null {
   return span
 }
 
-/** Markdown-safe: document text must show as printed, not as markup ("4 >1200" is not a quote, "1." not a list). */
-function mdText(s: string): string {
-  return s.replace(/\s+/g, ' ').replace(/([\\`*_[\]<>#|~])/g, '\\$1').replace(/^(\d+)\./, '$1\\.').replace(/^([-+])/, '\\$1')
-}
-
 /**
  * Markdown source list for the passages the answer cited, keeping their
- * numbers. Under each: the exact lines the answer was taken from, and a link
- * to the source view (the whole passage and the PDF page it is on).
+ * numbers. Under each, a link carrying the exact lines the answer was taken
+ * from and the passage's position: the chat turns it into Exact line /
+ * Paragraph / Page dropdowns, and opened directly it is the source view.
  */
 export function sourcesFooter(answer: string, passages: RagPassage[], source: RagSource): string {
   const cited = citedPassages(answer, passages)
@@ -568,11 +564,12 @@ export function sourcesFooter(answer: string, passages: RagPassage[], source: Ra
   const items = cited.map((p) => {
     const n = passages.indexOf(p) + 1
     const quote = keyLines(answer, n, p)
+    // The chat shows the link as Exact line / Paragraph / Page dropdowns
+    // (components/assistant/SourceDetails.tsx); elsewhere it is a plain link.
     return [
       `- [${n}] [${p.fileName}](${downloadUrl(p)})${p.section ? ` — clause ${p.section}` : ''}`,
-      `  > ${mdText(quote)}`,
       '',
-      `  [Show passage and page](${sourceViewUrl(source, p, quote)})`,
+      `  [Show exact line, paragraph and page](${sourceViewUrl(source, p, quote)})`,
     ].join('\n')
   })
   return `\n\n**Sources**\n${items.join('\n')}`

@@ -29,7 +29,7 @@ function anchorsFor(passage: string, keyLines: string): string[] {
   return [...new Set(all)].slice(0, MAX_ANCHORS)
 }
 
-// GET /api/nas/source?c=bylaws|nas&s=<server>&p=<path>&i=<chunkIndex>&k=<key lines>
+// GET /api/nas/source?c=bylaws|nas&s=<server>&p=<path>&i=<chunkIndex>&k=<key lines>[&page=0]
 // — the source view behind a chat answer's "Show passage and page" link: the
 // passage the answer was taken from (looked up by its position, org-scoped),
 // and the PDF page it is on, found by the connector's /locate. Page fields are
@@ -55,7 +55,10 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     const passage = await getPassage(getOrgId(), server, path, chunkIndex, collection)
     if (!passage) return errorResponse('This passage is no longer in the index. The document may have been re-indexed or removed.', 404)
 
-    const located = /\.pdf$/i.test(path) ? await nasLocate(server, path, anchorsFor(passage.text, keyLines)) : null
+    // page=0: the passage only (the chat's Paragraph section), skipping the
+    // PDF download and page search the Page section needs.
+    const wantPage = q.get('page') !== '0'
+    const located = wantPage && /\.pdf$/i.test(path) ? await nasLocate(server, path, anchorsFor(passage.text, keyLines)) : null
     const page = located?.page ?? null
     const pdfUrl = downloadUrl({ server, path })
     return successResponse({
@@ -69,6 +72,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       pageCount: located?.pageCount ?? null,
       pageText: page ? located?.pageText ?? null : null,
       pageReason: page ? null
+        : !wantPage ? 'Not looked up.'
         : !/\.pdf$/i.test(path) ? 'Pages exist only for PDFs.'
         : located?.reason ?? 'The file server could not be reached to find the page.',
       pdfUrl: page ? `${pdfUrl}#page=${page}` : pdfUrl,

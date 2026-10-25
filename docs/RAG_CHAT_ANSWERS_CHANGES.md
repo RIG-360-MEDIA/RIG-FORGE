@@ -304,3 +304,10 @@ Example:
 - **Fallback:** anything that does not fall into rows stays as text.
 
 The chat key lines now keep a one-cell-per-line row whole, with its column headings, e.g. `Plot Size (Sqmt) Front Rear Side-1 Side-2 Plains … 1500-3000 9.0 mt 6.0 mt 6.0 mt 6.0 mt`.
+
+**Source dropdowns in the chat (25 Oct).** Under each source of a document answer, the chat shows three dropdowns, then **Open full PDF** (at the page once it is known), in `components/assistant/SourceDetails.tsx`:
+- **Exact line:** the key lines.
+- **Paragraph:** the whole passage, formatted. Loaded on first open from `GET /api/nas/source?…&page=0`, which skips the PDF search.
+- **Page:** the full PDF page. Loaded on first open; the connector searches the PDF.
+
+The footer no longer writes the quote into the message. It writes one link per source, which `Message.tsx` turns into the dropdowns, so older answers get them too.

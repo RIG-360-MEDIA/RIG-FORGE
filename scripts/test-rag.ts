@@ -825,9 +825,9 @@ async function main() {
     check('sources list the cited passages, in citation order, with their numbers',
       /\*\*Sources\*\*\n- \[3\] \[c b\.pdf\]\(\/api\/nas\/download\?server=WD&path=%2FBy_Laws%2Fc%20b\.pdf&inline=1\)\n/.test(footer) &&
       footer.indexOf('- [3]') < footer.indexOf('- [1] [a.pdf](/api/nas/download?server=WD&path=%2FBy_Laws%2Fa.pdf&inline=1) — clause 3.2.2 FAR'), footer)
-    check('each source quotes its passage and links to the source view',
-      footer.includes('  > parking requirements are 2 ECS per 100 sqm') &&
-      footer.includes('[Show passage and page](/dashboard/source?c=bylaws&s=WD&p=%2FBy_Laws%2Fc%20b.pdf&i=12&k=parking%20requirements%20are%202%20ECS%20per%20100%20sqm)'), footer)
+    check('each source links to its exact line, paragraph and page (shown as dropdowns in the chat)',
+      footer.includes('  [Show exact line, paragraph and page](/dashboard/source?c=bylaws&s=WD&p=%2FBy_Laws%2Fc%20b.pdf&i=12&k=parking%20requirements%20are%202%20ECS%20per%20100%20sqm)') &&
+      !footer.includes('  > '), footer)
     check('parentheses in a path cannot end a markdown link early',
       ans.downloadUrl({ server: 'WD', path: '/Bylaws (2016.pdf' }) === '/api/nas/download?server=WD&path=%2FBylaws%20%282016.pdf&inline=1')
 
