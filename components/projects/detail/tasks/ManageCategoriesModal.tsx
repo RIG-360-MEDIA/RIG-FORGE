@@ -22,6 +22,7 @@ export default function ManageCategoriesModal({ onClose, onChanged }: ManageCate
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
+  const [moving, setMoving] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -70,13 +71,20 @@ export default function ManageCategoriesModal({ onClose, onChanged }: ManageCate
 
   // Swap with the neighbour, then number every row by its new position, so
   // rows that shared a sortOrder (added at the same time) still move.
+  // One request at a time under a single busy flag: firing them all at once
+  // let a second click interleave with the first and leave a mixed order.
   async function move(index: number, delta: -1 | 1) {
     const other = index + delta
-    if (other < 0 || other >= rows.length) return
+    if (other < 0 || other >= rows.length || moving) return
+    setMoving(true)
     const order = [...rows]
     ;[order[index], order[other]] = [order[other]!, order[index]!]
-    const results = await Promise.all(order.map((r, i) => (r.sortOrder !== i ? save(r.id, { sortOrder: i }) : true)))
-    if (results.some(Boolean)) { await load(); onChanged() }
+    for (const [i, r] of order.entries()) {
+      if (r.sortOrder !== i && !(await save(r.id, { sortOrder: i }))) break
+    }
+    await load()
+    onChanged()
+    setMoving(false)
   }
 
   return (
@@ -126,8 +134,8 @@ export default function ManageCategoriesModal({ onClose, onChanged }: ManageCate
                   </>
                 ) : (
                   <>
-                    <button type="button" disabled={busy || i === 0} onClick={() => void move(i, -1)} aria-label={`Move ${row.name} up`} className="text-xs text-secondary hover:text-primary disabled:opacity-30 px-1">Up</button>
-                    <button type="button" disabled={busy || i === rows.length - 1} onClick={() => void move(i, 1)} aria-label={`Move ${row.name} down`} className="text-xs text-secondary hover:text-primary disabled:opacity-30 px-1">Down</button>
+                    <button type="button" disabled={busy || moving || i === 0} onClick={() => void move(i, -1)} aria-label={`Move ${row.name} up`} className="text-xs text-secondary hover:text-primary disabled:opacity-30 px-1">Up</button>
+                    <button type="button" disabled={busy || moving || i === rows.length - 1} onClick={() => void move(i, 1)} aria-label={`Move ${row.name} down`} className="text-xs text-secondary hover:text-primary disabled:opacity-30 px-1">Down</button>
                     <button type="button" disabled={busy} onClick={() => { setEditingId(row.id); setDraft(row.name) }} className="text-xs text-secondary hover:text-primary px-1">Rename</button>
                     <button type="button" disabled={busy} onClick={() => void toggleActive(row)} className="text-xs text-secondary hover:text-primary px-1">
                       {row.isActive ? 'Archive' : 'Restore'}

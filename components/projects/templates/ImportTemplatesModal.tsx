@@ -14,6 +14,28 @@ interface ImportTemplatesModalProps {
 interface Draft extends ParsedSheet {
   include: boolean
   open: boolean
+  /** Why this sheet cannot be imported as it is; it is then left unticked. */
+  problem: string | null
+}
+
+/** The server's limits, checked here so a sheet fails in the preview, not halfway through an import. */
+const MAX_ITEMS = 500
+const MAX_TITLE = 200
+
+function problemOf(s: ParsedSheet): string | null {
+  const items = s.groups.flatMap((g) => g.items)
+  if (items.length > MAX_ITEMS) return `Has ${items.length} items; a template holds at most ${MAX_ITEMS}. Split the sheet in Excel.`
+  const long = items.filter((t) => t.length > MAX_TITLE).length
+  if (long) return `${long} ${long === 1 ? 'item is' : 'items are'} longer than ${MAX_TITLE} characters. Shorten ${long === 1 ? 'it' : 'them'} in Excel.`
+  return null
+}
+
+/** True when the bytes are a real workbook: .xlsx is a zip ("PK"), .xls an OLE file. */
+function looksLikeWorkbook(name: string, bytes: Uint8Array): boolean {
+  if (/\.csv$/i.test(name)) return true
+  const zip = bytes[0] === 0x50 && bytes[1] === 0x4b
+  const ole = bytes[0] === 0xd0 && bytes[1] === 0xcf && bytes[2] === 0x11 && bytes[3] === 0xe0
+  return zip || ole
 }
 
 /**
@@ -31,10 +53,22 @@ export default function ImportTemplatesModal({ existingNames, onClose, onImporte
   async function readFile(file: File) {
     setError(null)
     setFileName(file.name)
+    // A new file starts fresh: "already imported" was by sheet name, so a
+    // second file with a "Sheet1" was wrongly shown as imported and skipped.
+    setDone([])
     try {
-      const sheets = parseTemplateWorkbook(await file.arrayBuffer())
+      const data = await file.arrayBuffer()
+      if (!looksLikeWorkbook(file.name, new Uint8Array(data.slice(0, 4)))) {
+        setError('That file is not an Excel workbook. Choose a .xlsx, .xls or .csv file.')
+        setDrafts(null)
+        return
+      }
+      const sheets = parseTemplateWorkbook(data)
       if (sheets.length === 0) { setError('No task lists were found in that file.'); setDrafts(null); return }
-      setDrafts(sheets.map((s) => ({ ...s, include: true, open: false })))
+      setDrafts(sheets.map((s) => {
+        const problem = problemOf(s)
+        return { ...s, include: !problem, open: false, problem }
+      }))
     } catch {
       setError('That file could not be read. Save it as .xlsx and try again.')
       setDrafts(null)
@@ -119,7 +153,7 @@ export default function ImportTemplatesModal({ existingNames, onClose, onImporte
                     <input
                       type="checkbox"
                       checked={d.include}
-                      disabled={imported}
+                      disabled={imported || !!d.problem}
                       onChange={() => update(i, { include: !d.include })}
                       aria-label={`Import sheet ${d.sheet}`}
                       className="accent-[rgb(var(--c-accent))] h-4 w-4"
@@ -134,6 +168,7 @@ export default function ImportTemplatesModal({ existingNames, onClose, onImporte
                     <span className="text-xs text-muted">{count} items, sheet &quot;{d.sheet}&quot;</span>
                     {imported && <span className="text-xs text-status-success font-medium">Imported</span>}
                   </div>
+                  {d.problem && <p className="px-3 pt-1 text-[11px] text-status-danger">Not imported: {d.problem}</p>}
                   {clash && !imported && <p className="px-3 pt-1 text-[11px] text-status-warning">A template with this name already exists; this one will be added next to it.</p>}
                   <div className="px-3 py-2 space-y-1.5">
                     {d.groups.map((g, k) => (

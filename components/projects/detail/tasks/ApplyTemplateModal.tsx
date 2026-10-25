@@ -132,8 +132,10 @@ export default function ApplyTemplateModal({ projectId, existing, onClose, onApp
               <button
                 key={t.id}
                 type="button"
+                disabled={t.itemCount === 0}
+                title={t.itemCount === 0 ? 'This template has no items yet' : undefined}
                 onClick={() => void choose(t.id)}
-                className={`text-left px-3 py-2 rounded border text-sm ${detail?.id === t.id ? 'border-accent bg-accent/10' : 'border-border-default hover:border-accent/60'}`}
+                className={`text-left px-3 py-2 rounded border text-sm disabled:opacity-40 disabled:cursor-not-allowed ${detail?.id === t.id ? 'border-accent bg-accent/10' : 'border-border-default hover:border-accent/60'}`}
               >
                 <span className="font-medium">{t.name}</span>
                 <span className="block text-[11px] text-muted">{t.itemCount} items</span>

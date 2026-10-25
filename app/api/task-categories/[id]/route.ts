@@ -21,7 +21,7 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
     if (!token) return errorResponse('Authentication required', 401)
     const payload = verifyToken(token)
     if (!payload) return errorResponse('Invalid or expired token', 401)
-    if (!tokenCan(payload, 'tasks.manage')) return errorResponse('Only admins can change task categories', 403)
+    if (payload.isExternal || !tokenCan(payload, 'tasks.manage')) return errorResponse('Only admins can change task categories', 403)
 
     const category = await prisma.taskCategory.findFirst({ where: { id: params.id }, select: { id: true } })
     if (!category) return errorResponse('Category not found', 404)

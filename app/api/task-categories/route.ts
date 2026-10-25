@@ -3,7 +3,7 @@ import { type NextRequest } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getTokenFromCookies, verifyToken } from '@/lib/auth'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
-import { CATEGORY_SELECT, MAX_CATEGORY_NAME, canManageProjectTasks, cleanCategoryName } from '@/lib/task-categories'
+import { CATEGORY_SELECT, MAX_CATEGORY_NAME, canManageProjectTasks, cleanCategoryName, findOrCreateCategory } from '@/lib/task-categories'
 import type { TaskCategorySummary } from '@/lib/types'
 
 // ─── GET /api/task-categories ────────────────────────────────────────────────
@@ -58,26 +58,8 @@ export async function POST(request: NextRequest) {
       return errorResponse('Only admins or the project lead can add categories', 403)
     }
 
-    const existing = await prisma.taskCategory.findFirst({
-      where: { name: { equals: name, mode: 'insensitive' } },
-      select: CATEGORY_SELECT,
-    })
-    if (existing) {
-      if (existing.isActive) return successResponse<TaskCategorySummary>(existing)
-      const revived = await prisma.taskCategory.update({
-        where: { id: existing.id },
-        data: { isActive: true },
-        select: CATEGORY_SELECT,
-      })
-      return successResponse<TaskCategorySummary>(revived)
-    }
-
-    const last = await prisma.taskCategory.aggregate({ _max: { sortOrder: true } })
-    const created = await prisma.taskCategory.create({
-      data: { name, sortOrder: (last._max.sortOrder ?? 0) + 1 },
-      select: CATEGORY_SELECT,
-    })
-    return successResponse<TaskCategorySummary>(created, 201)
+    const { category, created } = await findOrCreateCategory(name)
+    return successResponse<TaskCategorySummary>(category, created ? 201 : 200)
   } catch (error) {
     console.error('[POST /api/task-categories]', error)
     return errorResponse('An unexpected error occurred', 500)

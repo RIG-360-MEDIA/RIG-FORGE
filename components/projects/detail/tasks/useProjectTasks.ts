@@ -25,11 +25,21 @@ export function useProjectTasks(projectId: string) {
 
   const fetchTasks = useCallback(async () => {
     try {
-      const params = new URLSearchParams({ projectId, limit: '500' })
-      const res = await fetch(`/api/tasks?${params}`, { credentials: 'include' })
-      const json = await res.json() as ApiResponse<PaginatedResponse<TaskSummary>>
-      if (!res.ok || json.error) { setError(json.error ?? 'Failed to load tasks.'); return }
-      setTasks(json.data?.items ?? [])
+      // Page through: a project filled from several templates can hold more
+      // than one page (500), and a cut-off list showed wrong counts and hid
+      // the oldest items, which are the start of the plan.
+      const all: TaskSummary[] = []
+      let cursor: string | null = null
+      for (let page = 0; page < 20; page++) {
+        const params = new URLSearchParams({ projectId, limit: '500', ...(cursor ? { cursor } : {}) })
+        const res = await fetch(`/api/tasks?${params}`, { credentials: 'include' })
+        const json = await res.json() as ApiResponse<PaginatedResponse<TaskSummary>>
+        if (!res.ok || json.error) { setError(json.error ?? 'Failed to load tasks.'); return }
+        all.push(...(json.data?.items ?? []))
+        cursor = json.data?.nextCursor ?? null
+        if (!cursor) break
+      }
+      setTasks(all)
     } catch {
       setError('Network error loading tasks.')
     } finally {

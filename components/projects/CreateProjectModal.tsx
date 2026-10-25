@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useRef } from 'react'
 
+import { useAuth } from '@/hooks/useAuth'
+import { userCan } from '@/lib/permissions'
 import Avatar from '@/components/ui/Avatar'
 import ClientPicker from '@/components/projects/ClientPicker'
 import type { ProjectDetail, MemberSummary, ProjectLink, ApiResponse, PaginatedResponse, ClientSummary } from '@/lib/types'
@@ -34,6 +36,10 @@ export default function CreateProjectModal({
   // Optional task template: its items fill the new project's Task List.
   const [templates, setTemplates] = useState<{ id: string; name: string; itemCount: number }[]>([])
   const [templateIds, setTemplateIds] = useState<string[]>([])
+  const { user } = useAuth()
+  // Applying a template needs tasks.manage, or being the new project's lead
+  // (the rule the apply API checks); otherwise the choice is shown but locked.
+  const canApplyTemplates = userCan(user, 'tasks.manage') || (!!leadId && leadId === user?.id)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -51,7 +57,8 @@ export default function CreateProjectModal({
     fetch('/api/task-templates', { credentials: 'include' })
       .then((r) => r.json())
       .then((json: ApiResponse<{ id: string; name: string; itemCount: number }[]>) => {
-        if (json.data) setTemplates(json.data)
+        // An empty template has nothing to add.
+        if (json.data) setTemplates(json.data.filter((t) => t.itemCount > 0))
       })
       .catch(() => { /* optional — the project can be created without one */ })
   }, [isOpen])
@@ -173,7 +180,7 @@ export default function CreateProjectModal({
         // but does not undo it; it can be added from the project's Task List.
         let project = json.data
         const failed: string[] = []
-        for (const id of templateIds) {
+        for (const id of canApplyTemplates ? templateIds : []) {
           const applied = await fetch(`/api/projects/${project.id}/apply-template`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -339,7 +346,8 @@ export default function CreateProjectModal({
                       <label key={t.id} className={`flex items-center gap-3 px-4 py-2.5 cursor-pointer font-mono text-sm transition-colors duration-150 ${on ? 'bg-accent/10 text-primary' : 'text-secondary hover:bg-surface-raised'}`}>
                         <input
                           type="checkbox"
-                          checked={on}
+                          disabled={!canApplyTemplates}
+                          checked={on && canApplyTemplates}
                           onChange={() => setTemplateIds((prev) => (on ? prev.filter((x) => x !== t.id) : [...prev, t.id]))}
                           className="accent-[rgb(var(--c-accent))] h-4 w-4 shrink-0"
                         />
@@ -349,8 +357,13 @@ export default function CreateProjectModal({
                     )
                   })}
                 </div>
+                {!canApplyTemplates && (
+                  <p className="mt-1 font-mono text-[11px] text-status-warning">
+                    Only the project lead or an admin with task permissions can add templates. Make yourself the lead, or add them later from the Task List.
+                  </p>
+                )}
                 <p className="mt-1 font-mono text-[11px] text-muted">
-                  {templateIds.length === 0
+                  {!canApplyTemplates || templateIds.length === 0
                     ? 'None ticked: the project starts with an empty task list.'
                     : `${templateIds.length} ticked, up to ${templates.filter((t) => templateIds.includes(t.id)).reduce((n, t) => n + t.itemCount, 0)} items (a line already added under the same category is skipped).`}
                   {' '}Items are added to the Task List unassigned; more templates or extra items can be added later.

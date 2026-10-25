@@ -5,6 +5,7 @@ import { getTokenFromCookies, verifyToken } from '@/lib/auth'
 import { tokenCan } from '@/lib/permissions'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
 import { MAX_TEMPLATE_NAME, loadTemplateDetail, resolveTemplateItems } from '@/lib/task-templates'
+import { TX_OPTIONS } from '@/lib/task-categories'
 
 interface Ctx { params: { id: string } }
 
@@ -41,7 +42,7 @@ export async function PUT(request: NextRequest, { params }: Ctx) {
     if (!token) return errorResponse('Authentication required', 401)
     const payload = verifyToken(token)
     if (!payload) return errorResponse('Invalid or expired token', 401)
-    if (!tokenCan(payload, 'tasks.manage')) return errorResponse('Only admins can edit task templates', 403)
+    if (payload.isExternal || !tokenCan(payload, 'tasks.manage')) return errorResponse('Only admins can edit task templates', 403)
 
     const existing = await prisma.taskTemplate.findFirst({ where: { id: params.id }, select: { id: true } })
     if (!existing) return errorResponse('Template not found', 404)
@@ -61,7 +62,7 @@ export async function PUT(request: NextRequest, { params }: Ctx) {
       await tx.taskTemplateItem.createMany({
         data: resolved.items.map((item, i) => ({ templateId: existing.id, title: item.title, categoryId: item.categoryId, sortOrder: i })),
       })
-    })
+    }, TX_OPTIONS)
     return successResponse(await loadTemplateDetail(existing.id))
   } catch (error) {
     console.error('[PUT /api/task-templates/[id]]', error)
@@ -78,7 +79,7 @@ export async function PATCH(request: NextRequest, { params }: Ctx) {
     if (!token) return errorResponse('Authentication required', 401)
     const payload = verifyToken(token)
     if (!payload) return errorResponse('Invalid or expired token', 401)
-    if (!tokenCan(payload, 'tasks.manage')) return errorResponse('Only admins can archive task templates', 403)
+    if (payload.isExternal || !tokenCan(payload, 'tasks.manage')) return errorResponse('Only admins can archive task templates', 403)
 
     const body = await request.json().catch(() => null) as Record<string, unknown> | null
     if (typeof body?.isActive !== 'boolean') return errorResponse('isActive must be true or false', 400)

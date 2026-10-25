@@ -7,7 +7,13 @@ import { useAuth } from '@/hooks/useAuth'
 import { userCan } from '@/lib/permissions'
 import type { ApiResponse, TaskCategorySummary, TaskTemplateDetail } from '@/lib/types'
 
-interface Row { key: string; title: string; categoryId: string | null }
+interface Row {
+  key: string
+  title: string
+  categoryId: string | null
+  /** Kept so a row in an archived category (not in the picker list) still shows its name. */
+  categoryName?: string | null
+}
 
 const NONE = '__none__'
 let seq = 0
@@ -54,7 +60,7 @@ export default function TaskTemplateEditorPage() {
       if (!tRes.ok || !t.data) { setError(t.error ?? 'Template not found.'); return }
       setName(t.data.name)
       setDescription(t.data.description ?? '')
-      setRows(t.data.items.map((i) => ({ key: i.id, title: i.title, categoryId: i.categoryId })))
+      setRows(t.data.items.map((i) => ({ key: i.id, title: i.title, categoryId: i.categoryId, categoryName: i.categoryName })))
       setCategories(c.data ?? [])
       setDirty(false)
     } catch {
@@ -75,7 +81,9 @@ export default function TaskTemplateEditorPage() {
   }, [dirty])
 
   const change = (fn: (prev: Row[]) => Row[]) => { setRows(fn); setDirty(true) }
-  const catName = (id: string | null) => (id ? categories.find((c) => c.id === id)?.name ?? 'Archived category' : 'No category')
+  const catName = (id: string | null) => (id
+    ? categories.find((c) => c.id === id)?.name ?? `${rows.find((r) => r.categoryId === id)?.categoryName ?? 'Category'} (archived)`
+    : 'No category')
 
   /** Groups in the order their first item appears, then groups just added. */
   const groups = useMemo(() => {
@@ -144,7 +152,7 @@ export default function TaskTemplateEditorPage() {
       })
       const json = await res.json() as ApiResponse<TaskTemplateDetail>
       if (!res.ok || !json.data) { setError(json.error ?? 'Could not save.'); return }
-      setRows(json.data.items.map((i) => ({ key: i.id, title: i.title, categoryId: i.categoryId })))
+      setRows(json.data.items.map((i) => ({ key: i.id, title: i.title, categoryId: i.categoryId, categoryName: i.categoryName })))
       setExtraGroups([])
       setDirty(false)
       setNotice(`Saved, ${json.data.items.length} items.`)
@@ -310,6 +318,9 @@ function TemplateGroup({ label, rows, categories, input, onTitle, onCategory, on
               className="text-xs bg-transparent border border-transparent hover:border-border-default rounded px-1 py-1 text-secondary focus:outline-none"
             >
               {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              {r.categoryId && !categories.some((c) => c.id === r.categoryId) && (
+                <option value={r.categoryId}>{r.categoryName ?? 'Category'} (archived)</option>
+              )}
               <option value={NONE}>No category</option>
             </select>
             <button type="button" disabled={i === 0} onClick={() => onMove(r.key, -1)} aria-label="Move up" className="text-xs text-secondary hover:text-primary disabled:opacity-30 px-1">Up</button>

@@ -8,6 +8,7 @@ import { successResponse, errorResponse } from '@/lib/api-helpers'
 import { isMemberOfProject, canBeAssigned } from '@/lib/projects'
 import { buildTaskSummary, parseTaskCategory, parseTaskPoints, priorityForPoints, TASK_SUMMARY_INCLUDE, VALID_TASK_POINTS } from '@/lib/tasks'
 import { notifyTasksAssigned } from '@/lib/task-notify'
+import { BUSY_MESSAGE, isBusyError } from '@/lib/task-categories'
 import type { PaginatedResponse, TaskSummary } from '@/lib/types'
 
 const DEFAULT_LIMIT = 20
@@ -192,8 +193,9 @@ export async function POST(request: NextRequest) {
 
     const completedAt = status === 'DONE' ? new Date() : null
 
-    const created = await prisma.$transaction(async (tx) => {
-      const task = await tx.task.create({
+    // A plain create: an interactive transaction for one row only held a
+    // pooled connection longer, and under load it could not start in time (500).
+    const created = await prisma.task.create({
         data: {
           title,
           description: typeof data.description === 'string' ? data.description : null,
@@ -212,8 +214,6 @@ export async function POST(request: NextRequest) {
           categoryId: categoryId ?? null,
         },
       })
-      return task
-    })
 
     const full = await prisma.task.findUniqueOrThrow({
       where: { id: created.id },
@@ -230,6 +230,7 @@ export async function POST(request: NextRequest) {
     return successResponse(buildTaskSummary(full), 201)
   } catch (error) {
     console.error('[POST /api/tasks]', error)
+    if (isBusyError(error)) return errorResponse(BUSY_MESSAGE, 503)
     return errorResponse('An unexpected error occurred', 500)
   }
 }

@@ -8,6 +8,7 @@ import { canBeAssigned } from '@/lib/projects'
 import { canManageProjectTasks } from '@/lib/task-categories'
 import { buildTaskSummary, createTasks, parseTaskCategory, TASK_SUMMARY_INCLUDE } from '@/lib/tasks'
 import { notifyTasksAssigned } from '@/lib/task-notify'
+import { BUSY_MESSAGE, TX_OPTIONS, isBusyError } from '@/lib/task-categories'
 import type { TaskSummary } from '@/lib/types'
 
 const VALID_TASK_STATUSES: TaskStatus[] = ['TODO', 'IN_PROGRESS', 'DONE']
@@ -92,6 +93,7 @@ export async function POST(request: NextRequest) {
     return successResponse<TaskSummary[]>(created, 201)
   } catch (error) {
     console.error('[POST /api/tasks/bulk]', error)
+    if (isBusyError(error)) return errorResponse(BUSY_MESSAGE, 503)
     return errorResponse('An unexpected error occurred', 500)
   }
 }
@@ -175,7 +177,15 @@ export async function PATCH(request: NextRequest) {
     }
     if (Object.keys(update).length === 0 && !status) return errorResponse('Nothing to change', 400)
 
-    await prisma.$transaction(async (tx) => {
+    // Take a lock per task, always in the same (sorted) order, before
+    // writing: two bulk edits of the same tasks used to lock rows in
+    // different orders and deadlock (40P01, a 500); now one waits for the
+    // other. Advisory locks name no table, so this is right in any schema,
+    // and they are released when the transaction ends. A deadlock with some
+    // other writer is still possible in theory and is retried once.
+    const sortedIds = [...ids].sort()
+    const run = () => prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('task:' || t.id)) FROM unnest(${sortedIds}::text[]) WITH ORDINALITY AS t(id, n) ORDER BY t.n`
       if (Object.keys(update).length > 0) {
         await tx.task.updateMany({ where: { id: { in: ids } }, data: update })
       }
@@ -190,7 +200,13 @@ export async function PATCH(request: NextRequest) {
         await tx.task.updateMany({ where: { id: { in: ids }, status: 'DONE' }, data: { status, completedAt: null } })
         await tx.task.updateMany({ where: { id: { in: ids }, status: { not: 'DONE' } }, data: { status } })
       }
-    })
+    }, TX_OPTIONS)
+    try {
+      await run()
+    } catch (e) {
+      if (!String((e as Error)?.message ?? '').includes('40P01')) throw e
+      await run()
+    }
 
     const full = await prisma.task.findMany({ where: { id: { in: ids } }, include: TASK_SUMMARY_INCLUDE })
     if (typeof update.assigneeId === 'string') {
@@ -204,6 +220,7 @@ export async function PATCH(request: NextRequest) {
     return successResponse<TaskSummary[]>(full.map((t) => buildTaskSummary(t)))
   } catch (error) {
     console.error('[PATCH /api/tasks/bulk]', error)
+    if (isBusyError(error)) return errorResponse(BUSY_MESSAGE, 503)
     return errorResponse('An unexpected error occurred', 500)
   }
 }

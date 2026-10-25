@@ -466,6 +466,10 @@ export default function TaskListTab({ projectId, canManage, canManageCategories 
   const quickAddInputs = useRef(new Map<string, HTMLInputElement>())
   const focusAfterRender = useRef<string | null>(null)
 
+  // A selection only ever holds items on screen: changing the filter or the
+  // search clears it, so a bulk change cannot reach items the user cannot see.
+  useEffect(() => { setSelected(new Set()) }, [filter, search])
+
   // Focus a group's add box once it has rendered (after adding a category).
   useEffect(() => {
     const key = focusAfterRender.current
@@ -739,7 +743,11 @@ export default function TaskListTab({ projectId, canManage, canManageCategories 
                     )}
                     <button
                       type="button"
-                      onClick={() => setCollapsed((prev) => { const next = new Set(prev); if (next.has(g.key)) next.delete(g.key); else next.add(g.key); return next })}
+                      onClick={() => {
+                        // Folding a group also unticks its items (they are no longer visible).
+                        if (!isCollapsed) selectMany(g.all.map((t) => t.id), false)
+                        setCollapsed((prev) => { const next = new Set(prev); if (next.has(g.key)) next.delete(g.key); else next.add(g.key); return next })
+                      }}
                       aria-expanded={!isCollapsed}
                       className="flex items-center gap-2 text-left"
                     >

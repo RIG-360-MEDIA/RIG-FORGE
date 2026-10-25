@@ -64,14 +64,17 @@ export async function parseTaskCategory(raw: unknown): Promise<string | null | u
  * createMany is stamped with the caller's company by the org-scope
  * extension (createManyAndReturn is not, so it is not used).
  */
-export async function createTasks(rows: Omit<Prisma.TaskCreateManyInput, 'id'>[]): Promise<TaskSummary[]> {
+export async function createTasks(
+  rows: Omit<Prisma.TaskCreateManyInput, 'id'>[],
+  db: Pick<typeof prisma, 'task'> = prisma,
+): Promise<TaskSummary[]> {
   if (rows.length === 0) return []
   // createdAt a millisecond apart: lists sort ties by it, and one insert
   // would give every row the same time and lose the template's order.
   const base = Date.now()
   const withIds = rows.map((r, i) => ({ ...r, id: randomUUID(), createdAt: new Date(base + i) }))
-  await prisma.task.createMany({ data: withIds })
-  const created = await prisma.task.findMany({ where: { id: { in: withIds.map((r) => r.id) } }, include: TASK_SUMMARY_INCLUDE })
+  await db.task.createMany({ data: withIds })
+  const created = await db.task.findMany({ where: { id: { in: withIds.map((r) => r.id) } }, include: TASK_SUMMARY_INCLUDE })
   const byId = new Map(created.map((t) => [t.id, t]))
   return withIds.map((r) => byId.get(r.id)).filter((t): t is NonNullable<typeof t> => !!t).map((t) => buildTaskSummary(t))
 }

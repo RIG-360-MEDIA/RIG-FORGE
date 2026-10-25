@@ -80,6 +80,10 @@ export default function ProjectDetailPage() {
 
   const isAdmin = userCan(user, 'projects.manage')
   const isLead = project?.leadId === user?.id
+  // The same rule the task APIs apply (canManageProjectTasks): the project's
+  // lead, or someone with tasks.manage; never an external user. Using
+  // projects.manage here showed buttons whose saves were then refused.
+  const canManageTasks = !user?.isExternal && (isLead || userCan(user, 'tasks.manage'))
 
   useEffect(() => {
     if (!authLoading && !user) router.push('/login')
@@ -202,14 +206,14 @@ export default function ProjectDetailPage() {
         {tab === 'tasklist' && (
           <TaskListTab
             projectId={project.id}
-            canManage={!user?.isExternal && (isAdmin || isLead || userCan(user, 'tasks.manage'))}
+            canManage={canManageTasks}
             canManageCategories={userCan(user, 'tasks.manage')}
           />
         )}
         {tab === 'tasks' && (
           <TasksTab
             projectId={project.id}
-            canManage={isAdmin || isLead || userCan(user, 'tasks.manage')}
+            canManage={canManageTasks}
             currentUserId={userId ?? ''}
             canCreate={!user?.isExternal}
           />

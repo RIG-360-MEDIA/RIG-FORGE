@@ -70,7 +70,9 @@ export default function TaskFormModal({ mode, projectId, members, categories, de
         // Folded into the description above (see the initial value).
         expectedOutput: null,
         assigneeId: assigneeId || null,
-        categoryId: categoryId || null,
+        // Only when changed: an archived category the task already has must
+        // not block saving other edits.
+        ...(!isEdit || (categoryId || null) !== (task?.categoryId ?? null) ? { categoryId: categoryId || null } : {}),
         priority,
         points: points === '' ? null : Number(points),
         startDate: startDate || null,

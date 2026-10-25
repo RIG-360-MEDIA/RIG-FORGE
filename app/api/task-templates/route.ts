@@ -5,6 +5,7 @@ import { getTokenFromCookies, verifyToken } from '@/lib/auth'
 import { tokenCan } from '@/lib/permissions'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
 import { MAX_TEMPLATE_NAME, resolveTemplateItems } from '@/lib/task-templates'
+import { TX_OPTIONS } from '@/lib/task-categories'
 import type { TaskTemplateSummary } from '@/lib/types'
 
 // ─── GET /api/task-templates ─────────────────────────────────────────────────
@@ -57,7 +58,7 @@ export async function POST(request: NextRequest) {
     if (!token) return errorResponse('Authentication required', 401)
     const payload = verifyToken(token)
     if (!payload) return errorResponse('Invalid or expired token', 401)
-    if (!tokenCan(payload, 'tasks.manage')) return errorResponse('Only admins can create task templates', 403)
+    if (payload.isExternal || !tokenCan(payload, 'tasks.manage')) return errorResponse('Only admins can create task templates', 403)
 
     const body = await request.json().catch(() => null) as Record<string, unknown> | null
     const name = typeof body?.name === 'string' ? body.name.trim().replace(/\s+/g, ' ') : ''
@@ -77,7 +78,7 @@ export async function POST(request: NextRequest) {
         data: resolved.items.map((item, i) => ({ templateId: t.id, title: item.title, categoryId: item.categoryId, sortOrder: i })),
       })
       return t
-    })
+    }, TX_OPTIONS)
     return successResponse({ id: created.id, itemCount: resolved.items.length }, 201)
   } catch (error) {
     console.error('[POST /api/task-templates]', error)

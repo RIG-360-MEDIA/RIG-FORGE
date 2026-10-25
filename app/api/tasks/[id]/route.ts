@@ -27,6 +27,7 @@ type LoadedTask = {
   // validated against the stored value of the other (start <= due).
   startDate: Date | null
   dueDate: Date | null
+  categoryId: string | null
   project: { leadId: string | null }
 }
 
@@ -42,6 +43,7 @@ async function loadTask(id: string): Promise<LoadedTask | null> {
       points: true,
       startDate: true,
       dueDate: true,
+      categoryId: true,
       project: { select: { leadId: true } },
     },
   })
@@ -172,7 +174,9 @@ export async function PATCH(
       }
     }
 
-    if ('categoryId' in data) {
+    // Sending the task's own category back is no change, even when that
+    // category has since been archived (the Edit form sends every field).
+    if ('categoryId' in data && data.categoryId !== task.categoryId) {
       const categoryId = await parseTaskCategory(data.categoryId)
       if (categoryId === 'invalid') return errorResponse('categoryId is not an active task category', 400)
       update.categoryId = categoryId ?? null

@@ -3,7 +3,7 @@ import { type NextRequest } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getTokenFromCookies, verifyToken } from '@/lib/auth'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
-import { canManageProjectTasks } from '@/lib/task-categories'
+import { BUSY_MESSAGE, canManageProjectTasks, isBusyError } from '@/lib/task-categories'
 import { applyTemplate } from '@/lib/task-templates'
 
 // ─── POST /api/projects/[id]/apply-template ──────────────────────────────────
@@ -41,6 +41,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     return successResponse(result, 201)
   } catch (error) {
     console.error('[POST /api/projects/[id]/apply-template]', error)
+    if (isBusyError(error)) return errorResponse(BUSY_MESSAGE, 503)
     return errorResponse('An unexpected error occurred', 500)
   }
 }

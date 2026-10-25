@@ -1,5 +1,5 @@
 import { prisma } from '@/lib/db'
-import { MAX_CATEGORY_NAME, cleanCategoryName } from '@/lib/task-categories'
+import { MAX_CATEGORY_NAME, TX_OPTIONS, cleanCategoryName, findOrCreateCategory } from '@/lib/task-categories'
 import { createTasks } from '@/lib/tasks'
 import type { TaskSummary, TaskTemplateDetail } from '@/lib/types'
 
@@ -35,43 +35,36 @@ export async function resolveTemplateItems(
   if (!Array.isArray(raw)) return { error: 'items must be a list' }
   if (raw.length > MAX_TEMPLATE_ITEMS) return { error: `A template can hold at most ${MAX_TEMPLATE_ITEMS} items` }
 
-  const categories = await prisma.taskCategory.findMany({ select: { id: true, name: true, isActive: true } })
-  const byName = new Map(categories.map((c) => [norm(c.name), c]))
+  const categories = await prisma.taskCategory.findMany({ select: { id: true } })
   const known = new Set(categories.map((c) => c.id))
 
-  const items: { title: string; categoryId: string | null }[] = []
-  for (const entry of raw as TemplateItemInput[]) {
+  // First check everything, so a request that is refused changes nothing (it
+  // used to create or bring back categories named before the bad item).
+  const checked: { title: string; categoryId: string | null; categoryName: string | null }[] = []
+  for (const entry of raw as (TemplateItemInput | null)[]) {
     const title = cleanItemTitle(entry?.title)
-    if (!title) continue
+    if (!entry || !title) continue
     if (title.length > 200) return { error: `Each item must be 200 characters or fewer ("${title.slice(0, 40)}...")` }
-
-    let categoryId: string | null = null
     if (typeof entry.categoryId === 'string' && entry.categoryId) {
       if (!known.has(entry.categoryId)) return { error: 'An item names a category that does not exist' }
-      categoryId = entry.categoryId
-    } else {
-      const name = cleanCategoryName(entry.categoryName)
-      if (name) {
-        if (name.length > MAX_CATEGORY_NAME) return { error: `Category names must be ${MAX_CATEGORY_NAME} characters or fewer` }
-        let cat = byName.get(norm(name))
-        if (!cat) {
-          const last = await prisma.taskCategory.aggregate({ _max: { sortOrder: true } })
-          cat = await prisma.taskCategory.create({
-            data: { name, sortOrder: (last._max.sortOrder ?? 0) + 1 },
-            select: { id: true, name: true, isActive: true },
-          })
-          byName.set(norm(name), cat)
-          known.add(cat.id)
-        } else if (!cat.isActive) {
-          await prisma.taskCategory.update({ where: { id: cat.id }, data: { isActive: true } })
-          cat.isActive = true
-        }
-        categoryId = cat.id
-      }
+      checked.push({ title, categoryId: entry.categoryId, categoryName: null })
+      continue
     }
-    items.push({ title, categoryId })
+    const name = cleanCategoryName(entry.categoryName)
+    if (name.length > MAX_CATEGORY_NAME) return { error: `Category names must be ${MAX_CATEGORY_NAME} characters or fewer` }
+    checked.push({ title, categoryId: null, categoryName: name || null })
   }
-  return { items }
+
+  // Then turn category names into ids, once per name.
+  const idByName = new Map<string, string>()
+  for (const item of checked) {
+    if (!item.categoryName || idByName.has(norm(item.categoryName))) continue
+    const { category } = await findOrCreateCategory(item.categoryName)
+    idByName.set(norm(item.categoryName), category.id)
+  }
+  return {
+    items: checked.map((i) => ({ title: i.title, categoryId: i.categoryId ?? (i.categoryName ? idByName.get(norm(i.categoryName))! : null) })),
+  }
 }
 
 /** A template with its items in order, for the editor and the "Add from template" picker. */
@@ -112,22 +105,32 @@ export async function applyTemplate(
   const chosen = template.items.filter((i) => !wanted || wanted.has(i.id))
   if (chosen.length === 0) return { error: 'No items chosen' }
 
-  const existing = await prisma.task.findMany({ where: { projectId, isActive: true }, select: { title: true, categoryId: true } })
-  const have = new Map<string, number>()
-  for (const t of existing) {
-    const key = `${t.categoryId ?? ''}|${norm(t.title)}`
-    have.set(key, (have.get(key) ?? 0) + 1)
-  }
-  const fresh = chosen.filter((i) => {
-    const key = `${i.categoryId ?? ''}|${norm(i.title)}`
-    const n = have.get(key) ?? 0
-    if (n === 0) return true
-    have.set(key, n - 1)
-    return false
-  })
-
-  const added = await createTasks(fresh.map((i) => ({
-    title: i.title, projectId, status: 'TODO', priority: 'MEDIUM', categoryId: i.categoryId,
-  })))
-  return { added, skipped: chosen.length - fresh.length }
+  // One apply at a time per project: two at once (a double click, two people)
+  // both read "nothing here yet" and doubled every item. The lock is held
+  // until this transaction ends and only blocks applies to the same project.
+  const result = await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`apply-template:${projectId}`}))`
+    const existing = await tx.task.findMany({ where: { projectId, isActive: true }, select: { title: true, categoryId: true } })
+    const have = new Map<string, number>()
+    for (const t of existing) {
+      const key = `${t.categoryId ?? ''}|${norm(t.title)}`
+      have.set(key, (have.get(key) ?? 0) + 1)
+    }
+    // Match the project's tasks against the WHOLE template, in order, one for
+    // one; then keep the ticked items that are left. Matching against only
+    // the ticked items let the copy the project has hide the second copy of
+    // a line the template lists twice.
+    const already = new Set<string>()
+    for (const i of template.items) {
+      const key = `${i.categoryId ?? ''}|${norm(i.title)}`
+      const n = have.get(key) ?? 0
+      if (n > 0) { already.add(i.id); have.set(key, n - 1) }
+    }
+    const fresh = chosen.filter((i) => !already.has(i.id))
+    const added = await createTasks(fresh.map((i) => ({
+      title: i.title, projectId, status: 'TODO' as const, priority: 'MEDIUM' as const, categoryId: i.categoryId,
+    })), tx)
+    return { added, skipped: chosen.length - fresh.length }
+  }, TX_OPTIONS)
+  return result
 }
