@@ -37,6 +37,7 @@ process.env.NAS_EXTRACT_POLL_MS = '5'
 process.env.NAS_EXTRACT_TIMEOUT_MS = '200'
 
 import { spawnSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 process.chdir(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'))
@@ -91,7 +92,33 @@ async function main() {
   for (const v of ['Bye-Laws', 'Bye Laws', 'Byelaws', 'By_Laws', 'Bylaws'])
     check(`accepts "${v}"`, isBylawsPath(`/utility data/${v}/a.pdf`))
   check('still rejects a bylaws folder outside "utility data"', !isBylawsPath('/Anjana/By_Laws/a.pdf'))
-  check('still rejects "utility data" itself', !isBylawsPath('/utility data/Parking by laws.pdf'))
+  // Since 27 Oct all of "utility data" is bylaws material, not only By_Laws.
+  const wider = [
+    '/utility data/Parking by laws for 99 sq. mt. plot area.pdf',
+    '/utility data/G. O/Compounding bye laws 2019.pdf',
+    '/utility data/By_Laws/MDDA UTTARAKHAND/MDDA Compiled_byelaws_uttarakhand.pdf',
+    '/Trijya Projects/utility data/G. O/x.pdf',
+    '/Utility_Data/x.pdf',
+  ]
+  const notBylaws = [
+    '/Anjana/Utility/Byelaws.pdf',
+    '/01 ARCHITECTURE/Project X/utility data/a.pdf', // a project folder of that name is not the bylaws folder
+    '/utility data.pdf',
+    '/utility database/a.pdf',
+  ]
+  for (const p of wider) check(`all of "utility data" is bylaws: ${p}`, isBylawsPath(p))
+  for (const p of notBylaws) check(`not bylaws: ${p}`, !isBylawsPath(p))
+  // The TRIJYA-3 indexer must leave exactly these paths to the bylaws pipeline
+  // (BYLAWS in nas_indexer.py), or files end up in both indexes or in neither.
+  const pyRule = /^BYLAWS = re\.compile\(r"(.*)"\)$/m.exec(readFileSync('scripts/nas-connector/nas_indexer.py', 'utf8'))?.[1]
+  const py = spawnSync('python3', ['-c', 'import re,sys,json; r=re.compile(sys.argv[1]); print(json.dumps([bool(r.search(p)) for p in json.loads(sys.argv[2])]))', pyRule ?? '', JSON.stringify([...wider, ...notBylaws, ...real])], { encoding: 'utf8' })
+  if (py.status === 0 && pyRule) {
+    const pyHits = JSON.parse(py.stdout) as boolean[]
+    const tsHits = [...wider, ...notBylaws, ...real].map(isBylawsPath)
+    check('the indexer\'s Python rule and isBylawsPath agree on every sample path', JSON.stringify(pyHits) === JSON.stringify(tsHits), `py ${JSON.stringify(pyHits)} ts ${JSON.stringify(tsHits)}`)
+  } else {
+    console.log(`SKIP  Python rule check (python3 unavailable or rule not found: ${py.stderr?.slice(0, 80) ?? ''})`)
+  }
 
   // findBylawsFolder walks the REAL WD root listing (served by a fake connector)
   const tree: Record<string, Array<{ name: string; isDir: boolean }>> = {
@@ -106,7 +133,7 @@ async function main() {
   const crawl = await import('../lib/nas/bylaws-crawl')
   let found: string | null = null
   try { found = await asTrijya(() => crawl.findBylawsFolder('WD')) } catch (e) { found = `ERR ${(e as Error).message}` }
-  check('findBylawsFolder finds it on the real WD layout (was null)', found === '/utility data/By_Laws', String(found))
+  check('findBylawsFolder finds the bylaws folder ("utility data") on the real WD layout', found === '/utility data', String(found))
   globalThis.fetch = realFetch
 
   // ── FIX 3 + 4: extraction for indexing ────────────────────────────────────
@@ -521,6 +548,13 @@ async function main() {
   check('over the cap: exactly the cap returned and complete=false (so nothing gets pruned)', !capped.complete && capped.files.length === 2)
   const exact = await asTrijya(() => listFilesRecursiveWithStatus('WD', '/A/sub', 2))
   check('exactly at the cap with nothing left to visit: still complete', exact.complete && exact.files.length === 2)
+  crawlTree['/U'] = [{ name: 'bylaws.pdf', isDir: false, size: 1 }, { name: 'Software', isDir: true, size: 0 }, { name: 'Drivers', isDir: true, size: 0 }, { name: 'G. O', isDir: true, size: 0 }]
+  crawlTree['/U/Software'] = [{ name: 'readme.txt', isDir: false, size: 1 }]
+  crawlTree['/U/Drivers'] = [{ name: 'license.txt', isDir: false, size: 1 }]
+  crawlTree['/U/G. O'] = [{ name: 'order.pdf', isDir: false, size: 1 }]
+  const junk = await asTrijya(() => listFilesRecursiveWithStatus('WD', '/U', 10))
+  check('software and driver folders are not crawled as bylaws (installer readmes)',
+    junk.files.map((f) => f.path).sort().join('|') === '/U/G. O/order.pdf|/U/bylaws.pdf', junk.files.map((f) => f.path).join('|'))
   globalThis.fetch = (async () => new Response('', { status: 500 })) as typeof fetch
   let crawlThrew = false
   try { await asTrijya(() => listFilesRecursiveWithStatus('WD', '/A', 10)) } catch { crawlThrew = true }

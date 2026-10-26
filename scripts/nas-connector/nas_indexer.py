@@ -75,8 +75,11 @@ UPSERT_BATCH = 256
 # Text formats only. Images and drawings carry no indexable text.
 EXTS = {"pdf", "docx", "xlsx", "xls", "txt", "csv", "tsv", "md", "rtf"}
 # The bylaws folder belongs to the bylaws pipeline (its own collection),
-# matched like lib/nas/bylaws-crawl.ts isBylawsPath.
-BYLAWS = re.compile(r"(?i)(^|/)utility[ _-]*data/+bye?[\s_-]*laws?(/|$)")
+# matched like lib/nas/bylaws-crawl.ts isBylawsPath: all of "utility data" at
+# the share root (optionally under "Trijya Projects"). Until Oct 2026 only
+# "utility data/By_Laws"; files elsewhere in "utility data" indexed here
+# before are pruned from this collection by the next complete walk.
+BYLAWS = re.compile(r"(?i)^/(trijya[\s_-]*projects?/+)?utility[\s_-]*data(/|$)")
 
 # Not documents: software installers and drivers copied onto the NAS, and the
 # readme / licence / log files that come with them or that AutoCAD and Revit

@@ -311,3 +311,35 @@ The chat key lines now keep a one-cell-per-line row whole, with its column headi
 - **Page:** the full PDF page. Loaded on first open; the connector searches the PDF.
 
 The footer no longer writes the quote into the message. It writes one link per source, which `Message.tsx` turns into the dropdowns, so older answers get them too.
+
+---
+
+## 13. All of `/utility data` is bylaws, synced nightly (27 Oct)
+
+**Why the MDDA bylaws were missing.** `/utility data/By_Laws/MDDA UTTARAKHAND/MDDA Compiled_byelaws_uttarakhand.pdf` is on the NAS, and the Files tab finds it by name. But the bylaws index only ever took in files two ways:
+- uploaded through Forge into the folder, or
+- read by an admin's manual backfill (`POST /api/nas/bylaws/reindex`).
+
+The TRIJYA-3 whole-NAS indexer leaves that folder alone, and no cron ran the backfill. The 2 Oct listing of the folder (`NAS_RAG_REVIEW.md`) has no MDDA subfolder, so it was added later and never read. Bylaws elsewhere in `/utility data` (`G. O/Compounding bye laws 2019.pdf`, `Parking by laws for 99 sq. mt. plot area.pdf`) went to the general NAS index, which bylaws answers never search.
+
+**Changes:**
+- **The bylaws folder is now all of `/utility data`** at the share root, optionally under `Trijya Projects`.
+  - `isBylawsPath()` and `findBylawsFolder()` in `lib/nas/bylaws-crawl.ts`.
+  - Anchored at the root, so a project folder named "utility data" is not bylaws.
+  - The crawl skips software and driver folders (same list as the indexer's `JUNK_DIR`) and lists up to 5,000 files (`BYLAWS_MAX_FILES`).
+- **TRIJYA-3 indexer** (`scripts/nas-connector/nas_indexer.py`): `BYLAWS` now leaves all of `/utility data` to the bylaws pipeline. Its next complete walk removes those files from `nas_documents`, so none are in both indexes. **Restart the indexer on TRIJYA-3.**
+- **Nightly sync:** `POST /api/cron/bylaws-sync` starts the bylaws backfill.
+  - It is scheduled at 2:30am IST in `.github/workflows/forgie-crons.yml`, and can also be run from the Actions tab.
+  - Unchanged files are skipped by content hash, so it reads only new or changed files. Progress is at `GET /api/nas/bylaws/reindex`.
+  - The backfill itself moved to `lib/rag/bylaws-backfill.ts`, shared with the admin route, which is unchanged.
+
+**Tested** (`scripts/test-rag.ts`, 244 pass plus the 2 known chunker failures):
+- the new folder rule, including the MDDA, G. O and Parking paths, and `/Anjana/Utility` and nested "utility data" folders excluded;
+- the indexer's Python rule agreeing with `isBylawsPath` on 19 paths;
+- junk folders skipped;
+- `findBylawsFolder` returning `/utility data`.
+
+**After deploy:**
+1. Run `bylaws-sync` once from the Actions tab (or the admin POST) and poll until `DONE`. Expect `folder: "/utility data"`, with MDDA and the G. O / Parking files under `indexed`.
+2. Restart the indexer on TRIJYA-3.
+3. The Uttarakhand compiled bylaws may be a Hindi scan with weak OCR (open issue 7 in `RAG_CHANGES_OCT_2026.md`). If its figures come out garbled, a digital copy or a better OCR pass is the fix.

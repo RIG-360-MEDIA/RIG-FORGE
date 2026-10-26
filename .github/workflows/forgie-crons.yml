@@ -23,6 +23,7 @@ on:
   schedule:
     - cron: '30 20 * * *'   # rag-stale-sweep — 2:00am IST (low traffic; its 48 h grace window means daily is plenty)
     - cron: '*/15 * * * *'  # rag-retry       — every 15 min (each row has its own backoff; most runs find nothing due)
+    - cron: '0 21 * * *'    # bylaws-sync     — 2:30am IST, after the stale sweep (indexes new/changed files in /utility data)
     - cron: '30 12 * * *'   # daily-log-drafts     — 6:00pm IST
     - cron: '30 3 * * *'    # standup-digest       — 9:00am IST
     - cron: '0 4 * * *'     # project-health       — 9:30am IST
@@ -37,6 +38,7 @@ on:
         options:
           - rag-retry
           - rag-stale-sweep
+          - bylaws-sync
           - daily-log-drafts
           - standup-digest
           - project-health
@@ -59,6 +61,7 @@ jobs:
           case "${{ github.event.schedule }}" in
             '30 20 * * *')  echo "path=rag-stale-sweep" >> "$GITHUB_OUTPUT" ;;
             '*/15 * * * *') echo "path=rag-retry" >> "$GITHUB_OUTPUT" ;;
+            '0 21 * * *')   echo "path=bylaws-sync" >> "$GITHUB_OUTPUT" ;;
             '30 12 * * *')  echo "path=daily-log-drafts" >> "$GITHUB_OUTPUT" ;;
             '30 3 * * *')   echo "path=standup-digest" >> "$GITHUB_OUTPUT" ;;
             '0 4 * * *')    echo "path=project-health" >> "$GITHUB_OUTPUT" ;;

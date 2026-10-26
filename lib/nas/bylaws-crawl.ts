@@ -1,35 +1,47 @@
 /**
- * Locates the "Trijya Projects / utility data / By_Laws" folder on a NAS
- * drive and lists every file under it (recursively) — used both by the
- * upload-time auto-route check and the admin backfill route. Folder-name
- * matching is loose (case/space/underscore/hyphen-insensitive) since the
- * exact spelling on disk isn't guaranteed, and no server label is hardcoded —
- * whichever drive happens to have the folder is used.
+ * Locates the bylaws folder ("Trijya Projects / utility data") on a NAS drive
+ * and lists every file under it (recursively) — used by the upload-time
+ * auto-route check, the admin backfill, the nightly bylaws sync and the stale
+ * sweep. Everything under "utility data" is bylaws material: By_Laws (with
+ * per-state subfolders such as MDDA UTTARAKHAND), G. O (government orders)
+ * and loose bylaws PDFs. Folder-name matching is loose (case/space/
+ * underscore/hyphen-insensitive) since the exact spelling on disk isn't
+ * guaranteed, and no server label is hardcoded — whichever drive has the
+ * folder is used.
+ *
+ * Keep in step with BYLAWS in scripts/nas-connector/nas_indexer.py: the
+ * TRIJYA-3 whole-NAS indexer leaves exactly these paths to this pipeline.
  */
 import { nasList } from './client'
 
 // "Trijya Projects" is the NAME OF THE SMB SHARE, not a folder inside it. In
 // Windows Explorer the share looks like a folder (\\NAS\Trijya Projects\...),
 // but the connector serves paths RELATIVE to the share root, so the real path
-// is "/utility data/By_Laws". Requiring "Trijya Projects" as a path segment —
-// as this file originally did — matched 0 of the 10 real items in that folder,
-// so nothing was ever indexed. It is now an OPTIONAL leading segment, so the
-// matcher still works if the folder is ever nested under one of that name.
+// is "/utility data". It is an OPTIONAL leading segment, so the matcher still
+// works if the folder is ever nested under one of that name.
 const SHARE_SEGMENT = /^trijya[\s_-]*projects?$/i
-const REQUIRED_SEGMENTS: RegExp[] = [
-  /^utility[\s_-]*data$/i,
-  // Accept the Indian-English "bye-laws" spelling as well as "by-laws": state
-  // statutory documents are titled "Building Bye-Laws".
-  /^bye?[\s_-]*laws?$/i,
-]
+// Until Oct 2026 only "utility data/By_Laws" counted, and bylaws elsewhere in
+// "utility data" (G. O, "Parking by laws for 99 sq. mt. plot area.pdf") went
+// to the general NAS index, which bylaws answers never search.
+const REQUIRED_SEGMENTS: RegExp[] = [/^utility[\s_-]*data$/i]
 
-/** True if `path` (forward-slash NAS path) is inside the bylaws folder, on any server. */
+/** Not documents: software installers and drivers copied onto the NAS. Same
+ * folders the TRIJYA-3 indexer skips (JUNK_DIR in nas_indexer.py). */
+const JUNK_DIR = /^(softwares?|drivers?|.*\bdriver\b.*|setup|installers?|program files.*|appdata|x64|x86|_?getintopc.*|libraries)$/i
+
+/** Files listed per crawl at most; `listingComplete: false` reports a cut-off. */
+const MAX_FILES = Number(process.env.BYLAWS_MAX_FILES ?? 5000)
+
+/**
+ * True if `path` (forward-slash NAS path) is inside the bylaws folder, on any
+ * server: "utility data" at the share root, or under a "Trijya Projects"
+ * folder there. Anchored at the root, like findBylawsFolder, so a project
+ * folder that happens to be called "utility data" is not bylaws.
+ */
 export function isBylawsPath(path: string): boolean {
   const segments = path.split('/').filter(Boolean)
-  for (let i = 0; i + REQUIRED_SEGMENTS.length <= segments.length; i++) {
-    if (REQUIRED_SEGMENTS.every((pattern, j) => pattern.test(segments[i + j]!))) return true
-  }
-  return false
+  const start = segments[0] && SHARE_SEGMENT.test(segments[0]) ? 1 : 0
+  return REQUIRED_SEGMENTS.every((pattern, j) => segments[start + j] !== undefined && pattern.test(segments[start + j]!))
 }
 
 async function findChildDir(server: string, parent: string, pattern: RegExp): Promise<string | null> {
@@ -68,7 +80,7 @@ export interface NasFileEntry {
 }
 
 /** Recursively list every file (not folder) under `folder` on `server`. */
-export async function listFilesRecursive(server: string, folder: string, maxFiles = 2000): Promise<NasFileEntry[]> {
+export async function listFilesRecursive(server: string, folder: string, maxFiles = MAX_FILES): Promise<NasFileEntry[]> {
   return (await listFilesRecursiveWithStatus(server, folder, maxFiles)).files
 }
 
@@ -81,7 +93,7 @@ export async function listFilesRecursive(server: string, folder: string, maxFile
 export async function listFilesRecursiveWithStatus(
   server: string,
   folder: string,
-  maxFiles = 2000,
+  maxFiles = MAX_FILES,
 ): Promise<{ files: NasFileEntry[]; complete: boolean }> {
   const files: NasFileEntry[] = []
   const queue: string[] = [folder]
@@ -92,7 +104,9 @@ export async function listFilesRecursiveWithStatus(
     const { items } = await nasList(server, dir)
     for (const item of items) {
       const itemPath = `${dir.replace(/\/$/, '')}/${item.name}`
-      if (item.isDir) queue.push(itemPath)
+      if (item.isDir) {
+        if (!JUNK_DIR.test(item.name)) queue.push(itemPath)
+      }
       else files.push({ path: itemPath, size: Number(item.size) || 0 })
     }
   }
