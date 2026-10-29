@@ -92,21 +92,24 @@ async function main() {
   for (const v of ['Bye-Laws', 'Bye Laws', 'Byelaws', 'By_Laws', 'Bylaws'])
     check(`accepts "${v}"`, isBylawsPath(`/utility data/${v}/a.pdf`))
   check('still rejects a bylaws folder outside "utility data"', !isBylawsPath('/Anjana/By_Laws/a.pdf'))
-  // Since 27 Oct all of "utility data" is bylaws material, not only By_Laws.
+  // Only By_Laws: the rest of "utility data" (resumes, Revit logs, a 1982
+  // master plan) crowded the bylaws tables out of searches when it was included.
   const wider = [
-    '/utility data/Parking by laws for 99 sq. mt. plot area.pdf',
-    '/utility data/G. O/Compounding bye laws 2019.pdf',
     '/utility data/By_Laws/MDDA UTTARAKHAND/MDDA Compiled_byelaws_uttarakhand.pdf',
-    '/Trijya Projects/utility data/G. O/x.pdf',
-    '/Utility_Data/x.pdf',
+    '/utility data/By_Laws/UTTAR PRADESH/uttarpradesh bylaws.pdf',
+    '/Trijya Projects/utility data/By_Laws/x.pdf',
+    '/Utility_Data/Bye-Laws/x.pdf',
   ]
   const notBylaws = [
+    '/utility data/Parking by laws for 99 sq. mt. plot area.pdf',
+    '/utility data/G. O/Compounding bye laws 2019.pdf',
+    '/utility data/resumes/nawajish-1.pdf',
     '/Anjana/Utility/Byelaws.pdf',
-    '/01 ARCHITECTURE/Project X/utility data/a.pdf', // a project folder of that name is not the bylaws folder
-    '/utility data.pdf',
-    '/utility database/a.pdf',
+    '/01 ARCHITECTURE/Project X/utility data/By_Laws/a.pdf', // a project folder of that name is not the bylaws folder
+    '/utility data/By_Laws.pdf',
+    '/utility database/By_Laws/a.pdf',
   ]
-  for (const p of wider) check(`all of "utility data" is bylaws: ${p}`, isBylawsPath(p))
+  for (const p of wider) check(`bylaws: ${p}`, isBylawsPath(p))
   for (const p of notBylaws) check(`not bylaws: ${p}`, !isBylawsPath(p))
   // The TRIJYA-3 indexer must leave exactly these paths to the bylaws pipeline
   // (BYLAWS in nas_indexer.py), or files end up in both indexes or in neither.
@@ -133,7 +136,7 @@ async function main() {
   const crawl = await import('../lib/nas/bylaws-crawl')
   let found: string | null = null
   try { found = await asTrijya(() => crawl.findBylawsFolder('WD')) } catch (e) { found = `ERR ${(e as Error).message}` }
-  check('findBylawsFolder finds the bylaws folder ("utility data") on the real WD layout', found === '/utility data', String(found))
+  check('findBylawsFolder finds the bylaws folder ("utility data/By_Laws") on the real WD layout', found === '/utility data/By_Laws', String(found))
   globalThis.fetch = realFetch
 
   // ── FIX 3 + 4: extraction for indexing ────────────────────────────────────

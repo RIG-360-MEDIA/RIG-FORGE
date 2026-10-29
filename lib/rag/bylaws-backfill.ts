@@ -1,5 +1,5 @@
 /**
- * The bylaws backfill: find the bylaws folder ("/utility data", see
+ * The bylaws backfill: find the bylaws folder ("/utility data/By_Laws", see
  * lib/nas/bylaws-crawl.ts) on every NAS drive and index every extractable
  * file in it into the bylaws Qdrant collection. Unchanged files are skipped by
  * content hash, so a run only reads new or changed files and can be repeated

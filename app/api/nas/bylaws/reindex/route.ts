@@ -12,7 +12,7 @@ import { getRun, runView } from '@/lib/rag/reindex-runs'
 export const runtime = 'nodejs'
 
 // POST /api/nas/bylaws/reindex — admin-only. Finds the bylaws folder
-// ("utility data" at the root of a NAS share) on every drive and
+// ("utility data/By_Laws" at the root of a NAS share) on every drive and
 // (re)indexes every extractable file into the separate bylaws Qdrant
 // collection. Safe to re-run any time — unchanged files are skipped by
 // content hash, so a run that is interrupted can simply be started again.

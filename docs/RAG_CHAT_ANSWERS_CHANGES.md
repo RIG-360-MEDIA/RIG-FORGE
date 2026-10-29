@@ -343,3 +343,17 @@ The TRIJYA-3 whole-NAS indexer leaves that folder alone, and no cron ran the bac
 1. Run `bylaws-sync` once from the Actions tab (or the admin POST) and poll until `DONE`. Expect `folder: "/utility data"`, with MDDA and the G. O / Parking files under `indexed`.
 2. Restart the indexer on TRIJYA-3.
 3. The Uttarakhand compiled bylaws may be a Hindi scan with weak OCR (open issue 7 in `RAG_CHANGES_OCT_2026.md`). If its figures come out garbled, a digital copy or a better OCR pass is the fix.
+
+## 14. Back to `/utility data/By_Laws` only (30 Oct)
+
+Section 13's wider folder made bylaws answers worse. The first sync under it (29 Oct) shows why:
+- It listed 5,000 files, hit the cap (`listingComplete: false`) and found 4,519 of them unreadable: Revit logs, images, installers. By_Laws may not have been reached in full.
+- It indexed resumes, a 1982 Dehradun master plan and similar documents into the bylaws index. Their passages crowd the 200-passage search pool, so "setback for a commercial building on a 500 sq m plot in Dehradun" found no matching table and answered from the master plan and Maharashtra's UDCPR.
+
+The MDDA file is inside `By_Laws` anyway (`By_Laws/MDDA UTTARAKHAND/`). What it needed was the nightly sync, which stays.
+
+**Changes:** `REQUIRED_SEGMENTS` in `lib/nas/bylaws-crawl.ts` and `BYLAWS` in `nas_indexer.py` are back to `utility data/By_Laws`. Root anchoring, the junk-folder skip and the nightly sync are kept.
+
+**Cleanup:** files outside By_Laws that are already in the bylaws index are removed by the stale sweep, once 48 h have passed since they were last seen. The sweep's listing of By_Laws is complete, so these files count as gone.
+
+**Also in that run:** 4 By_Laws files (both CPHEEO volumes, Tourism policy 2023, the UP bylaws) failed with `HF embeddings failed (402)`. Embeddings normally come from the open-source `multilingual-e5-large` on TRIJYA-3. When the connector does not answer, they fall back to the Hugging Face API, and that account has no credits left. The next sync retries them once TRIJYA-3 is up.

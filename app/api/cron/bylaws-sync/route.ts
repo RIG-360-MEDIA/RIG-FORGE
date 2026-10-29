@@ -8,7 +8,7 @@ import { startBylawsBackfill } from '@/lib/rag/bylaws-backfill'
 import { runWithOrg } from '@/lib/tenant-context'
 
 // POST /api/cron/bylaws-sync — nightly: indexes new and changed files in the
-// bylaws folder ("/utility data", lib/nas/bylaws-crawl.ts). Nothing else picks
+// bylaws folder ("/utility data/By_Laws", lib/nas/bylaws-crawl.ts). Nothing else picks
 // up a file copied straight onto the NAS: the TRIJYA-3 whole-NAS indexer
 // leaves this folder to the bylaws pipeline, and before this cron only an
 // admin's manual backfill read it, which is how the MDDA UTTARAKHAND bylaws

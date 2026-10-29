@@ -1,10 +1,9 @@
 /**
- * Locates the bylaws folder ("Trijya Projects / utility data") on a NAS drive
- * and lists every file under it (recursively) — used by the upload-time
- * auto-route check, the admin backfill, the nightly bylaws sync and the stale
- * sweep. Everything under "utility data" is bylaws material: By_Laws (with
- * per-state subfolders such as MDDA UTTARAKHAND), G. O (government orders)
- * and loose bylaws PDFs. Folder-name matching is loose (case/space/
+ * Locates the bylaws folder ("Trijya Projects / utility data / By_Laws") on a
+ * NAS drive and lists every file under it (recursively) — used by the
+ * upload-time auto-route check, the admin backfill, the nightly bylaws sync
+ * and the stale sweep. Per-state bylaws sit in its subfolders (MDDA
+ * UTTARAKHAND, UTTAR PRADESH, ...). Folder-name matching is loose (case/space/
  * underscore/hyphen-insensitive) since the exact spelling on disk isn't
  * guaranteed, and no server label is hardcoded — whichever drive has the
  * folder is used.
@@ -17,13 +16,20 @@ import { nasList } from './client'
 // "Trijya Projects" is the NAME OF THE SMB SHARE, not a folder inside it. In
 // Windows Explorer the share looks like a folder (\\NAS\Trijya Projects\...),
 // but the connector serves paths RELATIVE to the share root, so the real path
-// is "/utility data". It is an OPTIONAL leading segment, so the matcher still
+// is "/utility data/By_Laws". It is an OPTIONAL leading segment, so the matcher still
 // works if the folder is ever nested under one of that name.
 const SHARE_SEGMENT = /^trijya[\s_-]*projects?$/i
-// Until Oct 2026 only "utility data/By_Laws" counted, and bylaws elsewhere in
-// "utility data" (G. O, "Parking by laws for 99 sq. mt. plot area.pdf") went
-// to the general NAS index, which bylaws answers never search.
-const REQUIRED_SEGMENTS: RegExp[] = [/^utility[\s_-]*data$/i]
+// For two days in Oct 2026 all of "utility data" counted. That put resumes,
+// Revit logs, a 1982 master plan and Maharashtra's UDCPR in the bylaws index,
+// where they crowded the real bylaws tables out of every search, and the
+// crawl stopped at its 5000-file cap with By_Laws possibly unread. So: By_Laws
+// only.
+const REQUIRED_SEGMENTS: RegExp[] = [
+  /^utility[\s_-]*data$/i,
+  // Accept the Indian-English "bye-laws" spelling as well as "by-laws": state
+  // statutory documents are titled "Building Bye-Laws".
+  /^bye?[\s_-]*laws?$/i,
+]
 
 /** Not documents: software installers and drivers copied onto the NAS. Same
  * folders the TRIJYA-3 indexer skips (JUNK_DIR in nas_indexer.py). */
@@ -34,8 +40,8 @@ const MAX_FILES = Number(process.env.BYLAWS_MAX_FILES ?? 5000)
 
 /**
  * True if `path` (forward-slash NAS path) is inside the bylaws folder, on any
- * server: "utility data" at the share root, or under a "Trijya Projects"
- * folder there. Anchored at the root, like findBylawsFolder, so a project
+ * server: "utility data/By_Laws" at the share root, or under a "Trijya
+ * Projects" folder there. Anchored at the root, like findBylawsFolder, so a project
  * folder that happens to be called "utility data" is not bylaws.
  */
 export function isBylawsPath(path: string): boolean {
