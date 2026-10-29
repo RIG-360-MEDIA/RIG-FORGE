@@ -11,7 +11,12 @@
  *    only the connector can do; most scanned bylaws are a few MB, so without
  *    this they would never get OCR at all), or a PDF the bundled pdf.js
  *    rejects outright (it fails on some producers' files that PyMuPDF on the
- *    connector reads fine).
+ *    connector reads fine);
+ *  - every PDF, first, when the caller asks (`connectorFirst`, the bylaws
+ *    backfill): only the connector can tell a scan from a text PDF. A scan
+ *    often carries another program's invisible OCR text, which reads as
+ *    "readable" here but can be badly wrong (the MDDA bylaws: "सेट बैक" as
+ *    "पेट बैक", "7.5" as "75"); the connector OCRs such pages again.
  */
 import { nasFetchBytesStrict, nasExtractText, FileTooLargeError } from '@/lib/nas/client'
 import { INDEX_MAX_TEXT } from '@/lib/nas/extract'
@@ -27,6 +32,13 @@ export interface FetchAndIndexOpts {
    * just to discover it's too large. */
   size: number
   indexer: (organizationId: string, server: string, path: string, bytesOrText: Buffer | PreExtracted) => Promise<IndexOutcome>
+  /** Have the connector extract a PDF before trying it here. */
+  connectorFirst?: boolean
+  /** With connectorFirst: whether the file is already indexed. If the
+   * connector cannot extract it, such a file keeps its text rather than
+   * have it replaced by this server's reading, which for a scan may be the
+   * bad OCR layer the connector exists to replace. */
+  isIndexed?: () => Promise<boolean>
 }
 
 /** Same as IndexOutcome's 'skipped' case, but tagged `tooLarge` so callers
@@ -61,6 +73,16 @@ export async function fetchAndIndexFile(opts: FetchAndIndexOpts): Promise<FetchA
     }
   }
 
+  let triedConnector = false
+  if (opts.connectorFirst && isPdf(path)) {
+    const r = await viaConnector()
+    if (r.ok) return r.outcome
+    triedConnector = true
+    if (await opts.isIndexed?.()) {
+      return { status: 'failed', reason: `connector extraction failed, the indexed text is kept: ${r.reason}` }
+    }
+  }
+
   let outcome: IndexOutcome
   try {
     const bytes = await nasFetchBytesStrict(server, path, MAX_INDEX_BYTES)
@@ -73,7 +95,7 @@ export async function fetchAndIndexFile(opts: FetchAndIndexOpts): Promise<FetchA
   // A PDF this server could not read (scanned, or rejected by pdf.js): the
   // indexer already recorded FAILED. Ask the connector; success overwrites
   // that row with INDEXED.
-  if (outcome.status === 'failed' && outcome.connector && isPdf(path)) {
+  if (outcome.status === 'failed' && outcome.connector && isPdf(path) && !triedConnector) {
     const r = await viaConnector()
     if (r.ok) return r.outcome
     return { status: 'failed', reason: `${outcome.reason}; the connector could not read it either: ${r.reason}` }

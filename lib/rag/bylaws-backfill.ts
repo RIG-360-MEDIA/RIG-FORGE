@@ -10,7 +10,7 @@
 import { nasServers } from '@/lib/nas/client'
 import { findBylawsFolder, listFilesRecursiveWithStatus } from '@/lib/nas/bylaws-crawl'
 import { isExtractable } from '@/lib/nas/extract'
-import { indexBylawsFile } from '@/lib/rag/index-bylaws-file'
+import { indexBylawsFile, isBylawsFileIndexed } from '@/lib/rag/index-bylaws-file'
 import { fetchAndIndexFile } from '@/lib/rag/fetch-and-index'
 import { startRun, trackRun } from '@/lib/rag/reindex-runs'
 
@@ -64,8 +64,11 @@ async function runBackfill(runId: string, organizationId: string): Promise<void>
         // beyond parsing), and for an oversized PDF asks the connector (on
         // TRIJYA-3, not memory-constrained like Render) to extract the text
         // itself, OCR-ing scanned pages, instead of giving up outright.
+        // Every bylaws PDF goes to the connector first: many are scans, and
+        // only the connector OCRs a scan whose own text layer is bad.
         const outcome = await fetchAndIndexFile({
           organizationId, server: s.label, path: file.path, size: file.size, indexer: indexBylawsFile,
+          connectorFirst: true, isIndexed: () => isBylawsFileIndexed(organizationId, s.label, file.path),
         })
         if (outcome.status === 'indexed') result.indexed++
         else if (outcome.status === 'unchanged') result.unchanged++

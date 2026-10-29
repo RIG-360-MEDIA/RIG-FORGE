@@ -8,6 +8,7 @@ import os
 import io
 import re
 import json
+import hashlib
 import time
 import tempfile
 import threading
@@ -377,7 +378,7 @@ except Exception:
 
 try:
     import pytesseract
-    from PIL import Image
+    from PIL import Image, ImageFilter, ImageOps
     _HAVE_OCR = True
 except Exception:
     _HAVE_OCR = False
@@ -419,7 +420,21 @@ def _readable(t: str) -> bool:
     words = _WORD.findall(t.lower())
     stop = sum(1 for w in words if w in _STOPWORDS) / max(1, len(words))
     return (latin + deva) / len(nonsp) >= 0.5 and stop >= 0.08
-OCR_ZOOM = float(os.environ.get("NAS_OCR_ZOOM", "2.0"))  # ~144 DPI at 2x
+# Each scanned page is OCR'd several ways and the reading Tesseract is most
+# confident in is kept. No one way is best for every scan: measured on a
+# Hindi setback table scanned clean and noisy (Oct 2026), 300 DPI read a
+# clean scan perfectly but lost most of a noisy one, which 144 DPI after
+# denoising read best; the most confident reading matched the best way in
+# every case. "clean" = median denoise, contrast, black and white (Otsu).
+# NAS_OCR_VARIANTS: comma-separated "<dpi>" or "<dpi>:clean".
+OCR_VARIANTS = [(float(v.split(":")[0]), v.endswith(":clean"))
+                for v in os.environ.get("NAS_OCR_VARIANTS", "300,300:clean,144:clean").split(",") if v.strip()]
+# The LSTM engine; automatic page layout (psm 3) read the tables best.
+OCR_CONFIG = os.environ.get("NAS_OCR_CONFIG", "--oem 1 --psm 3")
+# Bump when OCR changes, so cached extractions made the old way are redone.
+OCR_VERSION = "2"
+# A page at least this share covered by images is a scan.
+SCAN_IMAGE_SHARE = float(os.environ.get("NAS_SCAN_IMAGE_SHARE", "0.7"))
 EXTRACT_WORKERS = max(1, int(os.environ.get("NAS_EXTRACT_WORKERS", "1")))
 EXTRACT_RESULT_TTL = int(os.environ.get("NAS_EXTRACT_RESULT_TTL", "3600"))
 EXTRACT_MAX_QUEUED = int(os.environ.get("NAS_EXTRACT_MAX_QUEUED", "20"))
@@ -433,7 +448,10 @@ _ocr_lang_cache = None
 
 def _ocr_lang() -> str:
     """eng+hin when the Hindi language pack is installed (many bylaws are
-    Hindi government orders), else eng. NAS_OCR_LANG overrides."""
+    Hindi government orders), else eng. NAS_OCR_LANG overrides. Keep eng
+    first: on a Hindi setback table (Oct 2026) eng+hin read 15 of 15 plot
+    sizes and figures, hin+eng and hin 7, dropping every "1" ("150" -> "50",
+    "10.0" -> "0.0")."""
     global _ocr_lang_cache
     if _ocr_lang_cache is None:
         forced = os.environ.get("NAS_OCR_LANG", "").strip()
@@ -461,9 +479,122 @@ def _tesseract_available() -> bool:
     return bool(shutil.which(cmd))
 
 
+def _is_scan(page) -> bool:
+    """A scanned page: mostly image, with no text of its own, or only an
+    invisible text layer that some other OCR put over the image (Tesseract
+    and scanner software write their text that way). That layer is often
+    poor (the MDDA bylaws: "सेट बैक" as "पेट बैक", decimal points missing) and
+    still passes _readable, so such pages are OCR'd here again."""
+    try:
+        area = abs(page.rect)
+        if not area:
+            return False
+        covered = sum(abs(fitz.Rect(i["bbox"]) & page.rect) for i in page.get_image_info())
+        if covered / area < SCAN_IMAGE_SHARE:
+            return False
+        # Text drawn with render mode 3 (invisible) is an OCR layer; real
+        # text over a background image is visible.
+        spans = page.get_texttrace()
+        chars = sum(len(s.get("chars", ())) for s in spans)
+        hidden = sum(len(s.get("chars", ())) for s in spans if s.get("type") == 3)
+        return chars == 0 or hidden / chars >= 0.5
+    except Exception:
+        return False
+
+
+def _clean(img):
+    """Median denoise, full contrast, then black and white at Otsu's threshold."""
+    img = ImageOps.autocontrast(img.filter(ImageFilter.MedianFilter(3)))
+    hist = img.histogram()
+    total = sum(hist)
+    sum_all = sum(i * h for i, h in enumerate(hist))
+    w_b = sum_b = 0
+    best, threshold = -1.0, 128
+    for t in range(256):
+        w_b += hist[t]
+        w_f = total - w_b
+        if not w_b or not w_f:
+            continue
+        sum_b += t * hist[t]
+        between = w_b * w_f * (sum_b / w_b - (sum_all - sum_b) / w_f) ** 2
+        if between > best:
+            best, threshold = between, t
+    return img.point(lambda x: 255 if x > threshold else 0)
+
+
+def _read(img, lang: str):
+    """Tesseract's reading of one image: (mean word confidence, text). The
+    text is rebuilt from the words, a line per line Tesseract found, so a
+    table row stays on one line."""
+    # nice: OCR yields the CPU to everything else on this box.
+    d = pytesseract.image_to_data(img, lang=lang, config=OCR_CONFIG, nice=OCR_NICE,
+                                  output_type=pytesseract.Output.DICT)
+    lines, confs = {}, []
+    for i, word in enumerate(d["text"]):
+        if not word.strip():
+            continue
+        key = (d["block_num"][i], d["par_num"][i], d["line_num"][i])
+        lines.setdefault(key, []).append(word)
+        c = float(d["conf"][i])
+        if c >= 0:
+            confs.append(c)
+    text, last = [], None
+    for key in sorted(lines):
+        if last is not None and key[:2] != last[:2]:
+            text.append("")  # a new paragraph or block
+        text.append(" ".join(lines[key]))
+        last = key
+    return (sum(confs) / len(confs) if confs else 0.0), "\n".join(text)
+
+
+def _ocr_page(page, lang: str) -> str:
+    """OCR one page each way in OCR_VARIANTS and keep the most confident
+    reading. Grayscale: colour adds nothing to text and triples the memory."""
+    best = (-1.0, "")
+    for dpi, clean in OCR_VARIANTS:
+        zoom = dpi / 72
+        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), colorspace=fitz.csGRAY, alpha=False)
+        img = Image.frombytes("L", (pix.width, pix.height), pix.samples)
+        reading = _read(_clean(img) if clean else img, lang)
+        if reading[0] > best[0]:
+            best = reading
+    return best[1]
+
+
 def _unlink(p: str):
     try:
         os.unlink(p)
+    except Exception:
+        pass
+
+
+# Finished extractions are kept on disk, keyed by the file's size and
+# modified time and by OCR_VERSION, so the nightly bylaws sync, which asks for
+# every PDF again, gets an unchanged scan back at once instead of OCR-ing it
+# for many minutes every night.
+EXTRACT_CACHE_DIR = os.environ.get("NAS_EXTRACT_CACHE_DIR", os.path.join(BASE, "extract-cache"))
+
+
+def _cache_file(server: str, path: str, size: int, mtime: float, max_chars: int) -> str:
+    key = json.dumps([server, _norm(path), size, mtime, max_chars, OCR_VERSION, _ocr_lang() if _HAVE_OCR else ""])
+    return os.path.join(EXTRACT_CACHE_DIR, hashlib.sha1(key.encode()).hexdigest() + ".json")
+
+
+def _cache_get(f: str):
+    try:
+        with open(f, encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return None
+
+
+def _cache_put(f: str, result: dict):
+    try:
+        os.makedirs(EXTRACT_CACHE_DIR, exist_ok=True)
+        tmp = f + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(result, fh, ensure_ascii=False)
+        os.replace(tmp, f)
     except Exception:
         pass
 
@@ -474,6 +605,26 @@ def _extract_pdf(server: str, path: str, max_chars: int) -> dict:
         conn, share = _connect(server)
     except HTTPException as e:
         return {"ok": False, "reason": f"connector could not reach {server}: {e.detail}"}
+    try:
+        a = conn.getAttributes(share, _norm(path))
+        cache = _cache_file(server, path, int(a.file_size), float(a.last_write_time or 0), max_chars)
+    except Exception:
+        cache = None
+    hit = cache and _cache_get(cache)
+    if hit:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return hit
+    result = _extract_downloaded(conn, share, server, path, max_chars)
+    if cache and result.get("ok"):
+        _cache_put(cache, result)
+    return result
+
+
+def _extract_downloaded(conn, share: str, server: str, path: str, max_chars: int) -> dict:
+    """Download the PDF over SMB (closing the connection) and extract it."""
     tmp = tempfile.NamedTemporaryFile(delete=False)
     try:
         try:
@@ -494,9 +645,13 @@ def _extract_pdf(server: str, path: str, max_chars: int) -> dict:
         except Exception as e:
             return {"ok": False, "reason": f"PDF could not be opened: {type(e).__name__}"}
         try:
-            # Text layer of every page, and whether each one is real language.
+            # Text layer of every page, and whether each one needs OCR: not
+            # real language, or a scan (whose text layer, if any, is someone
+            # else's OCR).
             pages = [page.get_text() for page in doc]
-            bad = [i for i, t in enumerate(pages) if not _readable(t)]
+            ocr_ready = _HAVE_OCR and _tesseract_available()
+            scans = {i for i in range(len(pages)) if _is_scan(doc[i])} if ocr_ready else set()
+            bad = [i for i, t in enumerate(pages) if i in scans or not _readable(t)]
             n = len(pages) or 1
 
             # Mostly readable: index the text layer as it is, as before. (Normal
@@ -511,7 +666,6 @@ def _extract_pdf(server: str, path: str, max_chars: int) -> dict:
             # Hindi typing font, or glyphs with no character map). Keep the
             # readable pages, OCR the others up to the page budget, and leave
             # out what cannot be read rather than index garbage.
-            ocr_ready = _HAVE_OCR and _tesseract_available()
             if not ocr_ready and len(bad) == len(pages):
                 if not _HAVE_OCR:
                     return {"ok": False, "reason": "PDF has no selectable text (likely scanned images; needs OCR, "
@@ -526,11 +680,10 @@ def _extract_pdf(server: str, path: str, max_chars: int) -> dict:
                 if i not in bad_set:
                     piece = t
                 elif ocr_ready and ocred < OCR_MAX_PAGES:
-                    pix = doc[i].get_pixmap(matrix=fitz.Matrix(OCR_ZOOM, OCR_ZOOM))
-                    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-                    # nice: OCR yields the CPU to everything else on this box.
-                    piece = pytesseract.image_to_string(img, lang=lang, nice=OCR_NICE)
+                    piece = _ocr_page(doc[i], lang)
                     ocred += 1
+                elif _readable(t):
+                    piece = t  # a scan past the page budget: its own text layer beats nothing
                 else:
                     skipped += 1
                     continue

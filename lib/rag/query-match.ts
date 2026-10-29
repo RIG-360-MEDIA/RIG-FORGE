@@ -40,7 +40,7 @@ export type DimKey = 'area' | 'height' | 'road'
 /** Every spelling a topic is written in, in the documents and in questions. */
 const TOPICS: Record<TopicKey, { label: string; terms: string[] }> = {
   far: { label: 'FAR', terms: ['far', 'floor area ratio', 'f.a.r', 'fsi', 'floor space index', 'bfar', 'mfar', 'एफ.ए.आर', 'एफ.एआर', 'एफ0ए0आर0', 'एफ0ए0आए0', 'एफएआर', 'फ्लोर एरिया रेशियो'] },
-  setback: { label: 'setback', terms: ['setback', 'setbacks', 'set-back', 'set-backs', 'set back', 'set backs', 'setbac', 'setbak', 'set bak', 'सेटबैक', 'सेटबैक्स', 'सैटबैक', 'सेट बैक', 'सैट बैक', 'सेट-बैक', 'सैट-बैक'] },
+  setback: { label: 'setback', terms: ['setback', 'setbacks', 'set-back', 'set-backs', 'set back', 'set backs', 'setbac', 'setbak', 'set bak', 'सेटबैक', 'सेटबैक्स', 'सैटबैक', 'सेट बैक', 'सैट बैक', 'सेट-बैक', 'सैट-बैक', 'सेटबेक', 'सैटबेक', 'सेट बेक', 'सैट बेक'] },
   coverage: { label: 'ground coverage', terms: ['ground coverage', 'coverage', 'ground cover', 'भू-आच्छादन', 'भू आच्छादन', 'आच्छादन'] },
   parking: { label: 'parking', terms: ['parking', 'ecs', 'e.c.s', 'car space', 'car spaces', 'पार्किंग', 'पाकिंग', 'ई0सी0एस0'] },
   height: { label: 'height', terms: ['height', 'heights', 'storey', 'storeys', 'stories', 'floors', 'ऊँचाई', 'ऊंचाई', 'मंजिल'] },

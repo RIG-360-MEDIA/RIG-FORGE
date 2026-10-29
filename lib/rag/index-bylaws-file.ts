@@ -49,6 +49,12 @@ export function indexBylawsFile(
   })
 }
 
+/** Whether a bylaws file is in the index. */
+export async function isBylawsFileIndexed(organizationId: string, server: string, path: string): Promise<boolean> {
+  const row = await tracker.find({ organizationId, server, path })
+  return row?.status === 'INDEXED'
+}
+
 /** Write a PENDING row before a fire-and-forget index kicks off, so a crash
  * mid-flight leaves a real row to retry instead of silence — see
  * app/api/cron/rag-retry/route.ts. */

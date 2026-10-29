@@ -357,3 +357,41 @@ The MDDA file is inside `By_Laws` anyway (`By_Laws/MDDA UTTARAKHAND/`). What it 
 **Cleanup:** files outside By_Laws that are already in the bylaws index are removed by the stale sweep, once 48 h have passed since they were last seen. The sweep's listing of By_Laws is complete, so these files count as gone.
 
 **Also in that run:** 4 By_Laws files (both CPHEEO volumes, Tourism policy 2023, the UP bylaws) failed with `HF embeddings failed (402)`. Embeddings normally come from the open-source `multilingual-e5-large` on TRIJYA-3. When the connector does not answer, they fall back to the Hugging Face API, and that account has no credits left. The next sync retries them once TRIJYA-3 is up.
+
+## 15. Scanned bylaws OCR'd again on TRIJYA-3, figures and Hindi read right (30 Oct)
+
+**Problem.** "Setback for a commercial 500 sq m plot in Dehradun" found nothing, though the MDDA bylaws were indexed. The stored text of the MDDA commercial setback table (passage 94) was garbled:
+- "सेट बैक" was stored as "पेट बैक", so the matcher did not see a setback table;
+- decimal points were lost: 7.5 → 75, 3.0 → 30;
+- digits were lost: "1000 तक" → "100 तक", "3000 से अधिक" → "300 से अधिक";
+- column labels came out as Latin junk: पार्श्व-1 → "wees".
+
+**Why.** The MDDA PDF is a scan that carries another program's invisible OCR text. Render read that text layer, it passed the "real language" check, and our OCR on the connector never ran.
+
+**Measured** on a Hindi setback table, scanned clean and noisy, with Tesseract locally:
+- `eng+hin` read 15/15 plot sizes and figures; `hin+eng` and `hin` read 7, dropping every "1". The language order stays `eng+hin`.
+- 300 DPI read a clean scan perfectly but most of a noisy one wrongly. On noisy scans, denoising and black-and-white at 144 DPI did best. No one setting won every case.
+- Keeping the reading Tesseract is most confident in matched the best setting in every case.
+
+**Changes**
+- **Connector** (`scripts/nas-connector/connector.py`):
+  - A page that is mostly image (`NAS_SCAN_IMAGE_SHARE`, 0.7), with no text or with mostly invisible text, is a scan and is OCR'd here even if its text layer reads as language (`_is_scan`). A scan past the page budget keeps its own text rather than being dropped.
+  - Each scanned page is OCR'd at 300 DPI, 300 DPI cleaned and 144 DPI cleaned (`NAS_OCR_VARIANTS`), in grayscale, and the most confident reading is kept (`_ocr_page`). Lines are rebuilt from Tesseract's words, so a table row stays on one line.
+  - Finished extractions are cached on disk (`extract-cache/`, `NAS_EXTRACT_CACHE_DIR`), keyed by file size, modified time and `OCR_VERSION`. The nightly sync gets unchanged scans back at once.
+- **Forge:**
+  - The bylaws backfill sends every PDF to the connector first (`connectorFirst` in `lib/rag/fetch-and-index.ts`). If the connector fails, an already indexed file keeps its text, and a new file is read on Render as before.
+  - `NAS_EXTRACT_TIMEOUT_MS` defaults to 1 hour, because a scan of a few hundred pages is OCR'd three ways.
+  - The setback terms gain OCR spellings seen in MDDA (सेटबेक, सैटबेक).
+
+**Tested:**
+- connector end to end on a fake NAS, run locally with Tesseract `eng+hin`:
+  - a scanned table with a garbled hidden layer is re-OCR'd to "सेट बैक", "151 से 600 तक 7.5 3.0 3.0";
+  - a text PDF is not OCR'd;
+  - the repeat request is answered from the cache in 0.0 s;
+- `scripts/test-rag.ts`: 250 pass, plus the 2 known chunker failures. New tests cover connector-first, kept text and no double connector call.
+- Still imperfect: one "4.5" was read as "45". The page view stays the check.
+
+**Deploy:**
+1. **TRIJYA-3:** pull, restart the connector, and check `tesseract --list-langs` shows `hin`.
+2. **Render:** if `NAS_EXTRACT_TIMEOUT_MS` is set to 900000, raise it to 3600000.
+3. Run `bylaws-sync`. Every bylaws PDF changes text once, from the connector's PyMuPDF and OCR, so the first run re-indexes all of them and takes a few hours. Later runs read only changed files.

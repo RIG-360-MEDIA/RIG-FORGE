@@ -54,3 +54,6 @@ whatsapp-bridge/.env
 __pycache__/
 *.pyc
 .bylaws-eval-cache.json
+
+# NAS connector OCR cache (on TRIJYA-3)
+scripts/nas-connector/extract-cache/

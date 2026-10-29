@@ -294,7 +294,9 @@ export async function nasExtractText(
   path: string,
   maxChars = 1_000_000,
 ): Promise<NasExtractResult | NasExtractFailure> {
-  const timeoutMs = Number(process.env.NAS_EXTRACT_TIMEOUT_MS ?? 15 * 60_000)
+  // An hour: a scan of a few hundred pages is OCR'd several ways per page
+  // (connector.py, OCR_VARIANTS). Only background runs wait on this.
+  const timeoutMs = Number(process.env.NAS_EXTRACT_TIMEOUT_MS ?? 60 * 60_000)
   const pollMs = Number(process.env.NAS_EXTRACT_POLL_MS ?? 5_000)
   const deadline = Date.now() + timeoutMs
   const qs = `server=${encodeURIComponent(server)}&path=${encodeURIComponent(path)}&max_chars=${Math.max(1, Math.floor(maxChars))}`

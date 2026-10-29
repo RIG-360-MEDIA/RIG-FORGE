@@ -470,6 +470,37 @@ async function main() {
   globalThis.fetch = (async () => (step++ === 0 ? bytesReply() : job('done', { ok: false, reason: 'OCR found no readable text on this PDF' })())) as typeof fetch
   const scanFail = await asTrijya(() => fetchAndIndexFile({ organizationId: 'trijya', server: 'WD', path: '/blank-scan.pdf', size: 10, indexer: fakeIndexer }))
   check('scan the connector cannot read either -> failed, reason names both', scanFail.status === 'failed' && /needs OCR/.test(scanFail.reason) && /OCR found no readable text/.test(scanFail.reason))
+
+  // connectorFirst (the bylaws backfill): a scan with another program's bad
+  // OCR layer reads as text here, so the connector extracts every PDF first.
+  fakeIndexerCalls.length = 0
+  let fetched: string[] = []
+  const logged = (f: typeof fetch) => (async (u: string, init?: RequestInit) => { fetched.push(String(u)); return f(u, init) }) as typeof fetch
+  globalThis.fetch = logged(connector([job('done', { ok: true, text: 'सेट बैक 7.5 3.0', method: 'ocr', truncated: false })]))
+  const first = await asTrijya(() => fetchAndIndexFile({ organizationId: 'trijya', server: 'WD', path: '/mdda.pdf', size: 10, indexer: fakeIndexer, connectorFirst: true }))
+  check('connectorFirst: a small PDF is extracted by the connector, never downloaded here',
+    first.status === 'indexed' && (fakeIndexerCalls[0]?.bytesOrText as { text?: string })?.text === 'सेट बैक 7.5 3.0' && !fetched.some((u) => u.includes('/download')))
+
+  fakeIndexerCalls.length = 0
+  globalThis.fetch = connector([job('done', { ok: false, reason: 'connector could not reach WD' })])
+  const kept = await asTrijya(() => fetchAndIndexFile({ organizationId: 'trijya', server: 'WD', path: '/mdda.pdf', size: 10, indexer: fakeIndexer, connectorFirst: true, isIndexed: async () => true }))
+  check('connectorFirst, connector fails, file already indexed -> its text is kept (indexer not called)',
+    kept.status === 'failed' && /indexed text is kept/.test(kept.reason) && fakeIndexerCalls.length === 0, kept.status)
+
+  fakeIndexerCalls.length = 0
+  fetched = []
+  step = 0
+  globalThis.fetch = logged((async () => (step++ === 0 ? job('done', { ok: false, reason: 'connector could not reach WD' })() : bytesReply())) as typeof fetch)
+  const fresh = await asTrijya(() => fetchAndIndexFile({ organizationId: 'trijya', server: 'WD', path: '/new.pdf', size: 10, indexer: fakeIndexer, connectorFirst: true, isIndexed: async () => false }))
+  check('connectorFirst, connector fails, new file -> read here instead', fresh.status === 'indexed' && Buffer.isBuffer(fakeIndexerCalls[0]?.bytesOrText))
+
+  fakeIndexerCalls.length = 0
+  fetched = []
+  indexerReplies = [{ status: 'failed', reason: 'PDF has no selectable text (likely scanned images; needs OCR)', connector: true }]
+  step = 0
+  globalThis.fetch = logged((async () => (step++ === 0 ? job('done', { ok: false, reason: 'OCR found no readable text on this PDF' })() : bytesReply())) as typeof fetch)
+  const once = await asTrijya(() => fetchAndIndexFile({ organizationId: 'trijya', server: 'WD', path: '/blank.pdf', size: 10, indexer: fakeIndexer, connectorFirst: true }))
+  check('connectorFirst: the connector is not asked a second time after reading here fails', once.status === 'failed' && fetched.filter((u) => u.includes('/extract/jobs')).length <= 2, `${fetched.length} requests`)
   globalThis.fetch = realFetch
 
   // ── searchChunksHybrid's re-ranking — pure, no live Qdrant needed ─────────
