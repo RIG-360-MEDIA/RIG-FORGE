@@ -395,3 +395,18 @@ The MDDA file is inside `By_Laws` anyway (`By_Laws/MDDA UTTARAKHAND/`). What it 
 1. **TRIJYA-3:** pull, restart the connector, and check `tesseract --list-langs` shows `hin`.
 2. **Render:** if `NAS_EXTRACT_TIMEOUT_MS` is set to 900000, raise it to 3600000.
 3. Run `bylaws-sync`. Every bylaws PDF changes text once, from the connector's PyMuPDF and OCR, so the first run re-indexes all of them and takes a few hours. Later runs read only changed files.
+
+## 16. A slow connector embed batch no longer fails the whole file (9 Nov)
+
+**Problem.** From 3 to 9 Nov every nightly `bylaws-sync` failed the same 5 big files (ECSBC 2024, both CPHEEO SW 2019 volumes, Tourism policy 2023, UP bylaws), each with "HF embeddings failed (402)".
+
+**Why.** Forge sends passages to the connector's `/embed` in batches of 64, with a 90 s timeout. When another tenant fills the 12 GB GPU on TRIJYA-3, e5-large runs on the CPU at ~1.4 passages/s, so a 64-passage batch can take 45-90+ s. One timeout sent that batch to the HuggingFace API, which has had no credits since October. So the file failed, and the recorded reason named only the 402.
+
+**Changes** (`lib/rag/embeddings.ts`)
+- A failed connector batch is retried on the connector at half the size, with a pause before each retry (64, 32, 16, 8; 2 s, 4 s, 8 s). After 4 failures in a row the API takes that batch, as before.
+- The smaller size is kept for the next batches and files. It doubles again after 4 successes.
+- HF 401/402/403 mark the API unavailable for an hour. While it is, the connector path does not fall back to it, and a paused connector still gets one try per call. When the connector recovers, it is used again straight away.
+- The failure message names both causes, e.g. "NAS connector /embed timed out after 90 s on a 8-passage batch (4 tries, ...); HuggingFace fallback unavailable: HF embeddings failed (402) ...".
+- With no connector (`TRIJYA_NAS_BASE_URL` unset or `RAG_EMBED_VIA_CONNECTOR=false`) nothing changes: every call goes to the API.
+
+**Tested:** `scripts/test-rag.ts`, 260 pass. New checks use a fake connector that times out on 64 passages but not on 32, and an API that answers 402.

@@ -35,6 +35,8 @@ process.env.RAG_EMBED_VIA_CONNECTOR = 'false'
 // Extraction jobs are polled; keep the fake connector's polling fast.
 process.env.NAS_EXTRACT_POLL_MS = '5'
 process.env.NAS_EXTRACT_TIMEOUT_MS = '200'
+// Connector embedding retries back off 2 s, 4 s, 8 s in production; 5 ms here.
+process.env.RAG_CONNECTOR_EMBED_RETRY_MS = '5'
 
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
@@ -626,8 +628,8 @@ async function main() {
     emb.resetEmbeddingConnectorPause(); calls.length = 0
     connectorReply = () => new Response('busy', { status: 503 })
     const fb = await emb.embedTexts(Array.from({ length: 20 }, (_, i) => `p${i}`))
-    check('connector error: that batch goes to the API instead (in API-sized batches)',
-      fb.length === 20 && calls.map((c) => `${c.host}:${c.n}`).join() === 'connector:20,api:16,api:4', calls.map((c) => `${c.host}:${c.n}`).join())
+    check('connector error: retried on the connector in smaller batches, then that batch goes to the API (in API-sized batches)',
+      fb.length === 20 && calls.map((c) => `${c.host}:${c.n}`).join() === 'connector:20,connector:10,connector:8,connector:8,api:16,api:4', calls.map((c) => `${c.host}:${c.n}`).join())
     calls.length = 0
     await emb.embedQuery('q')
     check('...and the connector is skipped for a while, not retried on every request', calls.map((c) => c.host).join() === 'api')
@@ -641,6 +643,75 @@ async function main() {
     connectorReply = (texts) => new Response(JSON.stringify({ vectors: texts.map(() => vec(768)) }), { status: 200 })
     const dimSafe = await emb.embedQuery('q')
     check('wrong-sized vectors from the connector are never used', dimSafe.length === 384 && calls.map((c) => c.host).join() === 'connector,api')
+
+    // ── A slow connector (GPU busy, model on the CPU) and an API with no credits ──
+    // Nov 2026: every nightly bylaws-sync failed the same 5 big files with
+    // "HF embeddings failed (402)": one 64-passage batch hit the connector
+    // timeout, and the fallback API had no credits. The fake connector below
+    // takes 5 ms per passage and honours the abort signal, so with a 200 ms
+    // timeout a 64-passage batch times out and a 32-passage one does not.
+    process.env.RAG_CONNECTOR_EMBED_TIMEOUT_MS = '200'
+    let apiStatus = 200
+    let perPassageMs = 5
+    const seq = () => calls.map((c) => `${c.host}:${c.n}`).join()
+    globalThis.fetch = (async (u: unknown, init: any) => {
+      const url = String(u), body = JSON.parse(init.body)
+      if (url.endsWith('/embed')) {
+        calls.push({ host: 'connector', n: body.texts.length })
+        await new Promise<void>((resolve, reject) => {
+          const t = setTimeout(resolve, body.texts.length * perPassageMs)
+          init.signal?.addEventListener('abort', () => { clearTimeout(t); reject(init.signal.reason) })
+        })
+        return new Response(JSON.stringify({ vectors: body.texts.map(() => vec()) }), { status: 200 })
+      }
+      calls.push({ host: 'api', n: body.inputs.length })
+      return apiStatus === 200
+        ? new Response(JSON.stringify(body.inputs.map(() => vec())), { status: 200 })
+        : new Response('{"error":"You have exceeded your monthly included credits"}', { status: apiStatus })
+    }) as typeof fetch
+
+    emb.resetEmbeddingConnectorPause(); calls.length = 0
+    apiStatus = 402
+    const slow = await emb.embedTexts(Array.from({ length: 70 }, (_, i) => `p${i}`)).catch((e) => (e as Error).message)
+    check('a connector batch that times out is retried at half size on the connector (was: whole file failed with HF 402)',
+      Array.isArray(slow) && slow.length === 70 && seq() === 'connector:64,connector:32,connector:32,connector:6', Array.isArray(slow) ? seq() : String(slow))
+    calls.length = 0
+    await emb.embedTexts(Array.from({ length: 40 }, (_, i) => `q${i}`))
+    check('  the smaller batch size is kept for the next file, and grows back after a run of successes',
+      seq() === 'connector:32,connector:8', seq())
+    calls.length = 0
+    perPassageMs = 1 // the GPU is free again: 64 passages fit in the timeout
+    await emb.embedTexts(Array.from({ length: 64 }, (_, i) => `r${i}`)).catch(() => null)
+    check('  back to 64-passage batches', seq() === 'connector:64', seq())
+
+    emb.resetEmbeddingConnectorPause(); calls.length = 0
+    perPassageMs = 1000 // every batch times out
+    let bothDown = ''
+    try { await emb.embedTexts(Array.from({ length: 10 }, (_, i) => `p${i}`)) } catch (e) { bothDown = (e as Error).message }
+    check('connector keeps timing out: 4 tries, smaller each time, then the API once',
+      seq() === 'connector:10,connector:8,connector:8,connector:8,api:10', seq())
+    check('  the failure names the connector timeout, not just HF 402',
+      /connector \/embed timed out after 200 ms/.test(bothDown) && /402/.test(bothDown), bothDown.slice(0, 160))
+    calls.length = 0
+    let second = ''
+    try { await emb.embedTexts(['a', 'b']) } catch (e) { second = (e as Error).message }
+    check('after a 402 the API is not tried again on the next file; the paused connector still gets one try',
+      seq() === 'connector:2' && /timed out/.test(second) && /fallback unavailable: HF embeddings failed \(402\).*not retried until/.test(second), `${seq()} | ${second.slice(0, 160)}`)
+    calls.length = 0
+    perPassageMs = 1 // the GPU is free again
+    const recovered = await emb.embedTexts(Array.from({ length: 20 }, (_, i) => `p${i}`)).catch((e) => (e as Error).message)
+    check('  when the connector recovers it is used again at once, without waiting out its pause',
+      Array.isArray(recovered) && recovered.length === 20 && seq() === 'connector:8,connector:8,connector:4', Array.isArray(recovered) ? seq() : String(recovered))
+
+    emb.resetEmbeddingConnectorPause(); calls.length = 0
+    process.env.RAG_EMBED_VIA_CONNECTOR = 'false'
+    let apiOnlyErr = ''
+    for (let k = 0; k < 2; k++) { try { await emb.embedQuery('q') } catch (e) { apiOnlyErr = (e as Error).message } }
+    check('no connector: a 402 still fails at once, and the API is still asked on every call (unchanged)',
+      seq() === 'api:1,api:1' && /^HF embeddings failed \(402\)/.test(apiOnlyErr), `${seq()} | ${apiOnlyErr.slice(0, 80)}`)
+    process.env.RAG_EMBED_VIA_CONNECTOR = 'true'
+    delete process.env.RAG_CONNECTOR_EMBED_TIMEOUT_MS
+    apiStatus = 200
 
     emb.resetEmbeddingConnectorPause(); calls.length = 0
     process.env.RAG_EMBED_VIA_CONNECTOR = 'false'

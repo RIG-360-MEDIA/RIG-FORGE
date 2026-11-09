@@ -100,6 +100,36 @@ function backoffMs(attempt: number, retryAfter: string | null): number {
   return Math.min(1000 * 2 ** attempt, 30_000) + Math.floor(Math.random() * 400)
 }
 
+// ── API availability ──────────────────────────────────────────────────────────
+// 402 (no credits left: every call from October 2026 on), 401 and 403 (bad or
+// under-scoped token) do not fix themselves in minutes. After one, the API is
+// treated as unavailable for an hour, so the connector path stops falling back
+// to it on every batch (and a file's failure no longer reads as "HF 402" when
+// the real cause was the connector). Only the connector path consults this:
+// with no connector configured, every call still goes to the API as before.
+const API_UNAVAILABLE_STATUSES = new Set([401, 402, 403])
+const API_UNAVAILABLE_MS = 60 * 60_000
+let apiUnavailableUntil = 0
+let apiUnavailableReason = ''
+
+function markApiUnavailable(reason: string): void {
+  if (Date.now() >= apiUnavailableUntil && connectorBase()) {
+    console.warn(`[embeddings] HuggingFace API unavailable (${reason.slice(0, 120)}); not used as a fallback for the next ${API_UNAVAILABLE_MS / 60_000} min`)
+  }
+  apiUnavailableUntil = Date.now() + API_UNAVAILABLE_MS
+  apiUnavailableReason = reason
+}
+
+/** Whether the API can serve as the connector's fallback right now. */
+function apiUsable(): boolean {
+  return !!HF_API_KEY && Date.now() >= apiUnavailableUntil
+}
+
+function apiUnusableReason(): string {
+  if (!HF_API_KEY) return 'HF_API_KEY is not configured'
+  return `${apiUnavailableReason.slice(0, 160)}; not retried until ${new Date(apiUnavailableUntil).toISOString().slice(11, 16)} UTC`
+}
+
 type Attempt =
   | { done: true; vectors: number[][] }
   | { done: false; error: string; retryAfter: string | null }
@@ -129,7 +159,9 @@ async function attemptOnce(texts: string[]): Promise<Attempt> {
   if (!res.ok) {
     // 400 / 401 / 404 etc. — retrying cannot help, so fail at once with detail.
     const body = await res.text().catch(() => '')
-    throw new Error(`HF embeddings failed (${res.status}): ${body.slice(0, 200)}`)
+    const message = `HF embeddings failed (${res.status}): ${body.slice(0, 200)}`
+    if (API_UNAVAILABLE_STATUSES.has(res.status)) markApiUnavailable(message)
+    throw new Error(message)
   }
   return { done: true, vectors: normalize(await res.json(), texts.length) }
 }
@@ -179,24 +211,51 @@ const PREFIX = inputPrefixes()
 
 // ── Connector (primary) ──────────────────────────────────────────────────────
 // Larger batches than the API: each request crosses the Cloudflare tunnel, and
-// 64 passages take well under a second on TRIJYA-3's CPU.
+// 64 passages take a few seconds on TRIJYA-3's GPU.
+//
+// But the GPU is shared (RIG SURVEILLANCE's Ollama can fill its 12 GB), and
+// then the model runs on the CPU at ~1.4 passages/s: a 64-passage batch takes
+// 45-90+ s and can hit the timeout. In November 2026 that failed the same five
+// big bylaws files every night, because the fallback (the API) had no credits
+// left. So a failed batch is retried on the connector first, in smaller and
+// smaller batches with a pause between tries (64, 32, 16, 8), before the API
+// is used. The smaller size is remembered for later batches and grows back
+// after a run of successes.
 const CONNECTOR_BATCH = 64
-const CONNECTOR_TIMEOUT_MS = 90_000 // under Cloudflare's ~100 s request cap
-// After a failure the connector is skipped for a while, so a box that is down
-// costs one timeout, not one per batch. A refusal that will not fix itself
-// soon (wrong model, endpoint missing) pauses it longer.
+const CONNECTOR_MIN_BATCH = 8
+const CONNECTOR_MAX_ATTEMPTS = 4 // consecutive failures before giving up on the connector
+const GROW_AFTER = 4 // successful batches at a reduced size before doubling it again
+// Under Cloudflare's ~100 s request cap. Read per call; the env overrides are for tests.
+const connectorTimeoutMs = () => Number(process.env.RAG_CONNECTOR_EMBED_TIMEOUT_MS) || 90_000
+const connectorRetryMs = () => {
+  const raw = process.env.RAG_CONNECTOR_EMBED_RETRY_MS?.trim()
+  const v = Number(raw)
+  return raw && Number.isFinite(v) && v >= 0 ? v : 2_000
+}
+// After the connector gives up, it is skipped for a while IF the API can take
+// over, so a box that is down costs one round of retries, not one per batch.
+// A refusal that will not fix itself soon (wrong model, endpoint missing)
+// pauses it longer. With no usable API the connector is still tried (once per
+// call while paused): it is then the only way to get vectors at all.
 const PAUSE_MS = 60_000
 const LONG_PAUSE_MS = 10 * 60_000
 let connectorPausedUntil = 0
+let connectorBatch = CONNECTOR_BATCH
+let connectorStreak = 0
 
-/** For tests: forget a previous connector failure. */
+/** For tests: forget earlier connector and API failures (pause, reduced
+ * batch size, API marked unavailable). */
 export function resetEmbeddingConnectorPause(): void {
   connectorPausedUntil = 0
+  connectorBatch = CONNECTOR_BATCH
+  connectorStreak = 0
+  apiUnavailableUntil = 0
+  apiUnavailableReason = ''
 }
 
 function pauseConnector(ms: number, why: string): void {
   if (Date.now() >= connectorPausedUntil) {
-    console.warn(`[embeddings] connector unavailable (${why}); using the HuggingFace API for the next ${Math.round(ms / 60_000)} min`)
+    console.warn(`[embeddings] ${why}; connector skipped for ${Math.round(ms / 60_000)} min where the HuggingFace API can take over`)
   }
   connectorPausedUntil = Date.now() + ms
 }
@@ -207,28 +266,82 @@ function connectorHeaders(): Record<string, string> {
   return id && secret ? { 'CF-Access-Client-Id': id, 'CF-Access-Client-Secret': secret } : {}
 }
 
-/** Vectors from the connector, or null if it could not provide them (the
- * caller then uses the API). Never throws. */
-async function embedViaConnector(base: string, texts: string[]): Promise<number[][] | null> {
-  if (Date.now() < connectorPausedUntil) return null
+type ConnectorAttempt =
+  | { ok: true; vectors: number[][] }
+  | { ok: false; error: string; permanent: boolean }
+
+/** One request to the connector. Never throws. `permanent` marks failures a
+ * retry cannot fix (endpoint missing, wrong model, wrong-sized vectors). */
+async function connectorAttempt(base: string, texts: string[]): Promise<ConnectorAttempt> {
+  const timeoutMs = connectorTimeoutMs()
+  let res: Response
   try {
-    const res = await withSlot(() => fetch(`${base}/embed`, {
+    res = await withSlot(() => fetch(`${base}/embed`, {
       method: 'POST',
       headers: { ...connectorHeaders(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: MODEL, texts }),
-      signal: AbortSignal.timeout(CONNECTOR_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     }))
-    if (!res.ok) {
-      const body = await res.text().catch(() => '')
-      pauseConnector([400, 404, 405, 501].includes(res.status) ? LONG_PAUSE_MS : PAUSE_MS, `HTTP ${res.status} ${body.slice(0, 120)}`)
-      return null
-    }
-    const j = (await res.json()) as { vectors?: unknown }
-    return normalize(j.vectors ?? [], texts.length) // also checks count and dimension
   } catch (e) {
-    pauseConnector(PAUSE_MS, e instanceof Error ? e.message : 'request failed')
-    return null
+    const timedOut = e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError')
+    const limit = timeoutMs >= 1000 ? `${Math.round(timeoutMs / 1000)} s` : `${timeoutMs} ms`
+    return { ok: false, permanent: false, error: timedOut ? `timed out after ${limit}` : e instanceof Error ? e.message : 'request failed' }
   }
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    return { ok: false, permanent: [400, 404, 405, 501].includes(res.status), error: `HTTP ${res.status} ${body.slice(0, 120)}`.trim() }
+  }
+  try {
+    const j = (await res.json()) as { vectors?: unknown }
+    return { ok: true, vectors: normalize(j.vectors ?? [], texts.length) } // also checks count and dimension
+  } catch (e) {
+    return { ok: false, permanent: true, error: e instanceof Error ? e.message : 'unreadable reply' }
+  }
+}
+
+/**
+ * Embeds texts[from..] on the connector, shrinking the batch and backing off
+ * after each failure. Returns what it managed (`vectors` covers
+ * texts[from..next)) and, if it gave up, why. Never throws.
+ */
+async function embedViaConnector(base: string, texts: string[], from: number): Promise<{ vectors: number[][]; next: number; error?: string }> {
+  const out: number[][] = []
+  let i = from
+  let failures = 0
+  // While paused (the connector gave up recently) it gets a single try per
+  // call: the API is unusable and this is the only way to get vectors.
+  let probing = Date.now() < connectorPausedUntil
+  while (i < texts.length) {
+    const size = Math.min(connectorBatch, texts.length - i)
+    const r = await connectorAttempt(base, texts.slice(i, i + size))
+    if (r.ok) {
+      out.push(...r.vectors)
+      i += size
+      failures = 0
+      probing = false
+      connectorPausedUntil = 0
+      if (connectorBatch < CONNECTOR_BATCH && ++connectorStreak >= GROW_AFTER) {
+        connectorBatch = Math.min(CONNECTOR_BATCH, connectorBatch * 2)
+        connectorStreak = 0
+      }
+      continue
+    }
+    failures++
+    connectorStreak = 0
+    const error = `NAS connector /embed ${r.error} on a ${size}-passage batch` + (failures > 1 ? ` (${failures} tries, halving the batch each time)` : '')
+    if (r.permanent) {
+      pauseConnector(LONG_PAUSE_MS, error)
+      return { vectors: out, next: i, error }
+    }
+    if (probing || failures >= CONNECTOR_MAX_ATTEMPTS) {
+      pauseConnector(PAUSE_MS, error)
+      return { vectors: out, next: i, error }
+    }
+    connectorBatch = Math.max(CONNECTOR_MIN_BATCH, Math.floor(size / 2))
+    console.warn(`[embeddings] ${error}; retrying with ${connectorBatch}-passage batches`)
+    await new Promise((r) => setTimeout(r, connectorRetryMs() * 2 ** (failures - 1)))
+  }
+  return { vectors: out, next: i }
 }
 
 async function embedViaApi(texts: string[]): Promise<number[][]> {
@@ -240,11 +353,28 @@ async function embedViaApi(texts: string[]): Promise<number[][]> {
 async function embedRaw(texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return []
   const base = connectorBase()
-  if (!base) return embedViaApi(texts)
+  if (!base) return embedViaApi(texts) // no connector: API only, as before
   const out: number[][] = []
-  for (let i = 0; i < texts.length; i += CONNECTOR_BATCH) {
+  let i = 0
+  while (i < texts.length) {
+    let connectorError = 'NAS connector skipped (it failed within the last few minutes)'
+    if (Date.now() >= connectorPausedUntil || !apiUsable()) {
+      const r = await embedViaConnector(base, texts, i)
+      out.push(...r.vectors)
+      i = r.next
+      if (!r.error) continue
+      connectorError = r.error
+    }
+    // The connector could not do the batch at i: the API takes that one batch;
+    // the connector's pause decides where the ones after it go.
+    if (!apiUsable()) throw new Error(`Embedding failed: ${connectorError}; HuggingFace fallback unavailable: ${apiUnusableReason()}`)
     const batch = texts.slice(i, i + CONNECTOR_BATCH)
-    out.push(...((await embedViaConnector(base, batch)) ?? (await embedViaApi(batch))))
+    try {
+      out.push(...(await embedViaApi(batch)))
+    } catch (e) {
+      throw new Error(`Embedding failed: ${connectorError}; HuggingFace fallback also failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
+    i += batch.length
   }
   return out
 }
