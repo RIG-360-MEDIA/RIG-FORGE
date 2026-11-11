@@ -350,8 +350,19 @@ async function embedViaApi(texts: string[]): Promise<number[][]> {
   return out
 }
 
-async function embedRaw(texts: string[]): Promise<number[][]> {
-  if (texts.length === 0) return []
+/**
+ * Half of a surrogate pair, left when chunking cuts a character such as a
+ * math letter (𝑥, U+1D465) in two. The connector's tokenizer rejects a batch
+ * holding one ("TextEncodeInput must be Union[...]"), which failed whole
+ * engineering PDFs (ECSBC 2024, CPHEEO), so each becomes U+FFFD.
+ */
+export function wellFormed(text: string): string {
+  return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '�')
+}
+
+async function embedRaw(rawTexts: string[]): Promise<number[][]> {
+  if (rawTexts.length === 0) return []
+  const texts = rawTexts.map(wellFormed)
   const base = connectorBase()
   if (!base) return embedViaApi(texts) // no connector: API only, as before
   const out: number[][] = []

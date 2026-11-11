@@ -536,7 +536,12 @@ async function main() {
   check('English re-ranking unchanged', rerankByKeyword(synthetic, 'setback road boundary', 3)[0]!.path === 'setback.txt')
 
   console.log('\n## Round 4 — E5 input prefixes')
-  const { inputPrefixes } = await import('../lib/rag/embeddings')
+  const { inputPrefixes, wellFormed } = await import('../lib/rag/embeddings')
+  const mathX = '𝑥' // U+1D465, two UTF-16 units
+  check('a chunk cut inside a math letter is sent without the lone half',
+    wellFormed(`k = ${mathX.slice(0, 1)}`) === 'k = �' && wellFormed(`${mathX.slice(1)}+1`) === '�+1')
+  check('whole surrogate pairs and Hindi pass through unchanged',
+    wellFormed(`${mathX} सेट बैक 7.5`) === `${mathX} सेट बैक 7.5`)
   check('multilingual-e5-large gets "query: " / "passage: "',
     JSON.stringify(inputPrefixes('intfloat/multilingual-e5-large')) === JSON.stringify({ query: 'query: ', passage: 'passage: ' }))
   check('bge-small (the production model) still gets no prefix',
