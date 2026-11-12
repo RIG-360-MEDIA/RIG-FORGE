@@ -30,11 +30,11 @@ CREATE INDEX IF NOT EXISTS "TaskTemplateItem_organizationId_idx" ON public."Task
 
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'TaskTemplateItem_templateId_fkey') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'TaskTemplateItem_templateId_fkey' AND conrelid = 'public."TaskTemplateItem"'::regclass) THEN
     ALTER TABLE public."TaskTemplateItem" ADD CONSTRAINT "TaskTemplateItem_templateId_fkey"
       FOREIGN KEY ("templateId") REFERENCES public."TaskTemplate"("id") ON DELETE CASCADE ON UPDATE CASCADE;
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'TaskTemplateItem_categoryId_fkey') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'TaskTemplateItem_categoryId_fkey' AND conrelid = 'public."TaskTemplateItem"'::regclass) THEN
     ALTER TABLE public."TaskTemplateItem" ADD CONSTRAINT "TaskTemplateItem_categoryId_fkey"
       FOREIGN KEY ("categoryId") REFERENCES public."TaskCategory"("id") ON DELETE SET NULL ON UPDATE CASCADE;
   END IF;

@@ -24,7 +24,7 @@ CREATE INDEX IF NOT EXISTS "Task_categoryId_idx" ON public."Task"("categoryId");
 
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Task_categoryId_fkey') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Task_categoryId_fkey' AND conrelid = 'public."Task"'::regclass) THEN
     ALTER TABLE public."Task" ADD CONSTRAINT "Task_categoryId_fkey"
       FOREIGN KEY ("categoryId") REFERENCES public."TaskCategory"("id") ON DELETE SET NULL ON UPDATE CASCADE;
   END IF;
