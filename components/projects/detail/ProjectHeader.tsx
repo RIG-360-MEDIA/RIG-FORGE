@@ -58,6 +58,8 @@ function getDeadlineDisplay(deadline: Date | null): { text: string; className: s
 interface ProjectHeaderProps {
   project: ProjectDetail
   isAdmin: boolean
+  /** ADMIN / SUPER_ADMIN: show the Payments tab. */
+  showPayments?: boolean
   onEditClick: () => void
   onAddMemberClick: () => void
 }
@@ -65,6 +67,7 @@ interface ProjectHeaderProps {
 export default function ProjectHeader({
   project,
   isAdmin,
+  showPayments = false,
   onEditClick,
   onAddMemberClick,
 }: ProjectHeaderProps) {
@@ -126,7 +129,7 @@ export default function ProjectHeader({
       </div>
 
       {/* Tabs */}
-      <ProjectTabs />
+      <ProjectTabs showPayments={showPayments} />
     </header>
   )
 }

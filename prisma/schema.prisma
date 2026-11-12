@@ -180,6 +180,11 @@ model Project {
   thread  ProjectThread?
   tickets Ticket[]
 
+  // Payments (admins only; see PaymentPlan)
+  paymentPlan     PaymentPlan?
+  paymentPhases   PaymentPhase[]
+  paymentReceipts PaymentReceipt[]
+
   @@index([leadId])
   @@index([clientId])
   @@index([organizationId])
@@ -1016,4 +1021,133 @@ model NasReindexRun {
   heartbeatAt    DateTime         @default(now())
 
   @@index([organizationId, startedAt])
+}
+
+// ─── Project payments (ADMIN and SUPER_ADMIN only) ───────────────────────────
+//
+// A ledger, not editable totals. Money is whole paise (BigInt). The fee is the
+// sum of PaymentFeeChange rows; a receipt is never edited or deleted (a
+// mistake is reversed, with a reason); what a receipt paid is its
+// PaymentAllocation rows. Received, balances and "on account" are always
+// calculated from these, so they cannot be typed in or drift. Every action is
+// also written to PaymentAuditLog.
+
+/// How a project's fee is set: a fixed amount, or a percentage of an estimated
+/// construction cost. One per project.
+model PaymentPlan {
+  id             String   @id @default(cuid())
+  organizationId String   @default("rig360")
+  projectId      String   @unique
+  basis          String // FIXED | PERCENT
+  /// PERCENT only: the fee percentage in basis points (750 = 7.50%).
+  percentBp      Int?
+  createdById    String
+  createdAt      DateTime @default(now())
+
+  project    Project            @relation(fields: [projectId], references: [id])
+  feeChanges PaymentFeeChange[]
+
+  @@index([organizationId])
+}
+
+/// One change to a project's fee, append-only. The first is the agreed fee
+/// (INITIAL); later ones are VARIATION (extra or reduced scope), COST_REVISION
+/// (new construction-cost estimate on a PERCENT plan) or CORRECTION.
+model PaymentFeeChange {
+  id             String   @id @default(cuid())
+  organizationId String   @default("rig360")
+  planId         String
+  kind           String
+  /// Change to the fee in paise; negative to reduce it.
+  amountDelta    BigInt
+  /// PERCENT plans: the construction-cost estimate after this change, in paise.
+  estimatedCost  BigInt?
+  reason         String
+  createdById    String
+  createdAt      DateTime @default(now())
+
+  plan PaymentPlan @relation(fields: [planId], references: [id])
+
+  @@index([planId])
+  @@index([organizationId])
+}
+
+/// A billing stage of a project ("Concept design", "Working drawings") with
+/// the amount due for it. Archived (isActive=false) instead of deleted.
+model PaymentPhase {
+  id             String    @id @default(cuid())
+  organizationId String    @default("rig360")
+  projectId      String
+  name           String
+  amount         BigInt
+  dueDate        DateTime?
+  note           String?
+  sortOrder      Int       @default(0)
+  isActive       Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  project     Project             @relation(fields: [projectId], references: [id])
+  allocations PaymentAllocation[]
+
+  @@index([projectId])
+  @@index([organizationId])
+}
+
+/// Money received from the client. Never edited or deleted: a wrong entry is
+/// reversed (reversedAt + reason), and both stay in the history.
+model PaymentReceipt {
+  id             String    @id @default(cuid())
+  organizationId String    @default("rig360")
+  projectId      String
+  receivedOn     DateTime
+  amount         BigInt
+  mode           String // BANK | UPI | CHEQUE | CASH | OTHER
+  reference      String?
+  payer          String?
+  note           String?
+  createdById    String
+  createdAt      DateTime  @default(now())
+  reversedAt     DateTime?
+  reversedById   String?
+  reversalReason String?
+
+  project     Project             @relation(fields: [projectId], references: [id])
+  allocations PaymentAllocation[]
+
+  @@index([projectId])
+  @@index([organizationId])
+}
+
+/// Part of a receipt counted against a phase. Immutable. A receipt's
+/// allocations never exceed its amount; the rest is "on account".
+model PaymentAllocation {
+  id             String   @id @default(cuid())
+  organizationId String   @default("rig360")
+  receiptId      String
+  phaseId        String
+  amount         BigInt
+  createdById    String
+  createdAt      DateTime @default(now())
+
+  receipt PaymentReceipt @relation(fields: [receiptId], references: [id])
+  phase   PaymentPhase   @relation(fields: [phaseId], references: [id])
+
+  @@index([receiptId])
+  @@index([phaseId])
+  @@index([organizationId])
+}
+
+/// Who did what to a project's payments, and when. Append-only.
+model PaymentAuditLog {
+  id             String   @id @default(cuid())
+  organizationId String   @default("rig360")
+  projectId      String
+  userId         String
+  action         String
+  detail         Json
+  createdAt      DateTime @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([organizationId])
 }

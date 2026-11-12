@@ -22,6 +22,7 @@ const TENANT_MODELS = new Set<string>([
   'ChatMessage', 'MessageReaction', 'MessageStar', 'Block', 'PushSubscription',
   'Issue', 'CustomRole', 'NasIndexedFile', 'BylawsIndexedFile',
   'BylawsReindexRun', 'NasReindexRun', 'TaskCategory', 'TaskTemplate', 'TaskTemplateItem',
+  'PaymentPlan', 'PaymentFeeChange', 'PaymentPhase', 'PaymentReceipt', 'PaymentAllocation', 'PaymentAuditLog',
 ])
 
 /**
