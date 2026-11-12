@@ -20,12 +20,12 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     const body = await request.json().catch(() => null) as Record<string, unknown> | null
     const reason = cleanText(body?.reason, 300)
     if (reason === 'too-long') return errorResponse('The reason must be 300 characters or fewer', 400)
-    if (!reason || reason.length < 3) return errorResponse('Give a reason for reversing this payment', 400)
+    if (!reason || reason.length < 3) return errorResponse('Give a reason for cancelling this entry', 400)
 
     const result = await withProjectPaymentsLock(g.project.id, async (tx) => {
       const receipt = await tx.paymentReceipt.findFirst({ where: { id: params.receiptId, projectId: g.project.id } })
       if (!receipt) return { error: 'Payment not found', status: 404 }
-      if (receipt.reversedAt) return { error: 'This payment was already reversed', status: 409 }
+      if (receipt.reversedAt) return { error: 'This payment entry was already cancelled', status: 409 }
       await tx.paymentReceipt.update({
         where: { id: receipt.id },
         data: { reversedAt: new Date(), reversedById: g.payload.userId, reversalReason: reason },

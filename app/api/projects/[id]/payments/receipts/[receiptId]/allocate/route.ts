@@ -18,7 +18,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     if ('response' in g) return g.response
     const body = await request.json().catch(() => null) as Record<string, unknown> | null
     if (!body || !Array.isArray(body.allocations) || body.allocations.length === 0) {
-      return errorResponse('Choose at least one phase and amount', 400)
+      return errorResponse('Choose at least one stage and amount', 400)
     }
 
     const result = await withProjectPaymentsLock(g.project.id, async (tx) => {
@@ -27,9 +27,9 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
         include: { allocations: { select: { amount: true } } },
       })
       if (!receipt) return { error: 'Payment not found', status: 404 }
-      if (receipt.reversedAt) return { error: 'This payment was reversed', status: 409 }
+      if (receipt.reversedAt) return { error: 'This payment entry was cancelled', status: 409 }
       const onAccount = receipt.amount - receipt.allocations.reduce((s, a) => s + a.amount, BigInt(0))
-      if (onAccount <= BigInt(0)) return { error: 'All of this payment is already counted against phases', status: 409 }
+      if (onAccount <= BigInt(0)) return { error: 'All of this payment is already linked to stages', status: 409 }
       const checked = await checkAllocations(tx, g.project.id, body.allocations, onAccount)
       if ('error' in checked) return { error: checked.error, status: 400 }
       await tx.paymentAllocation.createMany({

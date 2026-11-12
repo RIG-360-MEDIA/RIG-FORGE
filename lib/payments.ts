@@ -141,7 +141,7 @@ export async function checkAllocations(
 ): Promise<{ rows: { phaseId: string; amount: bigint }[]; total: bigint } | { error: string }> {
   if (raw === undefined || raw === null) return { rows: [], total: BigInt(0) }
   if (!Array.isArray(raw)) return { error: 'allocations must be a list' }
-  if (raw.length > 100) return { error: 'Too many phases in one payment' }
+  if (raw.length > 100) return { error: 'Too many stages in one payment' }
   const phases = await tx.paymentPhase.findMany({ where: { projectId, isActive: true }, select: { id: true, name: true, amount: true } })
   const received = await allocatedByPhase(tx, projectId)
   const rows: { phaseId: string; amount: bigint }[] = []
@@ -149,19 +149,19 @@ export async function checkAllocations(
   let total = BigInt(0)
   for (const entry of raw as { phaseId?: unknown; amount?: unknown }[]) {
     const phase = phases.find((p) => p.id === entry?.phaseId)
-    if (!phase) return { error: 'A payment can only be counted against an active phase of this project' }
+    if (!phase) return { error: "A payment can only go to a stage in this project's schedule" }
     if (seen.has(phase.id)) return { error: `${phase.name} is listed twice` }
     seen.add(phase.id)
     const amount = parseRupees(entry.amount)
     if (amount === null || amount <= BigInt(0)) return { error: `Enter an amount for ${phase.name}, more than 0` }
     const balance = phase.amount - (received.get(phase.id) ?? BigInt(0))
     if (amount > balance) {
-      return { error: `${phase.name} has only ${formatInr(Number(balance > BigInt(0) ? balance : BigInt(0)))} left to pay. Put the rest on account or against another phase.` }
+      return { error: `${phase.name} has only ${formatInr(Number(balance > BigInt(0) ? balance : BigInt(0)))} left to pay. Put the rest towards another stage, or leave it as an advance.` }
     }
     rows.push({ phaseId: phase.id, amount })
     total += amount
   }
-  if (total > available) return { error: `The phases add up to ${formatInr(Number(total))}, more than the ${formatInr(Number(available))} available` }
+  if (total > available) return { error: `The stages add up to ${formatInr(Number(total))}, more than the ${formatInr(Number(available))} available` }
   return { rows, total }
 }
 
@@ -232,12 +232,12 @@ export async function loadPaymentsSummary(projectId: string): Promise<PaymentsSu
   if (plan && phases.some((p) => p.isActive) && phasesTotal !== fee) {
     const diff = fee - phasesTotal
     warnings.push(diff > BigInt(0)
-      ? `Phases add up to ${formatInr(n(phasesTotal))}, ${formatInr(n(diff))} less than the fee. Add or raise a phase so all of the fee is billed.`
-      : `Phases add up to ${formatInr(n(phasesTotal))}, ${formatInr(n(-diff))} more than the fee. Lower a phase or record a fee change.`)
+      ? `The stages add up to ${formatInr(n(phasesTotal))}, ${formatInr(n(diff))} less than the fee. Add a stage or raise one so the whole fee is billed.`
+      : `The stages add up to ${formatInr(n(phasesTotal))}, ${formatInr(n(-diff))} more than the fee. Lower a stage, or change the fee.`)
   }
   if (received > fee && plan) warnings.push(`${formatInr(n(received - fee))} more has been received than the fee.`)
   const onAccount = received - allocatedTotal
-  if (onAccount > BigInt(0)) warnings.push(`${formatInr(n(onAccount))} received is not yet counted against any phase (on account).`)
+  if (onAccount > BigInt(0)) warnings.push(`${formatInr(n(onAccount))} received as an advance, not linked to any stage yet.`)
 
   return {
     plan: plan ? { basis: plan.basis as FeeBasis, percentBp: plan.percentBp, createdAt: plan.createdAt.toISOString() } : null,
@@ -257,7 +257,7 @@ export async function loadPaymentsSummary(projectId: string): Promise<PaymentsSu
         id: r.id, receivedOn: r.receivedOn.toISOString(), amount: n(r.amount), mode: r.mode as PaymentMode,
         reference: r.reference, payer: r.payer, note: r.note,
         createdAt: r.createdAt.toISOString(), createdByName: nameOf(r.createdById),
-        allocations: r.allocations.map((a) => ({ id: a.id, phaseId: a.phaseId, phaseName: phaseName.get(a.phaseId) ?? 'Phase', amount: n(a.amount), createdAt: a.createdAt.toISOString() })),
+        allocations: r.allocations.map((a) => ({ id: a.id, phaseId: a.phaseId, phaseName: phaseName.get(a.phaseId) ?? 'Stage', amount: n(a.amount), createdAt: a.createdAt.toISOString() })),
         allocated: n(alloc),
         onAccount: r.reversedAt ? 0 : n(r.amount - alloc),
         reversed: r.reversedAt ? { at: r.reversedAt.toISOString(), byName: nameOf(r.reversedById), reason: r.reversalReason ?? '' } : null,
@@ -276,18 +276,20 @@ export async function loadPaymentsSummary(projectId: string): Promise<PaymentsSu
 }
 
 /** One readable line per audit entry. */
+const CHANGED_FIELD: Record<string, string> = { name: 'name', amount: 'amount', dueDate: 'due date', note: 'note', sortOrder: 'position' }
+
 function describeAudit(action: string, d: Record<string, unknown>): string {
   const inr = (v: unknown) => (typeof v === 'number' ? formatInr(v) : '')
   switch (action) {
     case 'SETUP': return `Fee set up: ${inr(d.fee)}${d.basis === 'PERCENT' ? ` (${d.percent} of ${inr(d.estimatedCost)})` : ''}`
     case 'FEE_CHANGE': return `${FEE_CHANGE_LABELS[d.kind as FeeChangeKind] ?? 'Fee change'}: ${(d.amountDelta as number) >= 0 ? '+' : ''}${inr(d.amountDelta)}, fee now ${inr(d.feeAfter)}. ${d.reason ?? ''}`
-    case 'PHASE_ADD': return `Phase added: ${d.name}, ${inr(d.amount)}`
-    case 'PHASE_EDIT': return `Phase "${d.name}" changed: ${Object.keys((d.changes as object) ?? {}).join(', ')}`
-    case 'PHASE_ARCHIVE': return `Phase archived: ${d.name}`
-    case 'PHASE_RESTORE': return `Phase restored: ${d.name}`
+    case 'PHASE_ADD': return `Stage added: ${d.name}, ${inr(d.amount)}`
+    case 'PHASE_EDIT': return `Stage "${d.name}" changed: ${Object.keys((d.changes as object) ?? {}).map((k) => CHANGED_FIELD[k] ?? k).join(', ')}`
+    case 'PHASE_ARCHIVE': return `Stage removed from the schedule: ${d.name}`
+    case 'PHASE_RESTORE': return `Stage put back in the schedule: ${d.name}`
     case 'RECEIPT': return `Payment recorded: ${inr(d.amount)} by ${d.mode}${d.reference ? ` (${d.reference})` : ''}`
-    case 'REVERSE': return `Payment of ${inr(d.amount)} reversed: ${d.reason ?? ''}`
-    case 'ALLOCATE': return `On-account money counted against phases: ${inr(d.total)}`
+    case 'REVERSE': return `Payment entry of ${inr(d.amount)} cancelled: ${d.reason ?? ''}`
+    case 'ALLOCATE': return `Advance of ${inr(d.total)} linked to stages`
     default: return action
   }
 }

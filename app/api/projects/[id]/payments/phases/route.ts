@@ -22,8 +22,8 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     if (!body || typeof body !== 'object') return errorResponse('Request body must be an object', 400)
 
     const name = cleanText(body.name, 100)
-    if (name === 'too-long') return errorResponse('The phase name must be 100 characters or fewer', 400)
-    if (!name) return errorResponse('Give the phase a name', 400)
+    if (name === 'too-long') return errorResponse('The stage name must be 100 characters or fewer', 400)
+    if (!name) return errorResponse('Give the stage a name', 400)
     const note = cleanText(body.note, 300)
     if (note === 'too-long') return errorResponse('The note must be 300 characters or fewer', 400)
     let dueDate: Date | null = null
@@ -43,7 +43,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       } else {
         amount = parseRupees(body.amount)
       }
-      if (amount === null || amount <= BigInt(0)) return { error: 'Enter the phase amount in rupees (or a % of the fee), more than 0' }
+      if (amount === null || amount <= BigInt(0)) return { error: 'Enter the stage amount in rupees (or a % of the fee), more than 0' }
 
       const last = await tx.paymentPhase.aggregate({ where: { projectId: g.project.id }, _max: { sortOrder: true } })
       await tx.paymentPhase.create({

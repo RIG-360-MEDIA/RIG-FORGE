@@ -24,21 +24,21 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
 
     const result = await withProjectPaymentsLock(g.project.id, async (tx) => {
       const phase = await tx.paymentPhase.findFirst({ where: { id: params.phaseId, projectId: g.project.id } })
-      if (!phase) return { error: 'Phase not found', status: 404 }
+      if (!phase) return { error: 'Stage not found', status: 404 }
       const received = (await allocatedByPhase(tx, g.project.id)).get(phase.id) ?? BigInt(0)
 
       const data: { name?: string; amount?: bigint; dueDate?: Date | null; note?: string | null; sortOrder?: number; isActive?: boolean } = {}
       const changes: Record<string, unknown> = {}
       if ('name' in body) {
         const name = cleanText(body.name, 100)
-        if (name === 'too-long') return { error: 'The phase name must be 100 characters or fewer', status: 400 }
-        if (!name) return { error: 'The phase needs a name', status: 400 }
+        if (name === 'too-long') return { error: 'The stage name must be 100 characters or fewer', status: 400 }
+        if (!name) return { error: 'The stage needs a name', status: 400 }
         if (name !== phase.name) { data.name = name; changes.name = { from: phase.name, to: name } }
       }
       if ('amount' in body) {
         const amount = parseRupees(body.amount)
-        if (amount === null || amount <= BigInt(0)) return { error: 'Enter the phase amount in rupees, more than 0', status: 400 }
-        if (amount < received) return { error: `${phase.name} has already received more than that. It cannot be set below what was received.`, status: 400 }
+        if (amount === null || amount <= BigInt(0)) return { error: 'Enter the stage amount in rupees, more than 0', status: 400 }
+        if (amount < received) return { error: `${phase.name} has already been paid more than that. It cannot be set below what was paid.`, status: 400 }
         if (amount !== phase.amount) { data.amount = amount; changes.amount = { from: phase.amount, to: amount } }
       }
       if ('dueDate' in body) {
@@ -59,7 +59,7 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
       if ('isActive' in body) {
         if (typeof body.isActive !== 'boolean') return { error: 'isActive must be true or false', status: 400 }
         if (!body.isActive && phase.isActive) {
-          if (received > BigInt(0)) return { error: `${phase.name} has payments counted against it, so it cannot be archived.`, status: 400 }
+          if (received > BigInt(0)) return { error: `${phase.name} has payments linked to it, so it cannot be removed.`, status: 400 }
           data.isActive = false; action = 'PHASE_ARCHIVE'
         } else if (body.isActive && !phase.isActive) {
           data.isActive = true; action = 'PHASE_RESTORE'
