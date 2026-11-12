@@ -422,8 +422,8 @@ The MDDA file is inside `By_Laws` anyway (`By_Laws/MDDA UTTARAKHAND/`). What it 
   - `scripts/nas-connector/krutidev.py` (new) converts Kruti Dev to Unicode. It uses the standard Kruti Dev 010 mapping, and moves ि and the reph to their Unicode positions.
   - Only fonts whose words are often common Hindi words as typed in Kruti Dev are converted (`kruti_fonts`), so English in other fonts is untouched.
   - Extraction and `/locate` (the Page dropdown) both use the converted text (`_page_texts`).
-  - A mostly readable PDF still OCRs its unreadable pages that are pictures (`_pictured`), such as scanned appendices and "Scanned by CamScanner" pages. Before, they were indexed as page numbers.
-  - `OCR_VERSION` is now 3, so cached extractions are redone.
+  - A mostly readable **Hindi** PDF (Devanagari at least 20% of its letters) still OCRs its unreadable pages that are pictures (`_pictured`), such as MDDA's scanned appendices and "Scanned by CamScanner" pages. Before, they were indexed as page numbers. English code books are left as before: their pictures are drawings (Neufert 60 pages, Time-Saver 157, NBC 111), whose OCR took ~10 min per book and was mostly noise. On the 40 bylaws PDFs only MDDA counts as Hindi.
+  - `OCR_VERSION` is now 4, so cached extractions are redone.
 - `lib/rag/embeddings.ts`: half surrogate pairs (a math letter cut in two by chunking) are replaced before embedding. They failed ECSBC 2024 and CPHEEO in the 11 Nov sync.
 
 **Measured on the real MDDA PDF (on TRIJYA-3):**

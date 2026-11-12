@@ -441,8 +441,9 @@ OCR_VARIANTS = [(float(v.split(":")[0]), v.endswith(":clean"))
 # The LSTM engine; automatic page layout (psm 3) read the tables best.
 OCR_CONFIG = os.environ.get("NAS_OCR_CONFIG", "--oem 1 --psm 3")
 # Bump when extraction changes, so cached extractions made the old way are
-# redone. 3: Kruti Dev text converted (krutidev.py) instead of OCR'd.
-OCR_VERSION = "3"
+# redone. 3: Kruti Dev text converted (krutidev.py) instead of OCR'd. 4: picture
+# pages OCR'd only in Hindi documents.
+OCR_VERSION = "4"
 # A page at least this share covered by images is a scan.
 SCAN_IMAGE_SHARE = float(os.environ.get("NAS_SCAN_IMAGE_SHARE", "0.7"))
 EXTRACT_WORKERS = max(1, int(os.environ.get("NAS_EXTRACT_WORKERS", "1")))
@@ -673,11 +674,15 @@ def _extract_downloaded(conn, share: str, server: str, path: str, max_chars: int
 
             # Mostly readable: index the text layer as it is, as before. (Normal
             # documents have a few "unreadable" pages, tables and title pages;
-            # measured on Trijya's bylaws: at most 14% of passages.) Except
-            # its unreadable pages that are pictures, scanned forms and
-            # appendices, which only OCR can read.
+            # measured on Trijya's bylaws: at most 14% of passages.) Except, in
+            # a Hindi document, its unreadable pages that are pictures: scanned
+            # forms and appendices (the MDDA bylaws). In English code books the
+            # pictures are drawings (Neufert, NBC), whose OCR is slow and mostly
+            # noise, so they are left out as before.
             if len(bad) / n < UNREADABLE_DOC_SHARE:
-                pictures = [i for i in bad if _pictured(doc[i])] if ocr_ready else []
+                joined = "".join(pages)
+                hindi = len(_DEVA.findall(joined)) >= 0.2 * max(1, len(_LATIN.findall(joined)))
+                pictures = [i for i in bad if _pictured(doc[i])] if ocr_ready and hindi else []
                 if not pictures:
                     text = "\n\n".join(pages).strip()
                     return {"ok": True, "text": text[:max_chars], "method": "text",
