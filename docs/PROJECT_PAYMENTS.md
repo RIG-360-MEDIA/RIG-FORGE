@@ -4,15 +4,17 @@ Branch `feature/payments` (built on `feature/task-categories`). A record, per pr
 
 ## What it does
 
-| Where | What |
+Project → **Payments** tab, top to bottom. Each number appears once.
+
+| Part | What it answers |
 |---|---|
-| Project → **Payments** tab | Fee, received, outstanding and "on account" at a glance, with a progress bar and warnings (phases do not add up to the fee, more received than the fee, money not yet counted against a phase). |
-| **Set up the fee** | Either a **fixed fee**, or a **% of the construction cost** (estimated cost × percent). Set once; after that it only changes through fee changes. |
-| **Change fee** | A **variation** (extra or less work) or a **correction**, plus or minus, with a reason. On a % fee, a **cost revision** enters the new estimated cost and the fee moves by the percent of the difference. Every change is kept and listed; the current fee is always the total. |
-| **Billing phases** | Concept, Drawings, Site... each with an amount (in rupees, or a % of the fee), a due date and a note. Paid / part paid / unpaid / overdue. Reorder, edit, archive (only if nothing was received against it). |
-| **Record payment** | Amount, date, mode (bank, UPI, cheque, cash, other), reference (UTR / cheque no.), payer, note, and how much counts against each phase ("Fill in phase order" splits it automatically). Anything not counted against a phase stays **on account** and can be counted later. |
-| **Reverse** | A payment entered by mistake, or a bounced cheque, is reversed with a reason. It stays in the list, struck through, and drops out of every total. |
-| **History** | Every action, by whom and when, in plain words. |
+| **Summary** | How much has the client paid, of what fee, and how much is left? The next stage to be paid, and **Fee details** (the agreed fee and every change to it, with reasons; **Change the fee** is there). |
+| **Payment schedule** | The stages the client pays for (Concept, Drawings, Site...), each with its amount, a progress bar and Paid / Part paid / Not paid / Overdue. Click a stage to see which payments paid it. The "..." menu edits, reorders or removes a stage (only if nothing was paid for it). Warns when the stages do not add up to the fee. |
+| **Payments received** | Every payment, newest first: amount, date, mode and reference, and the stages it paid for. **Cancel this entry** (with a reason) for a mistake or a bounced cheque: it is kept, struck through, under "cancelled entries", and stops counting. |
+| **Record payment** | Amount, date, mode, reference. It is split across the unpaid stages in order automatically; change the split if the client says otherwise. Anything not given to a stage is kept as an **advance**, shown in a banner with **Link it to a stage**. |
+| **Activity log** | Every action, by whom and when (collapsed at the bottom). |
+
+The fee is either a **fixed fee** or a **% of the construction cost**. On a % fee, entering a new construction cost estimate moves the fee by that percent of the difference.
 
 **Who can see it**: only ADMIN and SUPER_ADMIN (their base role), checked on the server for every request. Project leads, employees and external (client) users get no tab and a 403 from the API, even on projects they lead.
 

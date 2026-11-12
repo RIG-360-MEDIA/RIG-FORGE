@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { ApiResponse } from '@/lib/types'
 import {
   FEE_CHANGE_LABELS, PAYMENT_MODES, formatInr, formatPercentBp, paiseToRupeesText, rupeesToPaise,
@@ -64,23 +64,12 @@ function ErrorLine({ text }: { text: string | null }) {
   return text ? <div className="text-sm text-status-danger bg-status-danger/10 border border-status-danger/30 rounded px-3 py-2">{text}</div> : null
 }
 
-function Stat({ title, value, sub, tone }: { title: string; value: string; sub?: string; tone?: 'good' | 'warn' | 'bad' }) {
-  const color = tone === 'good' ? 'text-status-success' : tone === 'warn' ? 'text-status-warning' : tone === 'bad' ? 'text-status-danger' : 'text-primary'
-  return (
-    <div className="rounded-xl border border-border-default bg-surface-raised/50 px-4 py-3">
-      <p className="text-[11px] font-medium uppercase tracking-wider text-muted">{title}</p>
-      <p className={`mt-1 text-xl font-semibold tabular-nums ${color}`}>{value}</p>
-      {sub && <p className="mt-0.5 text-xs text-muted">{sub}</p>}
-    </div>
-  )
-}
-
 const STATUS_STYLE: Record<PhaseView['status'], string> = {
   PAID: 'bg-status-success/15 text-status-success',
   PART_PAID: 'bg-status-warning/15 text-status-warning',
   UNPAID: 'bg-surface-sunken text-secondary',
 }
-const STATUS_TEXT: Record<PhaseView['status'], string> = { PAID: 'Paid', PART_PAID: 'Part paid', UNPAID: 'Unpaid' }
+const STATUS_TEXT: Record<PhaseView['status'], string> = { PAID: 'Paid', PART_PAID: 'Part paid', UNPAID: 'Not paid' }
 
 // ─── Setup ────────────────────────────────────────────────────────────────────
 
@@ -150,25 +139,13 @@ function AllocationEditor({ phases, total, values, onChange }: {
   const used = open.reduce((s, p) => s + (rupeesToPaise(values[p.id] ?? '') ?? 0), 0)
   const left = total === null ? null : total - used
 
-  function fillInOrder() {
-    if (total === null) return
-    let rest = total
-    const next: Record<string, string> = {}
-    for (const p of open) {
-      if (rest <= 0) break
-      const take = Math.min(rest, p.balance)
-      next[p.id] = paiseToRupeesText(take)
-      rest -= take
-    }
-    onChange(next)
-  }
 
-  if (open.length === 0) return <p className="text-sm text-muted">Every phase is fully paid; this payment will stay on account.</p>
+  if (open.length === 0) return <p className="text-sm text-muted">Every stage is fully paid, so this will be kept as an advance.</p>
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <p className="text-[11px] font-medium uppercase tracking-wider text-muted">Count it against phases</p>
-        <button type="button" onClick={fillInOrder} disabled={total === null} className="text-xs font-medium text-accent hover:underline disabled:opacity-40">Fill in phase order</button>
+        <p className="text-[11px] font-medium uppercase tracking-wider text-muted">Which stage is it for?</p>
+        <button type="button" onClick={() => { if (total !== null) onChange(splitInOrder(phases, total)) }} disabled={total === null} className="text-xs font-medium text-accent hover:underline disabled:opacity-40">Split in stage order</button>
       </div>
       <ul className="rounded-lg border border-border-default divide-y divide-border-default">
         {open.map((p) => {
@@ -179,7 +156,7 @@ function AllocationEditor({ phases, total, values, onChange }: {
             <li key={p.id} className="flex items-center gap-3 px-3 py-2">
               <span className="flex-1 min-w-0">
                 <span className="block text-sm text-primary truncate">{p.name}</span>
-                <span className="block text-[11px] text-muted">Balance {formatInr(p.balance)}</span>
+                <span className="block text-[11px] text-muted">{formatInr(p.balance)} left to pay</span>
               </span>
               <span className="w-36 shrink-0">
               <input
@@ -197,11 +174,24 @@ function AllocationEditor({ phases, total, values, onChange }: {
       </ul>
       {left !== null && (
         <p className={`text-xs ${left < 0 ? 'text-status-danger' : 'text-muted'}`}>
-          {left < 0 ? `${formatInr(-left)} more than the payment` : left > 0 ? `${formatInr(left)} will stay on account` : 'All of it is counted against phases'}
+          {left < 0 ? `${formatInr(-left)} more than the payment` : left > 0 ? `${formatInr(left)} will be kept as an advance (you can link it to a stage later)` : 'All of it goes to the stages above'}
         </p>
       )}
     </div>
   )
+}
+
+/** Fill the stages in schedule order with up to `total` paise. */
+function splitInOrder(phases: PhaseView[], total: number): Record<string, string> {
+  let rest = total
+  const next: Record<string, string> = {}
+  for (const p of phases.filter((x) => x.isActive && x.balance > 0)) {
+    if (rest <= 0) break
+    const take = Math.min(rest, p.balance)
+    next[p.id] = paiseToRupeesText(take)
+    rest -= take
+  }
+  return next
 }
 
 const allocationList = (values: Record<string, string>) =>
@@ -219,11 +209,16 @@ function RecordPaymentModal({ projectId, summary, onClose, onSaved }: {
   const [payer, setPayer] = useState('')
   const [note, setNote] = useState('')
   const [alloc, setAlloc] = useState<Record<string, string>>({})
+  const [splitByHand, setSplitByHand] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [duplicate, setDuplicate] = useState<string | null>(null)
 
   const paise = rupeesToPaise(amount)
+  // Until the split is edited by hand, it follows the amount: oldest stage first.
+  useEffect(() => {
+    if (!splitByHand) setAlloc(paise !== null && paise > 0 ? splitInOrder(summary.phases, paise) : {})
+  }, [paise, splitByHand, summary.phases])
 
   async function save(confirmDuplicate = false) {
     setBusy(true); setError(null)
@@ -241,7 +236,7 @@ function RecordPaymentModal({ projectId, summary, onClose, onSaved }: {
       <div className="grid grid-cols-2 gap-3">
         <label className={label}>Amount received (₹)<input autoFocus inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="e.g. 3,00,000" className={field} /></label>
         <label className={label}>Received on<input type="date" value={receivedOn} max={todayText()} onChange={(e) => setReceivedOn(e.target.value)} className={field} /></label>
-        <label className={label}>Paid by
+        <label className={label}>Mode
           <select value={mode} onChange={(e) => setMode(e.target.value as PaymentMode)} className={field}>
             {PAYMENT_MODES.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
           </select>
@@ -250,7 +245,7 @@ function RecordPaymentModal({ projectId, summary, onClose, onSaved }: {
         <label className={label}>Received from<input value={payer} onChange={(e) => setPayer(e.target.value)} maxLength={100} placeholder="Client name" className={field} /></label>
         <label className={label}>Note<input value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} className={field} /></label>
       </div>
-      <AllocationEditor phases={summary.phases} total={paise} values={alloc} onChange={setAlloc} />
+      <AllocationEditor phases={summary.phases} total={paise} values={alloc} onChange={(v) => { setSplitByHand(true); setAlloc(v) }} />
       <ErrorLine text={error} />
       {duplicate && (
         <div className="text-sm bg-status-warning/10 border border-status-warning/40 rounded px-3 py-2 space-y-2">
@@ -297,12 +292,12 @@ function PhaseModal({ projectId, summary, phase, onClose, onSaved }: {
     const r = await send(phase ? `/api/projects/${projectId}/payments/phases/${phase.id}` : `/api/projects/${projectId}/payments/phases`, phase ? 'PATCH' : 'POST', body)
     setBusy(false)
     if (r.error) { setError(r.error); return }
-    if (r.data) onSaved(r.data, phase ? `"${name}" saved.` : `Phase "${name}" added.`)
+    if (r.data) onSaved(r.data, phase ? `"${name}" saved.` : `Stage "${name}" added.`)
   }
 
   return (
-    <Modal title={phase ? `Edit ${phase.name}` : 'Add a billing phase'} onClose={onClose}>
-      <label className={label}>Phase name<input autoFocus value={name} onChange={(e) => setName(e.target.value)} maxLength={100} placeholder="e.g. Working drawings" className={field} /></label>
+    <Modal title={phase ? `Edit ${phase.name}` : 'Add a stage'} onClose={onClose}>
+      <label className={label}>Stage name<input autoFocus value={name} onChange={(e) => setName(e.target.value)} maxLength={100} placeholder="e.g. Working drawings" className={field} /></label>
       {!phase && (
         <div className="inline-flex rounded-lg border border-border-default p-0.5">
           {(['amount', 'percent'] as const).map((b) => (
@@ -317,10 +312,10 @@ function PhaseModal({ projectId, summary, phase, onClose, onSaved }: {
       ) : (
         <label className={label}>Percentage of the fee ({formatInr(summary.totals.fee)})<input inputMode="decimal" value={percent} onChange={(e) => setPercent(e.target.value)} placeholder="e.g. 25" className={field} /></label>
       )}
-      {phase && phase.received > 0 && <p className="text-xs text-muted">{formatInr(phase.received)} already received against this phase; the amount cannot go below that.</p>}
+      {phase && phase.received > 0 && <p className="text-xs text-muted">{formatInr(phase.received)} already paid for this stage; the amount cannot go below that.</p>}
       <p className="text-xs text-muted">
-        Phase amount: <span className="text-primary font-medium">{preview !== null && preview > 0 ? formatInr(preview) : '—'}</span>
-        {!phase && remaining !== 0 && <> · {remaining > 0 ? `${formatInr(remaining)} of the fee is not in any phase yet` : `phases are ${formatInr(-remaining)} over the fee`}</>}
+        Stage amount: <span className="text-primary font-medium">{preview !== null && preview > 0 ? formatInr(preview) : '—'}</span>
+        {!phase && remaining !== 0 && <> · {remaining > 0 ? `${formatInr(remaining)} of the fee is not in any stage yet` : `stages are ${formatInr(-remaining)} over the fee`}</>}
       </p>
       <div className="grid grid-cols-2 gap-3">
         <label className={label}>Due date (optional)<input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className={field} /></label>
@@ -330,7 +325,7 @@ function PhaseModal({ projectId, summary, phase, onClose, onSaved }: {
       <div className="flex justify-end gap-2">
         <button type="button" onClick={onClose} className={ghostBtn}>Cancel</button>
         <button type="button" disabled={busy || !name.trim() || preview === null || preview <= 0} onClick={() => void save()} className={primaryBtn}>
-          {busy ? 'Saving...' : phase ? 'Save' : 'Add phase'}
+          {busy ? 'Saving...' : phase ? 'Save' : 'Add stage'}
         </button>
       </div>
     </Modal>
@@ -407,20 +402,20 @@ function ReverseModal({ projectId, receipt, onClose, onSaved }: {
     const r = await send(`/api/projects/${projectId}/payments/receipts/${receipt.id}/reverse`, 'POST', { reason })
     setBusy(false)
     if (r.error) { setError(r.error); return }
-    if (r.data) onSaved(r.data, `Payment of ${formatInr(receipt.amount)} reversed.`)
+    if (r.data) onSaved(r.data, `Payment entry of ${formatInr(receipt.amount)} cancelled.`)
   }
   return (
-    <Modal title="Reverse this payment" onClose={onClose}>
+    <Modal title="Cancel this payment entry" onClose={onClose}>
       <p className="text-sm text-secondary">
         {formatInr(receipt.amount)} received {showDate(receipt.receivedOn)} by {modeLabel(receipt.mode)}{receipt.reference ? ` (${receipt.reference})` : ''}.
-        It stays in the history, marked reversed, and stops counting toward every total. This cannot be undone; record it again if needed.
+        Use this if it was entered by mistake or the cheque bounced. The entry is kept, marked cancelled, and stops counting in every total. This cannot be undone; record it again if needed.
       </p>
-      <label className={label}>Reason<input autoFocus value={reason} onChange={(e) => setReason(e.target.value)} maxLength={300} placeholder="e.g. Entered on the wrong project" className={field} /></label>
+      <label className={label}>Reason<input autoFocus value={reason} onChange={(e) => setReason(e.target.value)} maxLength={300} placeholder="e.g. Cheque bounced" className={field} /></label>
       <ErrorLine text={error} />
       <div className="flex justify-end gap-2">
-        <button type="button" onClick={onClose} className={ghostBtn}>Cancel</button>
+        <button type="button" onClick={onClose} className={ghostBtn}>Keep it</button>
         <button type="button" disabled={busy || reason.trim().length < 3} onClick={() => void save()} className="px-4 py-2 text-sm font-semibold rounded bg-status-danger text-white disabled:opacity-50">
-          {busy ? 'Reversing...' : 'Reverse payment'}
+          {busy ? 'Cancelling...' : 'Cancel entry'}
         </button>
       </div>
     </Modal>
@@ -439,11 +434,11 @@ function AllocateModal({ projectId, summary, receipt, onClose, onSaved }: {
     const r = await send(`/api/projects/${projectId}/payments/receipts/${receipt.id}/allocate`, 'POST', { allocations: list })
     setBusy(false)
     if (r.error) { setError(r.error); return }
-    if (r.data) onSaved(r.data, 'On-account money counted against phases.')
+    if (r.data) onSaved(r.data, 'Advance linked to stages.')
   }
   return (
-    <Modal title="Count on-account money against phases" onClose={onClose} wide>
-      <p className="text-sm text-secondary">From the {formatInr(receipt.amount)} received {showDate(receipt.receivedOn)}: <span className="font-semibold text-primary">{formatInr(receipt.onAccount)}</span> is on account.</p>
+    <Modal title="Link the advance to stages" onClose={onClose} wide>
+      <p className="text-sm text-secondary">From the {formatInr(receipt.amount)} received {showDate(receipt.receivedOn)}: <span className="font-semibold text-primary">{formatInr(receipt.onAccount)}</span> is an advance, not linked to any stage yet.</p>
       <AllocationEditor phases={summary.phases} total={receipt.onAccount} values={alloc} onChange={setAlloc} />
       <ErrorLine text={error} />
       <div className="flex justify-end gap-2">
@@ -454,11 +449,113 @@ function AllocateModal({ projectId, summary, receipt, onClose, onSaved }: {
   )
 }
 
+// ─── Row menu ─────────────────────────────────────────────────────────────────
+
+type MenuItem = { text: string; onClick: () => void; danger?: boolean; hidden?: boolean }
+
+function RowMenu({ label, items }: { label: string; items: MenuItem[] }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const close = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false) }
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', close)
+    document.addEventListener('keydown', esc)
+    return () => { document.removeEventListener('mousedown', close); document.removeEventListener('keydown', esc) }
+  }, [open])
+  const shown = items.filter((i) => !i.hidden)
+  if (shown.length === 0) return <span className="w-8 shrink-0" />
+  return (
+    <div ref={ref} className="relative shrink-0">
+      <button
+        type="button" aria-label={label} aria-haspopup="menu" aria-expanded={open}
+        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v) }}
+        className="h-8 w-8 rounded text-lg leading-none text-muted hover:text-primary hover:bg-surface-sunken"
+      >
+        ⋯
+      </button>
+      {open && (
+        <div role="menu" className="absolute right-0 top-9 z-20 min-w-[12rem] rounded-lg border border-border-default bg-surface-raised py-1 shadow-lg">
+          {shown.map((i) => (
+            <button
+              key={i.text} type="button" role="menuitem"
+              onClick={(e) => { e.stopPropagation(); setOpen(false); i.onClick() }}
+              className={`block w-full px-3 py-2 text-left text-sm hover:bg-surface-sunken ${i.danger ? 'text-status-danger' : 'text-primary'}`}
+            >
+              {i.text}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Fee details ──────────────────────────────────────────────────────────────
+
+function FeeDetailsModal({ summary, onClose, onChange }: { summary: PaymentsSummary; onClose: () => void; onChange: () => void }) {
+  return (
+    <Modal title="Fee details" onClose={onClose}>
+      <p className="text-sm text-secondary">{feeBasisText(summary)}</p>
+      <ul className="rounded-lg border border-border-default divide-y divide-border-default">
+        {summary.fee.changes.map((c) => (
+          <li key={c.id} className="px-3 py-2.5">
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="text-sm text-primary">{c.kind === 'INITIAL' ? 'Agreed fee' : FEE_CHANGE_LABELS[c.kind]}</span>
+              <span className={`text-sm font-medium tabular-nums ${c.amountDelta < 0 ? 'text-status-danger' : 'text-primary'}`}>
+                {c.kind === 'INITIAL' ? '' : c.amountDelta > 0 ? '+' : '−'}{formatInr(Math.abs(c.amountDelta))}
+              </span>
+            </div>
+            <p className="text-xs text-muted">
+              {c.kind !== 'INITIAL' && c.reason ? `${c.reason} · ` : ''}
+              {c.estimatedCost !== null ? `cost estimate ${formatInr(c.estimatedCost)} · ` : ''}
+              {c.createdByName}, {showWhen(c.createdAt)}
+            </p>
+          </li>
+        ))}
+        <li className="flex items-baseline justify-between px-3 py-2.5 bg-surface-sunken/50">
+          <span className="text-sm font-semibold text-primary">Fee now</span>
+          <span className="text-sm font-semibold tabular-nums text-primary">{formatInr(summary.totals.fee)}</span>
+        </li>
+      </ul>
+      <p className="text-xs text-muted">The agreed fee is never overwritten. A change is added with its reason, so you can always see how the fee came about.</p>
+      <div className="flex justify-end gap-2">
+        <button type="button" onClick={onClose} className={ghostBtn}>Close</button>
+        <button type="button" onClick={onChange} className={primaryBtn}>Change the fee</button>
+      </div>
+    </Modal>
+  )
+}
+
+function feeBasisText(s: PaymentsSummary): string {
+  if (s.plan?.basis === 'PERCENT' && s.plan.percentBp !== null && s.fee.estimatedCost !== null) {
+    return `${formatPercentBp(s.plan.percentBp)} of ${formatInr(s.fee.estimatedCost)} construction cost`
+  }
+  return 'Fixed fee'
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 type Dialog =
-  | { kind: 'record' } | { kind: 'phase'; phase: PhaseView | null } | { kind: 'fee' }
+  | { kind: 'record' } | { kind: 'phase'; phase: PhaseView | null } | { kind: 'fee' } | { kind: 'feeDetails' }
   | { kind: 'reverse'; receipt: ReceiptView } | { kind: 'allocate'; receipt: ReceiptView } | null
+
+function PhaseStatusPill({ phase }: { phase: PhaseView }) {
+  const [text, style] = phase.overdue
+    ? ['Overdue', 'bg-status-danger/15 text-status-danger']
+    : [STATUS_TEXT[phase.status], STATUS_STYLE[phase.status]]
+  return <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase whitespace-nowrap ${style}`}>{text}</span>
+}
+
+function Bar({ value, total, className = 'h-1.5' }: { value: number; total: number; className?: string }) {
+  const pct = total > 0 ? Math.min(100, (value / total) * 100) : 0
+  return (
+    <div className={`${className} rounded-full bg-surface-sunken overflow-hidden`}>
+      <div className="h-full rounded-full bg-status-success" style={{ width: `${pct}%` }} />
+    </div>
+  )
+}
 
 export default function PaymentsTab({ projectId }: { projectId: string }) {
   const [summary, setSummary] = useState<PaymentsSummary | null>(null)
@@ -466,8 +563,10 @@ export default function PaymentsTab({ projectId }: { projectId: string }) {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [dialog, setDialog] = useState<Dialog>(null)
-  const [showArchived, setShowArchived] = useState(false)
-  const [showHistory, setShowHistory] = useState(false)
+  const [openPhase, setOpenPhase] = useState<string | null>(null)
+  const [showRemoved, setShowRemoved] = useState(false)
+  const [showCancelled, setShowCancelled] = useState(false)
+  const [showLog, setShowLog] = useState(false)
 
   const load = useCallback(async () => {
     const r = await send(`/api/projects/${projectId}/payments`, 'GET')
@@ -485,7 +584,7 @@ export default function PaymentsTab({ projectId }: { projectId: string }) {
   async function archive(phase: PhaseView, isActive: boolean) {
     const r = await send(`/api/projects/${projectId}/payments/phases/${phase.id}`, 'PATCH', { isActive })
     if (r.error) setError(r.error)
-    else if (r.data) saved(r.data, isActive ? `"${phase.name}" restored.` : `"${phase.name}" archived.`)
+    else if (r.data) saved(r.data, isActive ? `"${phase.name}" is back in the schedule.` : `"${phase.name}" removed from the schedule.`)
   }
   async function move(phase: PhaseView, dir: -1 | 1) {
     const active = summary?.phases.filter((p) => p.isActive) ?? []
@@ -500,7 +599,15 @@ export default function PaymentsTab({ projectId }: { projectId: string }) {
   }
 
   const activePhases = useMemo(() => summary?.phases.filter((p) => p.isActive) ?? [], [summary])
-  const archived = useMemo(() => summary?.phases.filter((p) => !p.isActive) ?? [], [summary])
+  const removedPhases = useMemo(() => summary?.phases.filter((p) => !p.isActive) ?? [], [summary])
+  const liveReceipts = useMemo(() => summary?.receipts.filter((r) => !r.reversed) ?? [], [summary])
+  const cancelled = useMemo(() => summary?.receipts.filter((r) => r.reversed) ?? [], [summary])
+  // Which payments paid each phase, for the phase's expanded view.
+  const paidInto = useMemo(() => {
+    const m = new Map<string, { receipt: ReceiptView; amount: number }[]>()
+    for (const r of liveReceipts) for (const a of r.allocations) m.set(a.phaseId, [...(m.get(a.phaseId) ?? []), { receipt: r, amount: a.amount }])
+    return m
+  }, [liveReceipts])
 
   if (loading) return <div className="space-y-3">{[...Array(3)].map((_, i) => <div key={i} className="h-20 rounded-xl bg-surface-raised animate-pulse" />)}</div>
   if (!summary) return <ErrorLine text={error ?? 'Could not load payments.'} />
@@ -510,186 +617,235 @@ export default function PaymentsTab({ projectId }: { projectId: string }) {
       <div className="space-y-4 pt-1">
         <div>
           <h2 className="text-base font-semibold text-primary">Payments</h2>
-          <p className="text-sm text-secondary mt-0.5">Visible to admins only.</p>
+          <p className="text-sm text-secondary mt-0.5">Only admins can see this.</p>
         </div>
-        <SetupCard projectId={projectId} onDone={(s) => saved(s, 'Fee set up. Now add the billing phases.')} />
+        <SetupCard projectId={projectId} onDone={(s) => saved(s, 'Fee set up. Now add the payment schedule.')} />
       </div>
     )
   }
 
   const t = summary.totals
-  const pctReceived = t.fee > 0 ? Math.min(100, Math.round((t.received / t.fee) * 100)) : 0
+  const nextDue = activePhases.find((p) => p.balance > 0) ?? null
+  const unscheduled = t.fee - t.phasesTotal
+  const advanceReceipt = liveReceipts.slice().reverse().find((r) => r.onAccount > 0) ?? null
+  const canLink = activePhases.some((p) => p.balance > 0)
+  const feeChanges = summary.fee.changes.length - 1
 
   return (
     <div className="space-y-5 pt-1">
-      <div className="flex flex-wrap items-end justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-base font-semibold text-primary">Payments</h2>
-          <p className="text-sm text-secondary mt-0.5">
-            {summary.plan.basis === 'PERCENT' && summary.plan.percentBp !== null && summary.fee.estimatedCost !== null
-              ? `Fee ${formatPercentBp(summary.plan.percentBp)} of ${formatInr(summary.fee.estimatedCost)} construction cost${summary.fee.changes.length > 1 ? ', with changes' : ''}. `
-              : 'Fixed fee. '}
-            Visible to admins only.
-          </p>
+          <p className="text-xs text-muted mt-0.5">Only admins can see this.</p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <button type="button" onClick={() => setDialog({ kind: 'fee' })} className="px-3 py-2 text-xs font-medium rounded border border-border-default text-primary hover:border-accent">Change fee</button>
-          <button type="button" onClick={() => setDialog({ kind: 'phase', phase: null })} className="px-3 py-2 text-xs font-medium rounded border border-border-default text-primary hover:border-accent">+ Phase</button>
-          <button type="button" onClick={() => setDialog({ kind: 'record' })} className="px-3 py-2 text-xs font-semibold rounded bg-accent text-white hover:bg-accent-hover">Record payment</button>
-        </div>
+        <button type="button" onClick={() => setDialog({ kind: 'record' })} className={primaryBtn}>Record payment</button>
       </div>
 
       {notice && <div role="status" className="text-sm text-status-success bg-status-success/10 border border-status-success/30 rounded-lg px-3 py-2">{notice}</div>}
       <ErrorLine text={error} />
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <Stat title="Fee" value={formatInr(t.fee)} sub={summary.fee.changes.length > 1 ? `${summary.fee.changes.length - 1} change${summary.fee.changes.length > 2 ? 's' : ''} since agreed` : 'As agreed'} />
-        <Stat title="Received" value={formatInr(t.received)} sub={`${pctReceived}% of the fee`} tone="good" />
-        <Stat title="Outstanding" value={formatInr(Math.max(0, t.outstanding))} sub={t.outstanding < 0 ? `${formatInr(-t.outstanding)} paid over the fee` : 'Fee minus received'} tone={t.outstanding > 0 ? 'warn' : undefined} />
-        <Stat title="On account" value={formatInr(t.onAccount)} sub="Received, not yet against a phase" />
-      </div>
-      <div className="h-2 rounded-full bg-surface-sunken overflow-hidden" aria-label={`${pctReceived}% of the fee received`}>
-        <div className="h-full bg-status-success" style={{ width: `${pctReceived}%` }} />
-      </div>
+      {/* 1. Where things stand */}
+      <section className="rounded-xl border border-border-default bg-surface-raised/50 p-5 space-y-3">
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <p className="text-[11px] font-medium uppercase tracking-wider text-muted">Received</p>
+            <p className="mt-1 text-2xl font-semibold tabular-nums text-primary">
+              {formatInr(t.received)} <span className="text-base font-normal text-secondary">of {formatInr(t.fee)}</span>
+            </p>
+          </div>
+          <div className="sm:text-right">
+            <p className="text-[11px] font-medium uppercase tracking-wider text-muted">{t.outstanding < 0 ? 'Paid over the fee' : 'Left to receive'}</p>
+            <p className={`mt-1 text-2xl font-semibold tabular-nums ${t.outstanding > 0 ? 'text-status-warning' : t.outstanding < 0 ? 'text-status-danger' : 'text-status-success'}`}>
+              {formatInr(Math.abs(t.outstanding))}
+            </p>
+          </div>
+        </div>
+        <Bar value={t.received} total={t.fee} className="h-2" />
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-xs text-secondary">
+          <span>
+            Fee: {feeBasisText(summary)}{feeChanges > 0 ? `, changed ${feeChanges === 1 ? 'once' : `${feeChanges} times`}` : ''}
+            {' · '}
+            <button type="button" onClick={() => setDialog({ kind: 'feeDetails' })} className="font-medium text-accent hover:underline">Fee details</button>
+          </span>
+          {nextDue ? (
+            <span className={nextDue.overdue ? 'text-status-danger' : ''}>
+              Next: <span className="font-medium">{nextDue.name}</span>, {formatInr(nextDue.balance)}
+              {nextDue.dueDate ? ` ${nextDue.overdue ? 'overdue since' : 'due'} ${showDate(nextDue.dueDate)}` : ''}
+            </span>
+          ) : activePhases.length > 0 && t.outstanding <= 0 ? <span className="text-status-success">Fully paid</span> : null}
+        </div>
+      </section>
 
-      {summary.warnings.length > 0 && (
-        <ul className="space-y-1">
-          {summary.warnings.map((w) => <li key={w} className="text-sm text-status-warning bg-status-warning/10 border border-status-warning/30 rounded-lg px-3 py-2">{w}</li>)}
-        </ul>
+      {/* Advance: money received that is not linked to a phase yet */}
+      {t.onAccount > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-status-warning/40 bg-status-warning/10 px-4 py-2.5 text-sm">
+          <span className="text-primary"><span className="font-semibold">{formatInr(t.onAccount)}</span> received as an advance, not linked to any stage yet.</span>
+          {advanceReceipt && canLink && (
+            <button type="button" onClick={() => setDialog({ kind: 'allocate', receipt: advanceReceipt })} className="text-xs font-semibold text-accent hover:underline">Link it to a stage</button>
+          )}
+        </div>
       )}
 
-      {/* Phases */}
-      <section className="rounded-xl border border-border-default overflow-hidden">
-        <header className="flex items-center justify-between px-4 py-3 bg-surface-raised/60">
-          <h3 className="text-sm font-semibold uppercase tracking-wide text-primary">Billing phases</h3>
-          <span className="text-xs text-muted tabular-nums">{countLabel(activePhases.length, "phase")}, {formatInr(t.phasesTotal)}</span>
+      {/* 2. Payment schedule */}
+      <section className="rounded-xl border border-border-default">
+        <header className="flex items-center justify-between px-4 py-3 bg-surface-raised/60 rounded-t-xl">
+          <div>
+            <h3 className="text-sm font-semibold text-primary">Payment schedule</h3>
+            <p className="text-xs text-muted">The stages the client pays for. Click a stage to see what paid it.</p>
+          </div>
+          <button type="button" onClick={() => setDialog({ kind: 'phase', phase: null })} className="px-3 py-1.5 text-xs font-medium rounded border border-border-default text-primary hover:border-accent whitespace-nowrap">+ Add stage</button>
         </header>
         {activePhases.length === 0 ? (
           <div className="px-4 py-6 text-center border-t border-border-default">
-            <p className="text-sm text-secondary">No phases yet. Split the fee into the stages you bill the client for.</p>
-            <button type="button" onClick={() => setDialog({ kind: 'phase', phase: null })} className="mt-3 px-4 py-2 text-xs font-semibold rounded bg-accent text-white hover:bg-accent-hover">Add the first phase</button>
+            <p className="text-sm text-secondary">No stages yet. Split the fee into the stages you bill the client for, e.g. Concept, Drawings, Site.</p>
+            <button type="button" onClick={() => setDialog({ kind: 'phase', phase: null })} className={`mt-3 ${primaryBtn}`}>Add the first stage</button>
           </div>
         ) : (
-          <div className="overflow-x-auto border-t border-border-default">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-[11px] uppercase tracking-wider text-muted text-left">
-                  <th className="px-4 py-2 font-medium">Phase</th>
-                  <th className="px-3 py-2 font-medium text-right">Amount</th>
-                  <th className="px-3 py-2 font-medium text-right">Received</th>
-                  <th className="px-3 py-2 font-medium text-right">Balance</th>
-                  <th className="px-3 py-2 font-medium">Status</th>
-                  <th className="px-3 py-2" />
-                </tr>
-              </thead>
-              <tbody>
-                {activePhases.map((p, i) => (
-                  <tr key={p.id} className="border-t border-border-default">
-                    <td className="px-4 py-2.5">
-                      <span className="text-primary">{i + 1}. {p.name}</span>
-                      {(p.dueDate || p.note) && (
-                        <span className={`block text-[11px] ${p.overdue ? 'text-status-danger' : 'text-muted'}`}>
-                          {p.dueDate ? `${p.overdue ? 'Overdue since' : 'Due'} ${showDate(p.dueDate)}` : ''}{p.dueDate && p.note ? ' · ' : ''}{p.note ?? ''}
-                        </span>
+          <ul>
+            {activePhases.map((p, i) => {
+              const open = openPhase === p.id
+              const paid = paidInto.get(p.id) ?? []
+              return (
+                <li key={p.id} className="border-t border-border-default">
+                  <div
+                    role="button" tabIndex={0} aria-expanded={open}
+                    onClick={() => setOpenPhase(open ? null : p.id)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpenPhase(open ? null : p.id) } }}
+                    className="flex items-start gap-3 px-4 py-3 cursor-pointer hover:bg-surface-raised/40"
+                  >
+                    <div className="flex-1 min-w-0 space-y-1.5">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex flex-wrap items-center gap-2 min-w-0">
+                          <span className="text-sm font-medium text-primary">{i + 1}. {p.name}</span>
+                          <PhaseStatusPill phase={p} />
+                        </div>
+                        <span className="text-sm font-semibold tabular-nums text-primary whitespace-nowrap">{formatInr(p.amount)}</span>
+                      </div>
+                      <Bar value={p.received} total={p.amount} />
+                      <p className="text-xs text-muted">
+                        {p.balance <= 0 ? 'Fully paid' : p.received > 0 ? `${formatInr(p.received)} paid, ${formatInr(p.balance)} left` : 'Nothing paid yet'}
+                        {p.dueDate && p.balance > 0 ? ` · ${p.overdue ? 'overdue since' : 'due'} ${showDate(p.dueDate)}` : ''}
+                        {p.note ? ` · ${p.note}` : ''}
+                      </p>
+                    </div>
+                    <RowMenu label={`More for ${p.name}`} items={[
+                      { text: 'Edit stage', onClick: () => setDialog({ kind: 'phase', phase: p }) },
+                      { text: 'Move up', onClick: () => void move(p, -1), hidden: i === 0 },
+                      { text: 'Move down', onClick: () => void move(p, 1), hidden: i === activePhases.length - 1 },
+                      { text: 'Remove from schedule', onClick: () => void archive(p, false), danger: true, hidden: p.received > 0 },
+                    ]} />
+                  </div>
+                  {open && (
+                    <div className="px-4 pb-3 -mt-1">
+                      {paid.length === 0 ? (
+                        <p className="text-xs text-muted pl-4">No payments linked to this stage yet.</p>
+                      ) : (
+                        <ul className="ml-4 border-l-2 border-border-default pl-3 space-y-1">
+                          {paid.map(({ receipt, amount }) => (
+                            <li key={receipt.id} className="text-xs text-secondary">
+                              <span className="font-medium tabular-nums text-primary">{formatInr(amount)}</span>
+                              {' '}from the {formatInr(receipt.amount)} received {showDate(receipt.receivedOn)}, {modeLabel(receipt.mode)}{receipt.reference ? ` ${receipt.reference}` : ''}
+                            </li>
+                          ))}
+                        </ul>
                       )}
-                    </td>
-                    <td className="px-3 py-2.5 text-right tabular-nums">{formatInr(p.amount)}</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums text-status-success">{p.received ? formatInr(p.received) : '—'}</td>
-                    <td className={`px-3 py-2.5 text-right tabular-nums font-medium ${p.balance > 0 ? 'text-primary' : 'text-muted'}`}>{formatInr(Math.max(0, p.balance))}</td>
-                    <td className="px-3 py-2.5"><span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${STATUS_STYLE[p.status]}`}>{STATUS_TEXT[p.status]}</span></td>
-                    <td className="px-3 py-2.5 text-right whitespace-nowrap">
-                      <button type="button" disabled={i === 0} onClick={() => void move(p, -1)} aria-label={`Move ${p.name} up`} className="text-xs text-muted hover:text-primary px-1 disabled:opacity-30">Up</button>
-                      <button type="button" disabled={i === activePhases.length - 1} onClick={() => void move(p, 1)} aria-label={`Move ${p.name} down`} className="text-xs text-muted hover:text-primary px-1 disabled:opacity-30">Down</button>
-                      <button type="button" onClick={() => setDialog({ kind: 'phase', phase: p })} className="text-xs text-secondary hover:text-primary px-2">Edit</button>
-                      {p.received === 0 && <button type="button" onClick={() => void archive(p, false)} className="text-xs text-secondary hover:text-status-danger px-1">Archive</button>}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                    </div>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
         )}
-        {archived.length > 0 && (
+        {activePhases.length > 0 && unscheduled !== 0 && (
+          <p className="border-t border-border-default px-4 py-2.5 text-xs text-status-warning bg-status-warning/10 last:rounded-b-xl">
+            {unscheduled > 0
+              ? `${formatInr(unscheduled)} of the fee is not in any stage yet. Add a stage or raise one so the whole fee is billed.`
+              : `The stages add up to ${formatInr(-unscheduled)} more than the fee. Lower a stage, or change the fee.`}
+          </p>
+        )}
+        {removedPhases.length > 0 && (
           <div className="border-t border-border-default px-4 py-2">
-            <button type="button" onClick={() => setShowArchived((v) => !v)} className="text-xs text-muted hover:text-primary">{showArchived ? 'Hide' : 'Show'} {archived.length} archived</button>
-            {showArchived && archived.map((p) => (
+            <button type="button" onClick={() => setShowRemoved((v) => !v)} className="text-xs text-muted hover:text-primary">
+              {showRemoved ? 'Hide' : 'Show'} {countLabel(removedPhases.length, 'removed stage')}
+            </button>
+            {showRemoved && removedPhases.map((p) => (
               <div key={p.id} className="flex items-center justify-between text-sm text-muted py-1">
                 <span>{p.name}, {formatInr(p.amount)}</span>
-                <button type="button" onClick={() => void archive(p, true)} className="text-xs text-secondary hover:text-primary">Restore</button>
+                <button type="button" onClick={() => void archive(p, true)} className="text-xs text-secondary hover:text-primary">Put back</button>
               </div>
             ))}
           </div>
         )}
       </section>
 
-      {/* Receipts */}
-      <section className="rounded-xl border border-border-default overflow-hidden">
-        <header className="flex items-center justify-between px-4 py-3 bg-surface-raised/60">
-          <h3 className="text-sm font-semibold uppercase tracking-wide text-primary">Payments received</h3>
-          <span className="text-xs text-muted">{countLabel(summary.receipts.filter((r) => !r.reversed).length, "payment")}{summary.receipts.some((r) => r.reversed) ? `, ${summary.receipts.filter((r) => r.reversed).length} reversed` : ""}</span>
+      {/* 3. Payments received */}
+      <section className="rounded-xl border border-border-default">
+        <header className="px-4 py-3 bg-surface-raised/60 rounded-t-xl">
+          <h3 className="text-sm font-semibold text-primary">Payments received</h3>
+          <p className="text-xs text-muted">Every payment from the client, newest first, and the stages it paid for.</p>
         </header>
-        {summary.receipts.length === 0 ? (
-          <p className="px-4 py-6 text-center text-sm text-secondary border-t border-border-default">No payments recorded yet.</p>
+        {liveReceipts.length === 0 ? (
+          <div className="px-4 py-6 text-center border-t border-border-default">
+            <p className="text-sm text-secondary">No payments recorded yet.</p>
+          </div>
         ) : (
           <ul>
-            {summary.receipts.map((r) => (
-              <li key={r.id} className={`border-t border-border-default px-4 py-3 ${r.reversed ? 'opacity-60' : ''}`}>
-                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                  <span className={`text-base font-semibold tabular-nums ${r.reversed ? 'line-through text-muted' : 'text-primary'}`}>{formatInr(r.amount)}</span>
-                  <span className="text-sm text-secondary">{showDate(r.receivedOn)} · {modeLabel(r.mode)}{r.reference ? ` · ${r.reference}` : ''}{r.payer ? ` · from ${r.payer}` : ''}</span>
-                  <span className="ml-auto flex gap-1">
-                    {!r.reversed && r.onAccount > 0 && activePhases.some((p) => p.balance > 0) && (
-                      <button type="button" onClick={() => setDialog({ kind: 'allocate', receipt: r })} className="text-xs font-medium text-accent hover:underline px-2">Count against a phase</button>
+            {liveReceipts.map((r) => (
+              <li key={r.id} className="flex items-start gap-3 border-t border-border-default px-4 py-3">
+                <div className="flex-1 min-w-0">
+                  <div className="flex flex-wrap items-baseline gap-x-3">
+                    <span className="text-sm font-semibold tabular-nums text-primary">{formatInr(r.amount)}</span>
+                    <span className="text-xs text-secondary">{showDate(r.receivedOn)} · {modeLabel(r.mode)}{r.reference ? ` ${r.reference}` : ''}{r.payer ? ` · from ${r.payer}` : ''}</span>
+                  </div>
+                  <p className="mt-1 text-xs text-secondary">
+                    For:{' '}
+                    {r.allocations.length === 0 && r.onAccount === 0 ? '—' : null}
+                    {r.allocations.map((a, i) => (
+                      <span key={a.id}>{i > 0 ? ', ' : ''}{a.phaseName} <span className="tabular-nums">{formatInr(a.amount)}</span></span>
+                    ))}
+                    {r.onAccount > 0 && (
+                      <span className="text-status-warning">{r.allocations.length > 0 ? ', ' : ''}advance <span className="tabular-nums">{formatInr(r.onAccount)}</span></span>
                     )}
-                    {!r.reversed && <button type="button" onClick={() => setDialog({ kind: 'reverse', receipt: r })} className="text-xs text-secondary hover:text-status-danger px-2">Reverse</button>}
-                  </span>
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-muted">Entered by {r.createdByName}, {showWhen(r.createdAt)}{r.note ? ` · ${r.note}` : ''}</p>
                 </div>
-                <div className="mt-1 flex flex-wrap gap-1.5 text-xs">
-                  {r.allocations.map((a) => (
-                    <span key={a.id} className="px-2 py-0.5 rounded-full bg-surface-sunken text-secondary">{a.phaseName}: {formatInr(a.amount)}</span>
-                  ))}
-                  {!r.reversed && r.onAccount > 0 && <span className="px-2 py-0.5 rounded-full bg-status-warning/15 text-status-warning">On account: {formatInr(r.onAccount)}</span>}
-                </div>
-                <p className="mt-1 text-[11px] text-muted">
-                  Recorded by {r.createdByName}, {showWhen(r.createdAt)}{r.note ? ` · ${r.note}` : ''}
-                  {r.reversed && <span className="text-status-danger"> · Reversed by {r.reversed.byName}, {showWhen(r.reversed.at)}: {r.reversed.reason}</span>}
-                </p>
+                <RowMenu label={`More for the payment of ${formatInr(r.amount)}`} items={[
+                  { text: 'Link advance to a stage', onClick: () => setDialog({ kind: 'allocate', receipt: r }), hidden: !(r.onAccount > 0 && canLink) },
+                  { text: 'Cancel this entry', onClick: () => setDialog({ kind: 'reverse', receipt: r }), danger: true },
+                ]} />
               </li>
             ))}
           </ul>
         )}
+        {cancelled.length > 0 && (
+          <div className="border-t border-border-default px-4 py-2">
+            <button type="button" onClick={() => setShowCancelled((v) => !v)} className="text-xs text-muted hover:text-primary">
+              {showCancelled ? 'Hide' : 'Show'} {cancelled.length} cancelled {cancelled.length === 1 ? 'entry' : 'entries'}
+            </button>
+            {showCancelled && (
+              <ul className="mt-1 space-y-2 pb-1">
+                {cancelled.map((r) => (
+                  <li key={r.id} className="text-xs text-muted">
+                    <span className="line-through tabular-nums">{formatInr(r.amount)}</span> {showDate(r.receivedOn)} · {modeLabel(r.mode)}{r.reference ? ` ${r.reference}` : ''}
+                    <span className="block">Cancelled by {r.reversed?.byName}, {r.reversed ? showWhen(r.reversed.at) : ''}: {r.reversed?.reason}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
       </section>
 
-      {/* Fee history */}
-      <section className="rounded-xl border border-border-default overflow-hidden">
-        <header className="px-4 py-3 bg-surface-raised/60"><h3 className="text-sm font-semibold uppercase tracking-wide text-primary">Fee</h3></header>
-        <ul>
-          {summary.fee.changes.map((c) => (
-            <li key={c.id} className="border-t border-border-default px-4 py-2.5 flex flex-wrap items-baseline gap-x-3">
-              <span className="text-sm text-primary">{FEE_CHANGE_LABELS[c.kind]}</span>
-              <span className={`text-sm tabular-nums font-medium ${c.amountDelta < 0 ? 'text-status-danger' : 'text-primary'}`}>{c.kind === 'INITIAL' ? '' : c.amountDelta > 0 ? '+' : '−'}{formatInr(Math.abs(c.amountDelta))}</span>
-              {c.estimatedCost !== null && <span className="text-xs text-muted">cost estimate {formatInr(c.estimatedCost)}</span>}
-              <span className="text-xs text-muted ml-auto">{c.createdByName}, {showWhen(c.createdAt)}</span>
-              {c.kind !== 'INITIAL' && <span className="w-full text-xs text-secondary">{c.reason}</span>}
-            </li>
-          ))}
-          <li className="border-t border-border-default px-4 py-2.5 flex items-baseline justify-between bg-surface-raised/30">
-            <span className="text-sm font-semibold text-primary">Current fee</span>
-            <span className="text-sm font-semibold tabular-nums text-primary">{formatInr(t.fee)}</span>
-          </li>
-        </ul>
-      </section>
-
-      {/* History */}
+      {/* 4. Activity log */}
       <section>
-        <button type="button" onClick={() => setShowHistory((v) => !v)} className="text-xs text-muted hover:text-primary">
-          {showHistory ? 'Hide' : 'Show'} full history ({summary.history.length})
+        <button type="button" onClick={() => setShowLog((v) => !v)} className="text-xs text-muted hover:text-primary">
+          {showLog ? 'Hide' : 'Show'} activity log ({summary.history.length})
         </button>
-        {showHistory && (
+        {showLog && (
           <ul className="mt-2 rounded-xl border border-border-default divide-y divide-border-default">
             {summary.history.map((h) => (
               <li key={h.id} className="px-4 py-2 text-sm flex flex-wrap gap-x-3">
-                <span className="text-primary flex-1 min-w-[16rem]">{h.summary}</span>
+                <span className="text-primary flex-1 min-w-[14rem]">{h.summary}</span>
                 <span className="text-xs text-muted">{h.userName}, {showWhen(h.createdAt)}</span>
               </li>
             ))}
@@ -700,6 +856,7 @@ export default function PaymentsTab({ projectId }: { projectId: string }) {
       {dialog?.kind === 'record' && <RecordPaymentModal projectId={projectId} summary={summary} onClose={() => setDialog(null)} onSaved={saved} />}
       {dialog?.kind === 'phase' && <PhaseModal projectId={projectId} summary={summary} phase={dialog.phase} onClose={() => setDialog(null)} onSaved={saved} />}
       {dialog?.kind === 'fee' && <FeeChangeModal projectId={projectId} summary={summary} onClose={() => setDialog(null)} onSaved={saved} />}
+      {dialog?.kind === 'feeDetails' && <FeeDetailsModal summary={summary} onClose={() => setDialog(null)} onChange={() => setDialog({ kind: 'fee' })} />}
       {dialog?.kind === 'reverse' && <ReverseModal projectId={projectId} receipt={dialog.receipt} onClose={() => setDialog(null)} onSaved={saved} />}
       {dialog?.kind === 'allocate' && <AllocateModal projectId={projectId} summary={summary} receipt={dialog.receipt} onClose={() => setDialog(null)} onSaved={saved} />}
     </div>
@@ -707,5 +864,5 @@ export default function PaymentsTab({ projectId }: { projectId: string }) {
 }
 
 function countLabel(n: number, word: string): string {
-  return `${n} ${word}${n === 1 ? "" : "s"}`
+  return `${n} ${word}${n === 1 ? '' : 's'}`
 }
