@@ -410,3 +410,25 @@ The MDDA file is inside `By_Laws` anyway (`By_Laws/MDDA UTTARAKHAND/`). What it 
 - With no connector (`TRIJYA_NAS_BASE_URL` unset or `RAG_EMBED_VIA_CONNECTOR=false`) nothing changes: every call goes to the API.
 
 **Tested:** `scripts/test-rag.ts`, 260 pass. New checks use a fake connector that times out on 64 passages but not on 32, and an API that answers 402.
+
+## 17. MDDA bylaws read from the PDF's own text (Kruti Dev converted), not OCR (12 Nov)
+
+**Problem.** After section 15, "setback for a 500 sq m commercial plot" still gave no figures. The new OCR read "सेट बैक" right but dropped most of the commercial setback table's values, and lost decimal points elsewhere ("3.0" → "30"). Tesseract reads this table badly with its ruling lines (0 of 44 values); with the lines erased it read rows whole but still dropped dots, and once read 7.5 as 1.5.
+
+**Why.** 122 of the MDDA PDF's 160 pages are not scans. They are digital text typed in **Kruti Dev**, a legacy Hindi typing font: the PDF stores Latin keystrokes ("600 rd 7-5 lsV cSd") that the font draws as "600 तक 7.5 सेट बैक". That text failed the "real language" check, so every page went to OCR.
+
+**Changes**
+- **Connector:**
+  - `scripts/nas-connector/krutidev.py` (new) converts Kruti Dev to Unicode. It uses the standard Kruti Dev 010 mapping, and moves ि and the reph to their Unicode positions.
+  - Only fonts whose words are often common Hindi words as typed in Kruti Dev are converted (`kruti_fonts`), so English in other fonts is untouched.
+  - Extraction and `/locate` (the Page dropdown) both use the converted text (`_page_texts`).
+  - A mostly readable PDF still OCRs its unreadable pages that are pictures (`_pictured`), such as scanned appendices and "Scanned by CamScanner" pages. Before, they were indexed as page numbers.
+  - `OCR_VERSION` is now 3, so cached extractions are redone.
+- `lib/rag/embeddings.ts`: half surrogate pairs (a math letter cut in two by chunking) are replaced before embedding. They failed ECSBC 2024 and CPHEEO in the 11 Nov sync.
+
+**Measured on the real MDDA PDF (on TRIJYA-3):**
+- The commercial table converts exactly: 600 तक → 7.5 / 3.0 / 3.0 / – / 5.0 / 2.0 / 2.0 / –.
+- 97.2% of the 34,899 converted Hindi words also occur in the OCR'd text. Most of the rest are spellings as typed in the original ("ऊँंचाई").
+- "सेट बैक" occurs 86 times.
+
+**Deploy:** copy `connector.py` **and `krutidev.py`** to `~/nas-connector` on TRIJYA-3, restart the connector, then run `bylaws-sync`.

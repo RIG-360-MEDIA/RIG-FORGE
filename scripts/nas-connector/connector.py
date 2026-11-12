@@ -376,6 +376,15 @@ try:
 except Exception:
     _HAVE_FITZ = False
 
+import krutidev
+
+
+def _page_texts(doc) -> list:
+    """Each page's text layer, with Hindi typed in a Kruti Dev font converted
+    to Unicode (krutidev.py)."""
+    fonts = krutidev.kruti_fonts(doc)
+    return [krutidev.page_text(page, fonts) for page in doc]
+
 try:
     import pytesseract
     from PIL import Image, ImageFilter, ImageOps
@@ -431,8 +440,9 @@ OCR_VARIANTS = [(float(v.split(":")[0]), v.endswith(":clean"))
                 for v in os.environ.get("NAS_OCR_VARIANTS", "300,300:clean,144:clean").split(",") if v.strip()]
 # The LSTM engine; automatic page layout (psm 3) read the tables best.
 OCR_CONFIG = os.environ.get("NAS_OCR_CONFIG", "--oem 1 --psm 3")
-# Bump when OCR changes, so cached extractions made the old way are redone.
-OCR_VERSION = "2"
+# Bump when extraction changes, so cached extractions made the old way are
+# redone. 3: Kruti Dev text converted (krutidev.py) instead of OCR'd.
+OCR_VERSION = "3"
 # A page at least this share covered by images is a scan.
 SCAN_IMAGE_SHARE = float(os.environ.get("NAS_SCAN_IMAGE_SHARE", "0.7"))
 EXTRACT_WORKERS = max(1, int(os.environ.get("NAS_EXTRACT_WORKERS", "1")))
@@ -479,18 +489,25 @@ def _tesseract_available() -> bool:
     return bool(shutil.which(cmd))
 
 
-def _is_scan(page) -> bool:
-    """A scanned page: mostly image, with no text of its own, or only an
-    invisible text layer that some other OCR put over the image (Tesseract
-    and scanner software write their text that way). That layer is often
-    poor (the MDDA bylaws: "सेट बैक" as "पेट बैक", decimal points missing) and
-    still passes _readable, so such pages are OCR'd here again."""
+def _pictured(page) -> bool:
+    """At least SCAN_IMAGE_SHARE of the page is covered by images."""
     try:
         area = abs(page.rect)
         if not area:
             return False
         covered = sum(abs(fitz.Rect(i["bbox"]) & page.rect) for i in page.get_image_info())
-        if covered / area < SCAN_IMAGE_SHARE:
+        return covered / area >= SCAN_IMAGE_SHARE
+    except Exception:
+        return False
+
+
+def _is_scan(page) -> bool:
+    """A scanned page: mostly image, with no text of its own, or only an
+    invisible text layer that some other OCR put over the image (Tesseract
+    and scanner software write their text that way). That layer is often
+    poor and still passes _readable, so such pages are OCR'd here again."""
+    try:
+        if not _pictured(page):
             return False
         # Text drawn with render mode 3 (invisible) is an OCR layer; real
         # text over a background image is visible.
@@ -648,7 +665,7 @@ def _extract_downloaded(conn, share: str, server: str, path: str, max_chars: int
             # Text layer of every page, and whether each one needs OCR: not
             # real language, or a scan (whose text layer, if any, is someone
             # else's OCR).
-            pages = [page.get_text() for page in doc]
+            pages = _page_texts(doc)
             ocr_ready = _HAVE_OCR and _tesseract_available()
             scans = {i for i in range(len(pages)) if _is_scan(doc[i])} if ocr_ready else set()
             bad = [i for i, t in enumerate(pages) if i in scans or not _readable(t)]
@@ -656,11 +673,16 @@ def _extract_downloaded(conn, share: str, server: str, path: str, max_chars: int
 
             # Mostly readable: index the text layer as it is, as before. (Normal
             # documents have a few "unreadable" pages, tables and title pages;
-            # measured on Trijya's bylaws: at most 14% of passages.)
+            # measured on Trijya's bylaws: at most 14% of passages.) Except
+            # its unreadable pages that are pictures, scanned forms and
+            # appendices, which only OCR can read.
             if len(bad) / n < UNREADABLE_DOC_SHARE:
-                text = "\n\n".join(pages).strip()
-                return {"ok": True, "text": text[:max_chars], "method": "text",
-                        "truncated": len(text) > max_chars}
+                pictures = [i for i in bad if _pictured(doc[i])] if ocr_ready else []
+                if not pictures:
+                    text = "\n\n".join(pages).strip()
+                    return {"ok": True, "text": text[:max_chars], "method": "text",
+                            "truncated": len(text) > max_chars}
+                bad = pictures
 
             # Mostly unreadable: a scan (no text layer) or a broken one (a legacy
             # Hindi typing font, or glyphs with no character map). Keep the
@@ -824,7 +846,7 @@ def _pdf_pages(server: str, path: str):
     try:
         doc = fitz.open(tmp.name)
         try:
-            raw = [page.get_text() for page in doc]
+            raw = _page_texts(doc)
         finally:
             doc.close()
     finally:

@@ -125,6 +125,25 @@ async function main() {
     console.log(`SKIP  Python rule check (python3 unavailable or rule not found: ${py.stderr?.slice(0, 80) ?? ''})`)
   }
 
+  // Kruti Dev text (the MDDA bylaws, page 36) converted by the connector
+  // (scripts/nas-connector/krutidev.py); decimals and setback words exact.
+  const kruti: Array<[string, string]> = [
+    ['600 rd', '600 तक'], ['7-5', '7.5'], ['&', '-'],
+    ['lsV cSd ¼ehVj esa ½ U;wure vko’;d', 'सेट बैक (मीटर में ) न्यूनतम आवश्यक'],
+    ['Hkw[k.M dk {ks=Qy¼oxZehVj', 'भूखण्ड का क्षेत्रफल(वर्गमीटर'],
+    ['O;olkf;d@dk;kZy;', 'व्यवसायिक/कार्यालय'], ["ik'oZ&1", 'पार्श्व-1'], ['i`”B', 'पृष्ठ'],
+    ['eSnkuh {ks=', 'मैदानी क्षेत्र'], ['ioZrh; {ks=', 'पर्वतीय क्षेत्र'], ['vxz', 'अग्र'],
+    ['3000 ls vf/kd', '3000 से अधिक'], ['ekWy @eYVh¶ysDl %', 'मॉल /मल्टीफ्लेक्स :'],
+    ['vf/kd pkSM+s ekxZ', 'अधिक चौड़े मार्ग'], ['fLFkr', 'स्थित'],
+  ]
+  const kpy = spawnSync('python3', ['-c', 'import sys,json; sys.path.insert(0,"scripts/nas-connector"); import krutidev; print(json.dumps([krutidev.to_unicode(t) for t in json.loads(sys.argv[1])], ensure_ascii=False))', JSON.stringify(kruti.map(([k]) => k))], { encoding: 'utf8' })
+  if (kpy.status === 0) {
+    const got = JSON.parse(kpy.stdout) as string[]
+    kruti.forEach(([k, want], i) => check(`Kruti Dev "${k}" -> "${want}"`, got[i] === want, `got "${got[i]}"`))
+  } else {
+    console.log(`SKIP  Kruti Dev check (python3 unavailable: ${kpy.stderr?.slice(0, 80) ?? ''})`)
+  }
+
   // findBylawsFolder walks the REAL WD root listing (served by a fake connector)
   const tree: Record<string, Array<{ name: string; isDir: boolean }>> = {
     '/': ['01 ARCHITECTURE', 'Anjana', 'NBC2016', 'utility data', 'Viability'].map((name) => ({ name, isDir: true })),

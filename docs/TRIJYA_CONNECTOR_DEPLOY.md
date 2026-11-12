@@ -13,7 +13,8 @@ there's no existing deploy script or service file in this repo to go on).
 
 ## What needs to happen on TRIJYA-3
 
-1. **Pull the latest code.** Get `scripts/nas-connector/connector.py` and
+1. **Pull the latest code.** Get `scripts/nas-connector/connector.py`,
+   `scripts/nas-connector/krutidev.py` (imported by the connector) and
    the new `scripts/nas-connector/requirements.txt` (didn't exist before
    this session — the connector's actual Python deps were never written
    down anywhere until now) onto the box, however code normally gets there
@@ -47,7 +48,7 @@ there's no existing deploy script or service file in this repo to go on).
    Optional connector settings (environment variables, all have defaults):
    `NAS_EXTRACT_WORKERS` (1 — extraction never fans out on this box, which
    also runs the local LLM), `NAS_EXTRACT_MAX_QUEUED` (20), `NAS_EXTRACT_RESULT_TTL`
-   (3600 s), `NAS_OCR_MAX_PAGES` (60), `NAS_OCR_ZOOM` (2.0), `NAS_OCR_LANG`
+   (3600 s), `NAS_OCR_MAX_PAGES` (60), `NAS_OCR_VARIANTS` (`300,300:clean,144:clean`), `NAS_OCR_LANG`
    (forces a language, e.g. `eng`).
 
 3. **Restart the connector process.** However it's currently kept running
