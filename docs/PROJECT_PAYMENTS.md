@@ -14,7 +14,12 @@ Project → **Payments** tab, top to bottom. Each number appears once.
 | **Record payment** | Amount, date, mode, reference. It is split across the unpaid stages in order automatically; change the split if the client says otherwise. Anything not given to a stage is kept as an **advance**, shown in a banner with **Link it to a stage**. |
 | **Activity log** | Every action, by whom and when (collapsed at the bottom). |
 
-The fee is either a **fixed fee** or a **% of the construction cost**. On a % fee, entering a new construction cost estimate moves the fee by that percent of the difference.
+The fee is set one of three ways:
+- **Rate per sq ft** (Trijya's way, the default): built-up area x the rates of the stages, which are grouped by discipline (Architecture, Structural, MEP, Interior) with Trijya's standard Rs 100/sq ft schedule filled in. Landscape (acres x rate per acre) and extras such as additional site visits are fixed stages. **Revise the area** recalculates every rate stage; the old area stays in the history, and no stage can drop below what was already paid for it.
+- **Fixed fee**.
+- **% of construction cost**: a new cost estimate moves the fee by that percent of the difference.
+
+**GST** is set per project (18% by default) and added to every stage: the client pays fee + GST, and payments count against stage totals including GST. **TDS**: when the client deducts TDS, record it with the payment; it counts as paid. An accepted proposal (Proposals tab, see `docs/PROPOSALS.md`) sets all of this up from its fee table.
 
 **Who can see it**: only ADMIN and SUPER_ADMIN (their base role), checked on the server for every request. Project leads, employees and external (client) users get no tab and a 403 from the API, even on projects they lead.
 
@@ -32,6 +37,7 @@ The fee is either a **fixed fee** or a **% of the construction cost**. On a % fe
 
 1. Apply the task list SQL first (see `docs/TASK_LISTS_AND_TEMPLATES.md`), then, before deploying, apply to the **production** database:
    - `prisma/manual/2026-11-12-project-payments.sql`
+   - `prisma/manual/2026-11-14-proposals.sql` (the Proposals tab)
 
    It only adds tables, is safe to run twice, and switches on row-level security for the new tables.
 2. Merge into `main` (Render deploys it).
@@ -48,5 +54,4 @@ To undo: revert the merge. The tables stay, unused; no existing data is changed 
 ## Not built yet
 
 - Invoices (asked for later).
-- GST and TDS (not needed for now).
 - Linking phases to tasks ("ready to bill" when the work is done), payment schedule templates, an all-projects payments overview, Excel export.

@@ -137,6 +137,38 @@ export function withProjectPaymentsLock<T>(projectId: string, fn: (tx: Tx) => Pr
   }, TX_OPTIONS)
 }
 
+export interface PlanStage { groupName: string | null; name: string; ratePerSqft: bigint | null; amount: bigint }
+
+/**
+ * Create a project's fee, once, inside withProjectPaymentsLock: the plan, the
+ * agreed fee entry and (per sq ft) the stages. Returns false when the project
+ * already has a fee. Used by fee setup and by accepting a proposal.
+ */
+export async function createPaymentPlan(tx: Tx, projectId: string, userId: string, p: {
+  basis: 'FIXED' | 'PERCENT' | 'PER_SQFT'; fee: bigint; percentBp: number | null; estimatedCost: bigint | null
+  area: bigint | null; gstBp: number; stages: PlanStage[]; source?: string
+}): Promise<boolean> {
+  if (await tx.paymentPlan.findFirst({ where: { projectId }, select: { id: true } })) return false
+  const plan = await tx.paymentPlan.create({
+    data: { projectId, basis: p.basis, percentBp: p.percentBp, areaCentiSqft: p.area, gstBp: p.gstBp, createdById: userId },
+  })
+  await tx.paymentFeeChange.create({
+    data: { planId: plan.id, kind: 'INITIAL', amountDelta: p.fee, estimatedCost: p.estimatedCost, areaCentiSqft: p.area, reason: p.source ?? 'Agreed fee', createdById: userId },
+  })
+  if (p.stages.length) {
+    await tx.paymentPhase.createMany({
+      data: p.stages.map((s, i) => ({ projectId, groupName: s.groupName, name: s.name, amount: s.amount, ratePerSqft: s.ratePerSqft, sortOrder: i })),
+    })
+  }
+  await audit(tx, projectId, userId, 'SETUP', {
+    basis: p.basis, fee: p.fee, estimatedCost: p.estimatedCost, percent: p.percentBp === null ? null : `${p.percentBp / 100}%`,
+    area: p.area === null ? null : areaText(p.area),
+    rate: p.basis === 'PER_SQFT' ? p.stages.reduce((s, x) => s + (x.ratePerSqft ?? BigInt(0)), BigInt(0)) : null,
+    gst: p.gstBp ? `${p.gstBp / 100}%` : null, stages: p.stages.length, source: p.source ?? null,
+  })
+  return true
+}
+
 /** BigInts in an audit detail become numbers (JSON cannot hold BigInt). */
 function jsonSafe(detail: Record<string, unknown>): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(detail, (_k, v) => (typeof v === 'bigint' ? Number(v) : v)))

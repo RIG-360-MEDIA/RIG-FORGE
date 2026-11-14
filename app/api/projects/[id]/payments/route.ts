@@ -3,10 +3,10 @@ import { type NextRequest } from 'next/server'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
 import { BUSY_MESSAGE, isBusyError } from '@/lib/task-categories'
 import {
-  amountForArea, areaText, audit, cleanText, loadPaymentsSummary, parseArea, parseGstBp, parsePercentBp, parseRupees,
-  paymentsGuard, percentOf, withProjectPaymentsLock,
+  amountForArea, cleanText, createPaymentPlan, loadPaymentsSummary, parseArea, parseGstBp, parsePercentBp, parseRupees,
+  paymentsGuard, percentOf, withProjectPaymentsLock, type PlanStage,
 } from '@/lib/payments'
-import { formatPercentBp, type PaymentsSummary } from '@/lib/payment-types'
+import type { PaymentsSummary } from '@/lib/payment-types'
 
 interface Ctx { params: { id: string } }
 
@@ -24,7 +24,7 @@ export async function GET(request: NextRequest, { params }: Ctx) {
   }
 }
 
-interface StageInput { groupName: string | null; name: string; ratePerSqft: bigint | null; amount: bigint }
+type StageInput = PlanStage
 
 /**
  * The stages of a per sq ft fee: [{ group?, name, rate }] (rupees per sq ft;
@@ -105,29 +105,8 @@ export async function POST(request: NextRequest, { params }: Ctx) {
       return errorResponse("basis must be 'PER_SQFT', 'FIXED' or 'PERCENT'", 400)
     }
 
-    const done = await withProjectPaymentsLock(g.project.id, async (tx) => {
-      if (await tx.paymentPlan.findFirst({ where: { projectId: g.project.id }, select: { id: true } })) return false
-      const plan = await tx.paymentPlan.create({
-        data: { projectId: g.project.id, basis, percentBp, areaCentiSqft: area, gstBp, createdById: g.payload.userId },
-      })
-      await tx.paymentFeeChange.create({
-        data: { planId: plan.id, kind: 'INITIAL', amountDelta: fee, estimatedCost, areaCentiSqft: area, reason: 'Agreed fee', createdById: g.payload.userId },
-      })
-      if (stages.length) {
-        await tx.paymentPhase.createMany({
-          data: stages.map((s, i) => ({
-            projectId: g.project.id, groupName: s.groupName, name: s.name, amount: s.amount, ratePerSqft: s.ratePerSqft, sortOrder: i,
-          })),
-        })
-      }
-      await audit(tx, g.project.id, g.payload.userId, 'SETUP', {
-        basis, fee, estimatedCost, percent: percentBp === null ? null : formatPercentBp(percentBp),
-        area: area === null ? null : areaText(area),
-        rate: basis === 'PER_SQFT' ? stages.reduce((s, x) => s + (x.ratePerSqft ?? BigInt(0)), BigInt(0)) : null,
-        gst: gstBp ? formatPercentBp(gstBp) : null, stages: stages.length,
-      })
-      return true
-    })
+    const done = await withProjectPaymentsLock(g.project.id, (tx) =>
+      createPaymentPlan(tx, g.project.id, g.payload.userId, { basis, fee, percentBp, estimatedCost, area, gstBp, stages }))
     if (!done) return errorResponse('This project already has a fee. Record a fee change instead.', 409)
     return successResponse<PaymentsSummary>(await loadPaymentsSummary(g.project.id), 201)
   } catch (error) {

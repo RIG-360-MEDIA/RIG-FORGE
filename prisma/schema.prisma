@@ -184,6 +184,7 @@ model Project {
   paymentPlan     PaymentPlan?
   paymentPhases   PaymentPhase[]
   paymentReceipts PaymentReceipt[]
+  proposals       Proposal[]
 
   @@index([leadId])
   @@index([clientId])
@@ -1164,5 +1165,43 @@ model PaymentAuditLog {
   createdAt      DateTime @default(now())
 
   @@index([projectId, createdAt])
+  @@index([organizationId])
+}
+
+/// A company's proposal letterhead and standard terms (one row per company):
+/// firm name, address, signatory, bank details, reference numbering and the
+/// clauses every proposal carries. Edited by admins in Proposals > Firm details.
+model ProposalSettings {
+  id             String   @id @default(cuid())
+  organizationId String   @unique @default("rig360")
+  /// Everything else, as JSON (see lib/proposal-types.ts ProposalSettingsData).
+  data           Json
+  updatedById    String
+  updatedAt      DateTime @updatedAt
+
+  @@index([organizationId])
+}
+
+/// A fee proposal / offer letter for a project. The text lives in content
+/// (see lib/proposal-types.ts ProposalContent). The reference number is
+/// given once and never reused (serial unique per company).
+model Proposal {
+  id             String    @id @default(cuid())
+  organizationId String    @default("rig360")
+  projectId      String
+  serial         Int
+  refNo          String
+  status         String    @default("DRAFT") // DRAFT | SENT | ACCEPTED | DECLINED
+  content        Json
+  createdById    String
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  sentAt         DateTime?
+  acceptedAt     DateTime?
+
+  project Project @relation(fields: [projectId], references: [id])
+
+  @@unique([organizationId, serial])
+  @@index([projectId])
   @@index([organizationId])
 }

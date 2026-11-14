@@ -14,10 +14,10 @@ import {
 // Nothing here is a typed-in total: received, balances and on-account are
 // calculated from the receipts, which are never edited (only reversed).
 
-const field = 'w-full bg-background-primary border border-border-default rounded px-3 py-2 text-sm text-primary placeholder:text-muted focus:outline-none focus:border-accent [color-scheme:light]'
-const label = 'flex flex-col gap-1 text-[11px] font-medium text-muted uppercase tracking-wider'
-const primaryBtn = 'px-4 py-2 text-sm font-semibold rounded bg-accent text-white hover:bg-accent-hover disabled:opacity-50'
-const ghostBtn = 'px-3 py-2 text-sm text-secondary hover:text-primary'
+export const field = 'w-full bg-background-primary border border-border-default rounded px-3 py-2 text-sm text-primary placeholder:text-muted focus:outline-none focus:border-accent [color-scheme:light]'
+export const label = 'flex flex-col gap-1 text-[11px] font-medium text-muted uppercase tracking-wider'
+export const primaryBtn = 'px-4 py-2 text-sm font-semibold rounded bg-accent text-white hover:bg-accent-hover disabled:opacity-50'
+export const ghostBtn = 'px-3 py-2 text-sm text-secondary hover:text-primary'
 
 const todayText = () => {
   const d = new Date()
@@ -40,7 +40,7 @@ async function send(url: string, method: string, body?: unknown): Promise<{ data
 
 // ─── Small parts ──────────────────────────────────────────────────────────────
 
-function Modal({ title, children, onClose, wide }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
+export function Modal({ title, children, onClose, wide }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
   useEffect(() => {
     const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
     document.addEventListener('keydown', esc)
@@ -61,7 +61,7 @@ function Modal({ title, children, onClose, wide }: { title: string; children: Re
   )
 }
 
-function ErrorLine({ text }: { text: string | null }) {
+export function ErrorLine({ text }: { text: string | null }) {
   return text ? <div className="text-sm text-status-danger bg-status-danger/10 border border-status-danger/30 rounded px-3 py-2">{text}</div> : null
 }
 

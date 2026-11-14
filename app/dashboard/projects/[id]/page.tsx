@@ -12,6 +12,7 @@ import TaskListTab from '@/components/projects/detail/TaskListTab'
 import TasksTab from '@/components/projects/detail/TasksTab'
 import UpdatesTab from '@/components/projects/detail/UpdatesTab'
 import PaymentsTab from '@/components/projects/detail/PaymentsTab'
+import ProposalsTab from '@/components/projects/detail/ProposalsTab'
 import { isAdminRole } from '@/lib/roles'
 import EditProjectModal from '@/components/projects/detail/EditProjectModal'
 import AddMemberModal from '@/components/projects/detail/AddMemberModal'
@@ -223,6 +224,9 @@ export default function ProjectDetailPage() {
             currentUserId={userId ?? ''}
             canCreate={!user?.isExternal}
           />
+        )}
+        {tab === 'proposals' && canSeePayments && (
+          <ProposalsTab projectId={project.id} projectName={project.name} />
         )}
         {tab === 'payments' && canSeePayments && (
           <PaymentsTab projectId={project.id} />
