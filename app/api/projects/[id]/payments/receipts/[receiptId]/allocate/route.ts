@@ -28,7 +28,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       })
       if (!receipt) return { error: 'Payment not found', status: 404 }
       if (receipt.reversedAt) return { error: 'This payment entry was cancelled', status: 409 }
-      const onAccount = receipt.amount - receipt.allocations.reduce((s, a) => s + a.amount, BigInt(0))
+      const onAccount = receipt.amount + receipt.tds - receipt.allocations.reduce((s, a) => s + a.amount, BigInt(0))
       if (onAccount <= BigInt(0)) return { error: 'All of this payment is already linked to stages', status: 409 }
       const checked = await checkAllocations(tx, g.project.id, body.allocations, onAccount)
       if ('error' in checked) return { error: checked.error, status: 400 }

@@ -3,7 +3,8 @@ import { type NextRequest } from 'next/server'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
 import { BUSY_MESSAGE, isBusyError } from '@/lib/task-categories'
 import {
-  audit, loadPaymentsSummary, parsePercentBp, parseRupees, paymentsGuard, percentOf, withProjectPaymentsLock,
+  amountForArea, areaText, audit, cleanText, loadPaymentsSummary, parseArea, parseGstBp, parsePercentBp, parseRupees,
+  paymentsGuard, percentOf, withProjectPaymentsLock,
 } from '@/lib/payments'
 import { formatPercentBp, type PaymentsSummary } from '@/lib/payment-types'
 
@@ -23,12 +24,48 @@ export async function GET(request: NextRequest, { params }: Ctx) {
   }
 }
 
+interface StageInput { groupName: string | null; name: string; ratePerSqft: bigint | null; amount: bigint }
+
+/**
+ * The stages of a per sq ft fee: [{ group?, name, rate }] (rupees per sq ft;
+ * the amount is rate x area) or [{ group?, name, amount }] (a fixed amount,
+ * e.g. landscape billed per acre). At least one, at most 100.
+ */
+function parseStages(raw: unknown, area: bigint): StageInput[] | string {
+  if (!Array.isArray(raw) || raw.length === 0) return 'Add at least one stage to the payment schedule'
+  if (raw.length > 100) return 'A payment schedule can have at most 100 stages'
+  const out: StageInput[] = []
+  for (const s of raw as Record<string, unknown>[]) {
+    const name = cleanText(s?.name, 100)
+    if (name === 'too-long') return 'Stage names must be 100 characters or fewer'
+    if (!name) return 'Every stage needs a name'
+    const group = cleanText(s.group, 60)
+    if (group === 'too-long') return 'Group names must be 60 characters or fewer'
+    if (s.rate !== undefined && s.rate !== null && s.rate !== '') {
+      const rate = parseRupees(s.rate)
+      if (rate === null || rate <= BigInt(0)) return `Enter the rate for "${name}" in rupees per sq ft, more than 0`
+      const amount = amountForArea(rate, area)
+      if (amount <= BigInt(0)) return `"${name}" comes to less than one paisa at this area`
+      out.push({ groupName: group, name, ratePerSqft: rate, amount })
+    } else {
+      const amount = parseRupees(s.amount)
+      if (amount === null || amount <= BigInt(0)) return `Enter a rate per sq ft or an amount for "${name}"`
+      out.push({ groupName: group, name, ratePerSqft: null, amount })
+    }
+  }
+  return out
+}
+
 // ─── POST /api/projects/[id]/payments ────────────────────────────────────────
 
 /**
- * Set up the project's fee, once: { basis: 'FIXED', fee } or
- * { basis: 'PERCENT', estimatedCost, percent }. Later changes are fee changes
- * (POST .../payments/fee-changes), never an edit of this.
+ * Set up the project's fee, once, with the GST rate charged on every stage
+ * (gstPercent, default 0):
+ *   { basis: 'PER_SQFT', area, stages: [{ group?, name, rate | amount }] }
+ *       the fee is the stages: rate x area each, plus any fixed ones;
+ *   { basis: 'FIXED', fee }
+ *   { basis: 'PERCENT', estimatedCost, percent }
+ * Later changes are fee changes (POST .../payments/fee-changes), never an edit of this.
  */
 export async function POST(request: NextRequest, { params }: Ctx) {
   try {
@@ -37,11 +74,23 @@ export async function POST(request: NextRequest, { params }: Ctx) {
     const body = await request.json().catch(() => null) as Record<string, unknown> | null
     if (!body || typeof body !== 'object') return errorResponse('Request body must be an object', 400)
 
-    let basis: 'FIXED' | 'PERCENT'
+    const gstBp = body.gstPercent === undefined || body.gstPercent === null || body.gstPercent === '' ? 0 : parseGstBp(body.gstPercent)
+    if (gstBp === null) return errorResponse('Enter the GST rate as a percentage from 0 to 100 (for example 18)', 400)
+
+    let basis: 'FIXED' | 'PERCENT' | 'PER_SQFT'
     let fee: bigint
     let percentBp: number | null = null
     let estimatedCost: bigint | null = null
-    if (body.basis === 'FIXED') {
+    let area: bigint | null = null
+    let stages: StageInput[] = []
+    if (body.basis === 'PER_SQFT') {
+      area = parseArea(body.area)
+      if (area === null) return errorResponse('Enter the built-up area in sq ft, more than 0 (for example 12500 or 12,500.5)', 400)
+      const parsed = parseStages(body.stages, area)
+      if (typeof parsed === 'string') return errorResponse(parsed, 400)
+      basis = 'PER_SQFT'; stages = parsed
+      fee = stages.reduce((s, x) => s + x.amount, BigInt(0))
+    } else if (body.basis === 'FIXED') {
       const v = parseRupees(body.fee)
       if (v === null || v <= BigInt(0)) return errorResponse('Enter the fee in rupees, more than 0 (for example 1500000 or 15,00,000)', 400)
       basis = 'FIXED'; fee = v
@@ -53,17 +102,29 @@ export async function POST(request: NextRequest, { params }: Ctx) {
       basis = 'PERCENT'; percentBp = bp; estimatedCost = cost; fee = percentOf(cost, bp)
       if (fee <= BigInt(0)) return errorResponse('That percentage of that cost is less than one paisa', 400)
     } else {
-      return errorResponse("basis must be 'FIXED' or 'PERCENT'", 400)
+      return errorResponse("basis must be 'PER_SQFT', 'FIXED' or 'PERCENT'", 400)
     }
 
     const done = await withProjectPaymentsLock(g.project.id, async (tx) => {
       if (await tx.paymentPlan.findFirst({ where: { projectId: g.project.id }, select: { id: true } })) return false
-      const plan = await tx.paymentPlan.create({ data: { projectId: g.project.id, basis, percentBp, createdById: g.payload.userId } })
-      await tx.paymentFeeChange.create({
-        data: { planId: plan.id, kind: 'INITIAL', amountDelta: fee, estimatedCost, reason: 'Agreed fee', createdById: g.payload.userId },
+      const plan = await tx.paymentPlan.create({
+        data: { projectId: g.project.id, basis, percentBp, areaCentiSqft: area, gstBp, createdById: g.payload.userId },
       })
+      await tx.paymentFeeChange.create({
+        data: { planId: plan.id, kind: 'INITIAL', amountDelta: fee, estimatedCost, areaCentiSqft: area, reason: 'Agreed fee', createdById: g.payload.userId },
+      })
+      if (stages.length) {
+        await tx.paymentPhase.createMany({
+          data: stages.map((s, i) => ({
+            projectId: g.project.id, groupName: s.groupName, name: s.name, amount: s.amount, ratePerSqft: s.ratePerSqft, sortOrder: i,
+          })),
+        })
+      }
       await audit(tx, g.project.id, g.payload.userId, 'SETUP', {
         basis, fee, estimatedCost, percent: percentBp === null ? null : formatPercentBp(percentBp),
+        area: area === null ? null : areaText(area),
+        rate: basis === 'PER_SQFT' ? stages.reduce((s, x) => s + (x.ratePerSqft ?? BigInt(0)), BigInt(0)) : null,
+        gst: gstBp ? formatPercentBp(gstBp) : null, stages: stages.length,
       })
       return true
     })

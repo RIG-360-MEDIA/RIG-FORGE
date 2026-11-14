@@ -3,7 +3,8 @@ import { type NextRequest } from 'next/server'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
 import { BUSY_MESSAGE, isBusyError } from '@/lib/task-categories'
 import {
-  allocatedByPhase, audit, cleanText, loadPaymentsSummary, parseDay, parseRupees, paymentsGuard, withProjectPaymentsLock,
+  allocatedByPhase, amountForArea, audit, cleanText, loadPaymentsSummary, parseDay, parseRupees, paymentsGuard, percentOf,
+  withProjectPaymentsLock,
 } from '@/lib/payments'
 import type { PaymentsSummary } from '@/lib/payment-types'
 
@@ -26,9 +27,28 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
       const phase = await tx.paymentPhase.findFirst({ where: { id: params.phaseId, projectId: g.project.id } })
       if (!phase) return { error: 'Stage not found', status: 404 }
       const received = (await allocatedByPhase(tx, g.project.id)).get(phase.id) ?? BigInt(0)
+      const plan = await tx.paymentPlan.findFirst({ where: { projectId: g.project.id }, select: { gstBp: true, areaCentiSqft: true } })
+      const gstBp = plan?.gstBp ?? 0
+      const tooLow = (amount: bigint) => amount + percentOf(amount, gstBp) < received
 
-      const data: { name?: string; amount?: bigint; dueDate?: Date | null; note?: string | null; sortOrder?: number; isActive?: boolean } = {}
+      const data: {
+        name?: string; groupName?: string | null; amount?: bigint; ratePerSqft?: bigint; dueDate?: Date | null
+        note?: string | null; sortOrder?: number; isActive?: boolean
+      } = {}
       const changes: Record<string, unknown> = {}
+      if ('group' in body) {
+        const group = cleanText(body.group, 60)
+        if (group === 'too-long') return { error: 'The group name must be 60 characters or fewer', status: 400 }
+        if (group !== phase.groupName) { data.groupName = group; changes.group = { from: phase.groupName, to: group } }
+      }
+      if ('rate' in body) {
+        if (phase.ratePerSqft === null || !plan?.areaCentiSqft) return { error: 'This stage is a fixed amount; change its amount instead', status: 400 }
+        const rate = parseRupees(body.rate)
+        if (rate === null || rate <= BigInt(0)) return { error: 'Enter the rate in rupees per sq ft, more than 0', status: 400 }
+        const amount = amountForArea(rate, plan.areaCentiSqft)
+        if (tooLow(amount)) return { error: `${phase.name} has already been paid more than that. It cannot be set below what was paid.`, status: 400 }
+        if (rate !== phase.ratePerSqft) { data.ratePerSqft = rate; data.amount = amount; changes.rate = { from: phase.ratePerSqft, to: rate } }
+      }
       if ('name' in body) {
         const name = cleanText(body.name, 100)
         if (name === 'too-long') return { error: 'The stage name must be 100 characters or fewer', status: 400 }
@@ -36,9 +56,10 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
         if (name !== phase.name) { data.name = name; changes.name = { from: phase.name, to: name } }
       }
       if ('amount' in body) {
+        if (phase.ratePerSqft !== null) return { error: 'This stage follows the area; change its rate per sq ft instead', status: 400 }
         const amount = parseRupees(body.amount)
         if (amount === null || amount <= BigInt(0)) return { error: 'Enter the stage amount in rupees, more than 0', status: 400 }
-        if (amount < received) return { error: `${phase.name} has already been paid more than that. It cannot be set below what was paid.`, status: 400 }
+        if (tooLow(amount)) return { error: `${phase.name} has already been paid more than that. It cannot be set below what was paid.`, status: 400 }
         if (amount !== phase.amount) { data.amount = amount; changes.amount = { from: phase.amount, to: amount } }
       }
       if ('dueDate' in body) {

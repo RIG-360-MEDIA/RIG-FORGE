@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { ApiResponse } from '@/lib/types'
 import {
-  FEE_CHANGE_LABELS, PAYMENT_MODES, formatInr, formatPercentBp, paiseToRupeesText, rupeesToPaise,
+  FEE_CHANGE_LABELS, PAYMENT_MODES, STANDARD_SQFT_SCHEDULE, amountForArea, areaToCenti, formatArea, formatInr, formatPercentBp,
+  gstOn, paiseToRupeesText, rupeesToPaise,
   type FeeBasis, type PaymentMode, type PaymentsSummary, type PhaseView, type ReceiptView,
 } from '@/lib/payment-types'
 
@@ -73,53 +74,175 @@ const STATUS_TEXT: Record<PhaseView['status'], string> = { PAID: 'Paid', PART_PA
 
 // ─── Setup ────────────────────────────────────────────────────────────────────
 
+interface SetupRow { key: string; group: string; name: string; rate: string; on: boolean; custom?: boolean }
+
+const BASIS_LABEL: Record<FeeBasis, string> = { PER_SQFT: 'Rate per sq ft', FIXED: 'Fixed fee', PERCENT: '% of construction cost' }
+
+/** Acres ("1.5") x rupees per acre, in paise, or null. */
+function landscapeAmount(acres: string, ratePerAcre: string): number | null {
+  const m = acres.trim().match(/^(\d{1,5})(?:\.(\d{1,2}))?$/)
+  const rate = rupeesToPaise(ratePerAcre)
+  if (!m || rate === null) return null
+  const hundredths = Number(m[1]) * 100 + Number((m[2] ?? '').padEnd(2, '0') || '0')
+  const v = Math.floor((rate * hundredths + 50) / 100)
+  return v > 0 ? v : null
+}
+
 function SetupCard({ projectId, onDone }: { projectId: string; onDone: (s: PaymentsSummary) => void }) {
-  const [basis, setBasis] = useState<FeeBasis>('FIXED')
+  const [basis, setBasis] = useState<FeeBasis>('PER_SQFT')
+  const [gst, setGst] = useState('18')
   const [fee, setFee] = useState('')
   const [cost, setCost] = useState('')
   const [percent, setPercent] = useState('')
+  const [area, setArea] = useState('')
+  const [rows, setRows] = useState<SetupRow[]>(() => STANDARD_SQFT_SCHEDULE.map((s, i) => ({ key: `s${i}`, group: s.group, name: s.name, rate: String(s.rate), on: true })))
+  const [landscape, setLandscape] = useState(false)
+  const [acres, setAcres] = useState('')
+  const [perAcre, setPerAcre] = useState('3,00,000')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const gstBp = (() => { const v = Number(gst.replace('%', '')); return gst.trim() === '' ? 0 : v >= 0 && v <= 100 ? Math.round(v * 100) : null })()
+  const areaCenti = areaToCenti(area)
+  const used = rows.filter((r) => r.on)
+  const badRow = used.some((r) => !r.name.trim() || (rupeesToPaise(r.rate) ?? 0) <= 0)
+  const ratePaise = used.reduce((s, r) => s + (rupeesToPaise(r.rate) ?? 0), 0)
+  const landPaise = landscape ? landscapeAmount(acres, perAcre) : 0
+  const sqftFee = areaCenti === null || badRow ? null : used.reduce((s, r) => s + amountForArea(rupeesToPaise(r.rate) ?? 0, areaCenti), 0)
+
   const costPaise = rupeesToPaise(cost)
   const pct = Number(percent)
-  const preview = basis === 'FIXED'
-    ? rupeesToPaise(fee)
-    : costPaise !== null && pct > 0 && pct <= 100 ? Math.round(costPaise * pct / 100) : null
+  const preview = basis === 'PER_SQFT'
+    ? (sqftFee === null || landPaise === null || (sqftFee + landPaise) <= 0 ? null : sqftFee + landPaise)
+    : basis === 'FIXED' ? rupeesToPaise(fee)
+      : costPaise !== null && pct > 0 && pct <= 100 ? Math.round(costPaise * pct / 100) : null
+  const groups = [...new Set(rows.map((r) => r.group))]
+
+  function setRow(key: string, patch: Partial<SetupRow>) { setRows((rs) => rs.map((r) => (r.key === key ? { ...r, ...patch } : r))) }
+  function setGroup(group: string, on: boolean) { setRows((rs) => rs.map((r) => (r.group === group ? { ...r, on } : r))) }
+  function addRow() { setRows((rs) => [...rs, { key: `c${Date.now()}`, group: 'Other', name: '', rate: '', on: true, custom: true }]) }
 
   async function save() {
     setBusy(true); setError(null)
-    const r = await send(`/api/projects/${projectId}/payments`, 'POST', basis === 'FIXED' ? { basis, fee } : { basis, estimatedCost: cost, percent })
+    const body = basis === 'PER_SQFT'
+      ? {
+          basis, area, gstPercent: gst,
+          stages: [
+            ...used.map((r) => ({ group: r.group, name: r.name, rate: r.rate })),
+            ...(landscape && landPaise ? [{ group: 'Landscape', name: `Landscape design (${acres} acre${acres === '1' ? '' : 's'} at ₹${perAcre} per acre)`, amount: paiseToRupeesText(landPaise) }] : []),
+          ],
+        }
+      : basis === 'FIXED' ? { basis, fee, gstPercent: gst } : { basis, estimatedCost: cost, percent, gstPercent: gst }
+    const r = await send(`/api/projects/${projectId}/payments`, 'POST', body)
     setBusy(false)
     if (r.error) { setError(r.error); return }
     if (r.data) onDone(r.data)
   }
 
   return (
-    <div className="rounded-xl border border-border-default bg-surface-raised/40 p-6 space-y-4 max-w-xl">
+    <div className="rounded-xl border border-border-default bg-surface-raised/40 p-6 space-y-4 max-w-3xl">
       <div>
         <h3 className="text-base font-semibold text-primary">Set up this project&apos;s fee</h3>
-        <p className="text-sm text-secondary mt-1">Done once. Any later change is recorded as a fee change with a reason, so the history always shows how the fee came about.</p>
+        <p className="text-sm text-secondary mt-1">Done once. Later changes (a new area, extra work) are added with a reason, so the history always shows how the fee came about.</p>
       </div>
-      <div role="radiogroup" aria-label="How the fee is set" className="inline-flex rounded-lg border border-border-default p-0.5">
-        {(['FIXED', 'PERCENT'] as FeeBasis[]).map((b) => (
+      <div role="radiogroup" aria-label="How the fee is set" className="inline-flex flex-wrap rounded-lg border border-border-default p-0.5">
+        {(['PER_SQFT', 'FIXED', 'PERCENT'] as FeeBasis[]).map((b) => (
           <button key={b} type="button" role="radio" aria-checked={basis === b} onClick={() => setBasis(b)}
             className={`px-3 py-1.5 text-xs font-medium rounded-md ${basis === b ? 'bg-accent text-white' : 'text-secondary hover:text-primary'}`}>
-            {b === 'FIXED' ? 'Fixed fee' : '% of construction cost'}
+            {BASIS_LABEL[b]}
           </button>
         ))}
       </div>
-      {basis === 'FIXED' ? (
-        <label className={label}>Agreed fee (₹)<input inputMode="decimal" value={fee} onChange={(e) => setFee(e.target.value)} placeholder="e.g. 15,00,000" className={field} /></label>
-      ) : (
-        <div className="grid grid-cols-2 gap-3">
-          <label className={label}>Estimated construction cost (₹)<input inputMode="decimal" value={cost} onChange={(e) => setCost(e.target.value)} placeholder="e.g. 2,00,00,000" className={field} /></label>
-          <label className={label}>Fee percentage (%)<input inputMode="decimal" value={percent} onChange={(e) => setPercent(e.target.value)} placeholder="e.g. 7.5" className={field} /></label>
+
+      {basis === 'PER_SQFT' && (
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3 max-w-md">
+            <label className={label}>Built-up area (sq ft)<input inputMode="decimal" value={area} onChange={(e) => setArea(e.target.value)} placeholder="e.g. 12,500" className={field} /></label>
+            <label className={label}>GST (%)<input inputMode="decimal" value={gst} onChange={(e) => setGst(e.target.value)} className={field} /></label>
+          </div>
+          <div className="rounded-lg border border-border-default">
+            <div className="flex items-center justify-between px-3 py-2 border-b border-border-default bg-surface-sunken/40 rounded-t-lg">
+              <p className="text-xs font-semibold text-primary">Payment schedule (₹ per sq ft)</p>
+              <p className="text-xs text-muted">Trijya standard; change any rate, untick what is not in this job</p>
+            </div>
+            {groups.map((group) => {
+              const inGroup = rows.filter((r) => r.group === group)
+              const on = inGroup.some((r) => r.on)
+              const sub = inGroup.filter((r) => r.on).reduce((s, r) => s + (rupeesToPaise(r.rate) ?? 0), 0)
+              return (
+                <div key={group} className="border-b border-border-default last:border-b-0">
+                  <label className="flex items-center justify-between gap-2 px-3 py-2 cursor-pointer">
+                    <span className="flex items-center gap-2 text-sm font-medium text-primary">
+                      <input type="checkbox" checked={on} onChange={(e) => setGroup(group, e.target.checked)} className="accent-accent" />
+                      {group}
+                    </span>
+                    <span className="text-xs text-muted tabular-nums">{on ? `₹${paiseToRupeesText(sub)} / sq ft` : 'Not included'}</span>
+                  </label>
+                  {on && (
+                    <ul className="pb-2">
+                      {inGroup.map((r) => (
+                        <li key={r.key} className={`flex items-center gap-2 pl-8 pr-3 py-1 ${r.on ? '' : 'opacity-50'}`}>
+                          <input type="checkbox" checked={r.on} onChange={(e) => setRow(r.key, { on: e.target.checked })} aria-label={`Include ${r.name || 'stage'}`} className="accent-accent" />
+                          {r.custom
+                            ? <input value={r.name} onChange={(e) => setRow(r.key, { name: e.target.value })} placeholder="Stage name" maxLength={100} className={`${field} py-1`} />
+                            : <span className="flex-1 min-w-0 text-sm text-secondary">{r.name}</span>}
+                          <span className="w-24 shrink-0">
+                            <input inputMode="decimal" value={r.rate} onChange={(e) => setRow(r.key, { rate: e.target.value })} aria-label={`Rate for ${r.name || 'stage'}`} className={`${field} py-1 text-right tabular-nums`} />
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )
+            })}
+            <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 border-t border-border-default">
+              <button type="button" onClick={addRow} className="text-xs font-medium text-accent hover:underline">+ Add a stage</button>
+              <span className="text-sm font-semibold text-primary tabular-nums">Total ₹{paiseToRupeesText(ratePaise)} per sq ft</span>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 text-sm text-primary">
+              <input type="checkbox" checked={landscape} onChange={(e) => setLandscape(e.target.checked)} className="accent-accent" />
+              Landscape design, billed per acre
+            </label>
+            {landscape && (
+              <div className="grid grid-cols-2 gap-3 max-w-md">
+                <label className={label}>Acres<input inputMode="decimal" value={acres} onChange={(e) => setAcres(e.target.value)} placeholder="e.g. 2.5" className={field} /></label>
+                <label className={label}>₹ per acre<input inputMode="decimal" value={perAcre} onChange={(e) => setPerAcre(e.target.value)} className={field} /></label>
+              </div>
+            )}
+          </div>
         </div>
       )}
-      <p className="text-sm text-secondary">Fee: <span className="font-semibold text-primary tabular-nums">{preview !== null && preview > 0 ? formatInr(preview) : '—'}</span></p>
+      {basis === 'FIXED' && (
+        <div className="grid grid-cols-2 gap-3 max-w-md">
+          <label className={label}>Agreed fee (₹)<input inputMode="decimal" value={fee} onChange={(e) => setFee(e.target.value)} placeholder="e.g. 15,00,000" className={field} /></label>
+          <label className={label}>GST (%)<input inputMode="decimal" value={gst} onChange={(e) => setGst(e.target.value)} className={field} /></label>
+        </div>
+      )}
+      {basis === 'PERCENT' && (
+        <div className="grid grid-cols-3 gap-3">
+          <label className={label}>Construction cost (₹)<input inputMode="decimal" value={cost} onChange={(e) => setCost(e.target.value)} placeholder="e.g. 2,00,00,000" className={field} /></label>
+          <label className={label}>Fee (%)<input inputMode="decimal" value={percent} onChange={(e) => setPercent(e.target.value)} placeholder="e.g. 7.5" className={field} /></label>
+          <label className={label}>GST (%)<input inputMode="decimal" value={gst} onChange={(e) => setGst(e.target.value)} className={field} /></label>
+        </div>
+      )}
+
+      <div className="rounded-lg bg-surface-sunken/50 px-4 py-3 text-sm text-secondary space-y-0.5">
+        {preview !== null && preview > 0 && gstBp !== null ? (
+          <>
+            <p>Fee <span className="font-semibold text-primary tabular-nums">{formatInr(preview)}</span>
+              {basis === 'PER_SQFT' && areaCenti !== null && <span className="text-muted"> (₹{paiseToRupeesText(ratePaise)} x {formatArea(areaCenti)}{landPaise ? ' + landscape' : ''})</span>}
+            </p>
+            {gstBp > 0 && <p>GST {formatPercentBp(gstBp)} <span className="tabular-nums">{formatInr(gstOn(preview, gstBp))}</span> · Client pays <span className="font-semibold text-primary tabular-nums">{formatInr(preview + gstOn(preview, gstBp))}</span></p>}
+          </>
+        ) : (
+          <p>{basis === 'PER_SQFT' ? 'Enter the area to see the fee.' : 'Enter the fee to see the total.'}{gstBp === null ? ' The GST rate must be 0 to 100.' : ''}</p>
+        )}
+      </div>
       <ErrorLine text={error} />
-      <button type="button" disabled={busy || preview === null || preview <= 0} onClick={() => void save()} className={primaryBtn}>
+      <button type="button" disabled={busy || preview === null || preview <= 0 || gstBp === null} onClick={() => void save()} className={primaryBtn}>
         {busy ? 'Saving...' : 'Set up fee'}
       </button>
     </div>
@@ -156,7 +279,7 @@ function AllocationEditor({ phases, total, values, onChange }: {
             <li key={p.id} className="flex items-center gap-3 px-3 py-2">
               <span className="flex-1 min-w-0">
                 <span className="block text-sm text-primary truncate">{p.name}</span>
-                <span className="block text-[11px] text-muted">{formatInr(p.balance)} left to pay</span>
+                <span className="block text-[11px] text-muted truncate">{p.group ? `${p.group} · ` : ''}{formatInr(p.balance)} left to pay{p.gst > 0 ? ' incl. GST' : ''}</span>
               </span>
               <span className="w-36 shrink-0">
               <input
@@ -204,6 +327,7 @@ function RecordPaymentModal({ projectId, summary, onClose, onSaved }: {
 }) {
   const [receivedOn, setReceivedOn] = useState(todayText())
   const [amount, setAmount] = useState('')
+  const [tds, setTds] = useState('')
   const [mode, setMode] = useState<PaymentMode>('BANK')
   const [reference, setReference] = useState('')
   const [payer, setPayer] = useState('')
@@ -215,15 +339,18 @@ function RecordPaymentModal({ projectId, summary, onClose, onSaved }: {
   const [duplicate, setDuplicate] = useState<string | null>(null)
 
   const paise = rupeesToPaise(amount)
+  const tdsPaise = tds.trim() ? rupeesToPaise(tds) : 0
+  // Money plus TDS is what counts as paid, and what is split across stages.
+  const credit = paise !== null && tdsPaise !== null ? paise + tdsPaise : null
   // Until the split is edited by hand, it follows the amount: oldest stage first.
   useEffect(() => {
-    if (!splitByHand) setAlloc(paise !== null && paise > 0 ? splitInOrder(summary.phases, paise) : {})
-  }, [paise, splitByHand, summary.phases])
+    if (!splitByHand) setAlloc(credit !== null && credit > 0 ? splitInOrder(summary.phases, credit) : {})
+  }, [credit, splitByHand, summary.phases])
 
   async function save(confirmDuplicate = false) {
     setBusy(true); setError(null)
     const r = await send(`/api/projects/${projectId}/payments/receipts`, 'POST', {
-      receivedOn, amount, mode, reference, payer, note, allocations: allocationList(alloc), confirmDuplicate,
+      receivedOn, amount, tds, mode, reference, payer, note, allocations: allocationList(alloc), confirmDuplicate,
     })
     setBusy(false)
     if (r.code === 'DUPLICATE') { setDuplicate(r.error); return }
@@ -235,6 +362,7 @@ function RecordPaymentModal({ projectId, summary, onClose, onSaved }: {
     <Modal title="Record a payment received" onClose={onClose} wide>
       <div className="grid grid-cols-2 gap-3">
         <label className={label}>Amount received (₹)<input autoFocus inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="e.g. 3,00,000" className={field} /></label>
+        <label className={label}>TDS deducted by client (₹, optional)<input inputMode="decimal" value={tds} onChange={(e) => setTds(e.target.value)} placeholder="0" className={`${field} ${tdsPaise === null ? 'border-status-danger' : ''}`} /></label>
         <label className={label}>Received on<input type="date" value={receivedOn} max={todayText()} onChange={(e) => setReceivedOn(e.target.value)} className={field} /></label>
         <label className={label}>Mode
           <select value={mode} onChange={(e) => setMode(e.target.value as PaymentMode)} className={field}>
@@ -243,9 +371,12 @@ function RecordPaymentModal({ projectId, summary, onClose, onSaved }: {
         </label>
         <label className={label}>Reference (UTR, cheque no.)<input value={reference} onChange={(e) => setReference(e.target.value)} maxLength={100} className={field} /></label>
         <label className={label}>Received from<input value={payer} onChange={(e) => setPayer(e.target.value)} maxLength={100} placeholder="Client name" className={field} /></label>
-        <label className={label}>Note<input value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} className={field} /></label>
+        <label className={`${label} col-span-2`}>Note<input value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} className={field} /></label>
       </div>
-      <AllocationEditor phases={summary.phases} total={paise} values={alloc} onChange={(v) => { setSplitByHand(true); setAlloc(v) }} />
+      {tdsPaise !== null && tdsPaise > 0 && paise !== null && (
+        <p className="text-xs text-secondary">TDS counts as paid: {formatInr(paise)} received + {formatInr(tdsPaise)} TDS = <span className="font-semibold text-primary">{formatInr(paise + tdsPaise)}</span> towards the stages.</p>
+      )}
+      <AllocationEditor phases={summary.phases} total={credit} values={alloc} onChange={(v) => { setSplitByHand(true); setAlloc(v) }} />
       <ErrorLine text={error} />
       {duplicate && (
         <div className="text-sm bg-status-warning/10 border border-status-warning/40 rounded px-3 py-2 space-y-2">
@@ -258,7 +389,7 @@ function RecordPaymentModal({ projectId, summary, onClose, onSaved }: {
       )}
       <div className="flex justify-end gap-2 pt-1">
         <button type="button" onClick={onClose} className={ghostBtn}>Cancel</button>
-        <button type="button" disabled={busy || paise === null || paise <= 0 || !!duplicate} onClick={() => void save()} className={primaryBtn}>
+        <button type="button" disabled={busy || paise === null || paise <= 0 || tdsPaise === null || !!duplicate} onClick={() => void save()} className={primaryBtn}>
           {busy ? 'Saving...' : 'Record payment'}
         </button>
       </div>
@@ -271,10 +402,16 @@ function RecordPaymentModal({ projectId, summary, onClose, onSaved }: {
 function PhaseModal({ projectId, summary, phase, onClose, onSaved }: {
   projectId: string; summary: PaymentsSummary; phase: PhaseView | null; onClose: () => void; onSaved: (s: PaymentsSummary, msg: string) => void
 }) {
+  const perSqft = summary.plan?.basis === 'PER_SQFT'
+  const area = summary.plan?.areaCentiSqft ?? null
+  const gstBp = summary.plan?.gstBp ?? 0
   const remaining = summary.totals.fee - summary.totals.phasesTotal
+  const groups = [...new Set(summary.phases.map((p) => p.group).filter((g): g is string => !!g))]
   const [name, setName] = useState(phase?.name ?? '')
-  const [by, setBy] = useState<'amount' | 'percent'>('amount')
-  const [amount, setAmount] = useState(phase ? paiseToRupeesText(phase.amount) : remaining > 0 ? paiseToRupeesText(remaining) : '')
+  const [group, setGroup] = useState(phase?.group ?? '')
+  const [by, setBy] = useState<'amount' | 'percent' | 'rate'>(phase ? (phase.ratePerSqft !== null ? 'rate' : 'amount') : perSqft ? 'rate' : 'amount')
+  const [amount, setAmount] = useState(phase ? paiseToRupeesText(phase.amount) : !perSqft && remaining > 0 ? paiseToRupeesText(remaining) : '')
+  const [rate, setRate] = useState(phase?.ratePerSqft != null ? paiseToRupeesText(phase.ratePerSqft) : '')
   const [percent, setPercent] = useState('')
   const [dueDate, setDueDate] = useState(phase?.dueDate?.slice(0, 10) ?? '')
   const [note, setNote] = useState(phase?.note ?? '')
@@ -282,13 +419,17 @@ function PhaseModal({ projectId, summary, phase, onClose, onSaved }: {
   const [error, setError] = useState<string | null>(null)
 
   const pct = Number(percent)
-  const preview = by === 'amount' ? rupeesToPaise(amount) : pct > 0 && pct <= 100 ? Math.round(summary.totals.fee * pct / 100) : null
+  const ratePaise = rupeesToPaise(rate)
+  const preview = by === 'rate'
+    ? (ratePaise !== null && area !== null ? amountForArea(ratePaise, area) : null)
+    : by === 'amount' ? rupeesToPaise(amount) : pct > 0 && pct <= 100 ? Math.round(summary.totals.fee * pct / 100) : null
+  const ways = (perSqft ? ['rate', 'amount'] : ['amount', 'percent']) as ('amount' | 'percent' | 'rate')[]
+  const wayText = { rate: '₹ per sq ft', amount: 'Fixed amount', percent: '% of fee' }
 
   async function save() {
     setBusy(true); setError(null)
-    const body = phase
-      ? { name, amount, dueDate: dueDate || null, note }
-      : { name, ...(by === 'amount' ? { amount } : { percent }), dueDate: dueDate || null, note }
+    const value = by === 'rate' ? { rate } : by === 'amount' ? { amount } : { percent }
+    const body = { name, group, ...value, dueDate: dueDate || null, note }
     const r = await send(phase ? `/api/projects/${projectId}/payments/phases/${phase.id}` : `/api/projects/${projectId}/payments/phases`, phase ? 'PATCH' : 'POST', body)
     setBusy(false)
     if (r.error) { setError(r.error); return }
@@ -297,25 +438,28 @@ function PhaseModal({ projectId, summary, phase, onClose, onSaved }: {
 
   return (
     <Modal title={phase ? `Edit ${phase.name}` : 'Add a stage'} onClose={onClose}>
-      <label className={label}>Stage name<input autoFocus value={name} onChange={(e) => setName(e.target.value)} maxLength={100} placeholder="e.g. Working drawings" className={field} /></label>
+      <label className={label}>Stage name<input autoFocus value={name} onChange={(e) => setName(e.target.value)} maxLength={100} placeholder={perSqft ? 'e.g. Extra site visits (5 at ₹15,000)' : 'e.g. Working drawings'} className={field} /></label>
+      <label className={label}>Group (optional)
+        <input value={group} onChange={(e) => setGroup(e.target.value)} list="payment-groups" maxLength={60} placeholder="e.g. Architecture design" className={field} />
+        <datalist id="payment-groups">{groups.map((g) => <option key={g} value={g} />)}</datalist>
+      </label>
       {!phase && (
         <div className="inline-flex rounded-lg border border-border-default p-0.5">
-          {(['amount', 'percent'] as const).map((b) => (
+          {ways.map((b) => (
             <button key={b} type="button" onClick={() => setBy(b)} className={`px-3 py-1 text-xs font-medium rounded-md ${by === b ? 'bg-accent text-white' : 'text-secondary'}`}>
-              {b === 'amount' ? 'Amount' : '% of fee'}
+              {wayText[b]}
             </button>
           ))}
         </div>
       )}
-      {by === 'amount' || phase ? (
-        <label className={label}>Amount (₹)<input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} className={field} /></label>
-      ) : (
-        <label className={label}>Percentage of the fee ({formatInr(summary.totals.fee)})<input inputMode="decimal" value={percent} onChange={(e) => setPercent(e.target.value)} placeholder="e.g. 25" className={field} /></label>
-      )}
-      {phase && phase.received > 0 && <p className="text-xs text-muted">{formatInr(phase.received)} already paid for this stage; the amount cannot go below that.</p>}
+      {by === 'rate' && <label className={label}>Rate (₹ per sq ft{area !== null ? `, x ${formatArea(area)}` : ''})<input inputMode="decimal" value={rate} onChange={(e) => setRate(e.target.value)} placeholder="e.g. 5" className={field} /></label>}
+      {by === 'amount' && <label className={label}>Amount (₹, before GST)<input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} className={field} /></label>}
+      {by === 'percent' && <label className={label}>Percentage of the fee ({formatInr(summary.totals.fee)})<input inputMode="decimal" value={percent} onChange={(e) => setPercent(e.target.value)} placeholder="e.g. 25" className={field} /></label>}
+      {phase && phase.received > 0 && <p className="text-xs text-muted">{formatInr(phase.received)} already paid for this stage; it cannot go below that.</p>}
       <p className="text-xs text-muted">
         Stage amount: <span className="text-primary font-medium">{preview !== null && preview > 0 ? formatInr(preview) : '—'}</span>
-        {!phase && remaining !== 0 && <> · {remaining > 0 ? `${formatInr(remaining)} of the fee is not in any stage yet` : `stages are ${formatInr(-remaining)} over the fee`}</>}
+        {preview !== null && preview > 0 && gstBp > 0 && <> + GST {formatInr(gstOn(preview, gstBp))} = <span className="text-primary font-medium">{formatInr(preview + gstOn(preview, gstBp))}</span></>}
+        {!phase && !perSqft && remaining !== 0 && <> · {remaining > 0 ? `${formatInr(remaining)} of the fee is not in any stage yet` : `stages are ${formatInr(-remaining)} over the fee`}</>}
       </p>
       <div className="grid grid-cols-2 gap-3">
         <label className={label}>Due date (optional)<input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className={field} /></label>
@@ -338,25 +482,50 @@ function FeeChangeModal({ projectId, summary, onClose, onSaved }: {
   projectId: string; summary: PaymentsSummary; onClose: () => void; onSaved: (s: PaymentsSummary, msg: string) => void
 }) {
   const isPercent = summary.plan?.basis === 'PERCENT'
-  const [kind, setKind] = useState<'VARIATION' | 'CORRECTION' | 'COST_REVISION'>(isPercent ? 'COST_REVISION' : 'VARIATION')
+  const perSqft = summary.plan?.basis === 'PER_SQFT'
+  const [kind, setKind] = useState<'VARIATION' | 'CORRECTION' | 'COST_REVISION' | 'AREA_REVISION'>(perSqft ? 'AREA_REVISION' : isPercent ? 'COST_REVISION' : 'VARIATION')
   const [amount, setAmount] = useState('')
   const [cost, setCost] = useState(summary.fee.estimatedCost !== null ? paiseToRupeesText(summary.fee.estimatedCost) : '')
+  const [area, setArea] = useState(summary.plan?.areaCentiSqft != null ? paiseToRupeesText(summary.plan.areaCentiSqft) : '')
   const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const bp = summary.plan?.percentBp ?? 0
-  const delta = kind === 'COST_REVISION'
-    ? (() => { const c = rupeesToPaise(cost); return c === null ? null : Math.round(c * bp / 10000) - Math.round((summary.fee.estimatedCost ?? 0) * bp / 10000) })()
-    : rupeesToPaise(amount, { signed: true })
+  const newArea = areaToCenti(area)
+  const delta = kind === 'AREA_REVISION'
+    ? (newArea === null ? null : summary.phases.filter((p) => p.isActive && p.ratePerSqft !== null).reduce((s, p) => s + amountForArea(p.ratePerSqft!, newArea) - p.amount, 0))
+    : kind === 'COST_REVISION'
+      ? (() => { const c = rupeesToPaise(cost); return c === null ? null : Math.round(c * bp / 10000) - Math.round((summary.fee.estimatedCost ?? 0) * bp / 10000) })()
+      : rupeesToPaise(amount, { signed: true })
 
   async function save() {
     setBusy(true); setError(null)
     const r = await send(`/api/projects/${projectId}/payments/fee-changes`, 'POST',
-      kind === 'COST_REVISION' ? { kind, estimatedCost: cost, reason } : { kind, amountDelta: amount, reason })
+      kind === 'AREA_REVISION' ? { kind, area, reason } : kind === 'COST_REVISION' ? { kind, estimatedCost: cost, reason } : { kind, amountDelta: amount, reason })
     setBusy(false)
     if (r.error) { setError(r.error); return }
     if (r.data) onSaved(r.data, `Fee is now ${formatInr(r.data.totals.fee)}.`)
+  }
+
+  if (perSqft) {
+    return (
+      <Modal title="Revise the area" onClose={onClose}>
+        <p className="text-sm text-secondary">Every stage priced per sq ft is recalculated for the new area. The old area stays in the history. Fixed stages (landscape, extras) do not change.</p>
+        <label className={label}>New built-up area (sq ft)<input autoFocus inputMode="decimal" value={area} onChange={(e) => setArea(e.target.value)} className={field} /></label>
+        <label className={label}>Reason<input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={300} placeholder="e.g. Final area from approved drawings" className={field} /></label>
+        {delta !== null && delta !== 0 && (
+          <p className="text-sm text-secondary">Fee {delta > 0 ? 'rises' : 'falls'} by {formatInr(Math.abs(delta))} to <span className="font-semibold text-primary">{formatInr(summary.totals.fee + delta)}</span> (before GST).</p>
+        )}
+        <ErrorLine text={error} />
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={onClose} className={ghostBtn}>Cancel</button>
+          <button type="button" disabled={busy || newArea === null || newArea === summary.plan?.areaCentiSqft || reason.trim().length < 3} onClick={() => void save()} className={primaryBtn}>
+            {busy ? 'Saving...' : 'Revise area'}
+          </button>
+        </div>
+      </Modal>
+    )
   }
 
   return (
@@ -495,9 +664,11 @@ function RowMenu({ label, items }: { label: string; items: MenuItem[] }) {
 // ─── Fee details ──────────────────────────────────────────────────────────────
 
 function FeeDetailsModal({ summary, onClose, onChange }: { summary: PaymentsSummary; onClose: () => void; onChange: () => void }) {
+  const perSqft = summary.plan?.basis === 'PER_SQFT'
+  const t = summary.totals
   return (
     <Modal title="Fee details" onClose={onClose}>
-      <p className="text-sm text-secondary">{feeBasisText(summary)}</p>
+      <p className="text-sm text-secondary">{feeBasisText(summary)}{summary.plan?.gstBp ? `, plus GST ${formatPercentBp(summary.plan.gstBp)}` : ', no GST'}</p>
       <ul className="rounded-lg border border-border-default divide-y divide-border-default">
         {summary.fee.changes.map((c) => (
           <li key={c.id} className="px-3 py-2.5">
@@ -510,25 +681,46 @@ function FeeDetailsModal({ summary, onClose, onChange }: { summary: PaymentsSumm
             <p className="text-xs text-muted">
               {c.kind !== 'INITIAL' && c.reason ? `${c.reason} · ` : ''}
               {c.estimatedCost !== null ? `cost estimate ${formatInr(c.estimatedCost)} · ` : ''}
+              {c.areaCentiSqft !== null ? `area ${formatArea(c.areaCentiSqft)} · ` : ''}
               {c.createdByName}, {showWhen(c.createdAt)}
             </p>
           </li>
         ))}
+        {perSqft && t.fee !== summary.fee.current && (
+          <li className="flex items-baseline justify-between px-3 py-2.5">
+            <span className="text-sm text-primary">Stages added or changed since</span>
+            <span className="text-sm font-medium tabular-nums text-primary">{t.fee - summary.fee.current > 0 ? '+' : '−'}{formatInr(Math.abs(t.fee - summary.fee.current))}</span>
+          </li>
+        )}
         <li className="flex items-baseline justify-between px-3 py-2.5 bg-surface-sunken/50">
           <span className="text-sm font-semibold text-primary">Fee now</span>
-          <span className="text-sm font-semibold tabular-nums text-primary">{formatInr(summary.totals.fee)}</span>
+          <span className="text-sm font-semibold tabular-nums text-primary">{formatInr(t.fee)}</span>
         </li>
+        {t.gst > 0 && (
+          <li className="flex items-baseline justify-between px-3 py-2.5 bg-surface-sunken/50">
+            <span className="text-sm text-primary">+ GST {formatPercentBp(summary.plan?.gstBp ?? 0)} · client pays</span>
+            <span className="text-sm font-semibold tabular-nums text-primary">{formatInr(t.gst)} · {formatInr(t.payable)}</span>
+          </li>
+        )}
       </ul>
-      <p className="text-xs text-muted">The agreed fee is never overwritten. A change is added with its reason, so you can always see how the fee came about.</p>
+      <p className="text-xs text-muted">
+        {perSqft
+          ? 'The agreed area is never overwritten. A new area is added with its reason, and every stage priced per sq ft follows it.'
+          : 'The agreed fee is never overwritten. A change is added with its reason, so you can always see how the fee came about.'}
+      </p>
       <div className="flex justify-end gap-2">
         <button type="button" onClick={onClose} className={ghostBtn}>Close</button>
-        <button type="button" onClick={onChange} className={primaryBtn}>Change the fee</button>
+        <button type="button" onClick={onChange} className={primaryBtn}>{perSqft ? 'Revise the area' : 'Change the fee'}</button>
       </div>
     </Modal>
   )
 }
 
 function feeBasisText(s: PaymentsSummary): string {
+  if (s.plan?.basis === 'PER_SQFT' && s.plan.areaCentiSqft !== null) {
+    const fixed = s.phases.filter((p) => p.isActive && p.ratePerSqft === null).reduce((t, p) => t + p.amount, 0)
+    return `₹${paiseToRupeesText(s.plan.ratePerSqft ?? 0)} per sq ft x ${formatArea(s.plan.areaCentiSqft)}${fixed > 0 ? ` + ${formatInr(fixed)} fixed (landscape, extras)` : ''}`
+  }
   if (s.plan?.basis === 'PERCENT' && s.plan.percentBp !== null && s.fee.estimatedCost !== null) {
     return `${formatPercentBp(s.plan.percentBp)} of ${formatInr(s.fee.estimatedCost)} construction cost`
   }
@@ -625,8 +817,12 @@ export default function PaymentsTab({ projectId }: { projectId: string }) {
   }
 
   const t = summary.totals
+  const perSqft = summary.plan.basis === 'PER_SQFT'
   const nextDue = activePhases.find((p) => p.balance > 0) ?? null
-  const unscheduled = t.fee - t.phasesTotal
+  const unscheduled = perSqft ? 0 : t.fee - t.phasesTotal
+  // Subtotal (incl. GST) for each discipline, shown above its first stage.
+  const groupTotal = new Map<string, number>()
+  for (const p of activePhases) if (p.group) groupTotal.set(p.group, (groupTotal.get(p.group) ?? 0) + p.gross)
   const advanceReceipt = liveReceipts.slice().reverse().find((r) => r.onAccount > 0) ?? null
   const canLink = activePhases.some((p) => p.balance > 0)
   const feeChanges = summary.fee.changes.length - 1
@@ -648,19 +844,23 @@ export default function PaymentsTab({ projectId }: { projectId: string }) {
       <section className="rounded-xl border border-border-default bg-surface-raised/50 p-5 space-y-3">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <p className="text-[11px] font-medium uppercase tracking-wider text-muted">Received</p>
+            <p className="text-[11px] font-medium uppercase tracking-wider text-muted">Paid</p>
             <p className="mt-1 text-2xl font-semibold tabular-nums text-primary">
-              {formatInr(t.received)} <span className="text-base font-normal text-secondary">of {formatInr(t.fee)}</span>
+              {formatInr(t.credited)} <span className="text-base font-normal text-secondary">of {formatInr(t.payable)}</span>
+            </p>
+            <p className="text-xs text-muted">
+              {t.gst > 0 ? `Fee ${formatInr(t.fee)} + GST ${formatInr(t.gst)}` : `Fee ${formatInr(t.fee)}, no GST`}
+              {t.tds > 0 ? ` · paid includes ${formatInr(t.tds)} TDS deducted by the client` : ''}
             </p>
           </div>
           <div className="sm:text-right">
-            <p className="text-[11px] font-medium uppercase tracking-wider text-muted">{t.outstanding < 0 ? 'Paid over the fee' : 'Left to receive'}</p>
+            <p className="text-[11px] font-medium uppercase tracking-wider text-muted">{t.outstanding < 0 ? 'Paid over the total' : 'Left to receive'}</p>
             <p className={`mt-1 text-2xl font-semibold tabular-nums ${t.outstanding > 0 ? 'text-status-warning' : t.outstanding < 0 ? 'text-status-danger' : 'text-status-success'}`}>
               {formatInr(Math.abs(t.outstanding))}
             </p>
           </div>
         </div>
-        <Bar value={t.received} total={t.fee} className="h-2" />
+        <Bar value={t.credited} total={t.payable} className="h-2" />
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-xs text-secondary">
           <span>
             Fee: {feeBasisText(summary)}{feeChanges > 0 ? `, changed ${feeChanges === 1 ? 'once' : `${feeChanges} times`}` : ''}
@@ -705,8 +905,15 @@ export default function PaymentsTab({ projectId }: { projectId: string }) {
             {activePhases.map((p, i) => {
               const open = openPhase === p.id
               const paid = paidInto.get(p.id) ?? []
+              const groupStart = !!p.group && p.group !== activePhases[i - 1]?.group
               return (
                 <li key={p.id} className="border-t border-border-default">
+                  {groupStart && (
+                    <div className="flex items-baseline justify-between px-4 pt-3 pb-1 bg-surface-sunken/30">
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-accent">{p.group}</span>
+                      <span className="text-xs text-muted tabular-nums pr-11">{formatInr(groupTotal.get(p.group!) ?? 0)}</span>
+                    </div>
+                  )}
                   <div
                     role="button" tabIndex={0} aria-expanded={open}
                     onClick={() => setOpenPhase(open ? null : p.id)}
@@ -719,10 +926,14 @@ export default function PaymentsTab({ projectId }: { projectId: string }) {
                           <span className="text-sm font-medium text-primary">{i + 1}. {p.name}</span>
                           <PhaseStatusPill phase={p} />
                         </div>
-                        <span className="text-sm font-semibold tabular-nums text-primary whitespace-nowrap">{formatInr(p.amount)}</span>
+                        <span className="text-right whitespace-nowrap">
+                          <span className="block text-sm font-semibold tabular-nums text-primary">{formatInr(p.gross)}</span>
+                          {p.gst > 0 && <span className="block text-[11px] text-muted tabular-nums">{formatInr(p.amount)} + GST</span>}
+                        </span>
                       </div>
-                      <Bar value={p.received} total={p.amount} />
+                      <Bar value={p.received} total={p.gross} />
                       <p className="text-xs text-muted">
+                        {p.ratePerSqft !== null ? `₹${paiseToRupeesText(p.ratePerSqft)} per sq ft · ` : ''}
                         {p.balance <= 0 ? 'Fully paid' : p.received > 0 ? `${formatInr(p.received)} paid, ${formatInr(p.balance)} left` : 'Nothing paid yet'}
                         {p.dueDate && p.balance > 0 ? ` · ${p.overdue ? 'overdue since' : 'due'} ${showDate(p.dueDate)}` : ''}
                         {p.note ? ` · ${p.note}` : ''}
@@ -795,6 +1006,7 @@ export default function PaymentsTab({ projectId }: { projectId: string }) {
                 <div className="flex-1 min-w-0">
                   <div className="flex flex-wrap items-baseline gap-x-3">
                     <span className="text-sm font-semibold tabular-nums text-primary">{formatInr(r.amount)}</span>
+                    {r.tds > 0 && <span className="text-xs font-medium text-secondary tabular-nums">+ TDS {formatInr(r.tds)}</span>}
                     <span className="text-xs text-secondary">{showDate(r.receivedOn)} · {modeLabel(r.mode)}{r.reference ? ` ${r.reference}` : ''}{r.payer ? ` · from ${r.payer}` : ''}</span>
                   </div>
                   <p className="mt-1 text-xs text-secondary">

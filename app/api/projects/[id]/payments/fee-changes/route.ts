@@ -3,7 +3,8 @@ import { type NextRequest } from 'next/server'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
 import { BUSY_MESSAGE, isBusyError } from '@/lib/task-categories'
 import {
-  audit, cleanText, currentFee, loadPaymentsSummary, parseRupees, paymentsGuard, percentOf, withProjectPaymentsLock,
+  allocatedByPhase, amountForArea, areaText, audit, cleanText, currentFee, loadPaymentsSummary, parseArea, parseRupees,
+  paymentsGuard, percentOf, withProjectPaymentsLock,
 } from '@/lib/payments'
 import type { PaymentsSummary } from '@/lib/payment-types'
 
@@ -27,13 +28,45 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     if (reason === 'too-long') return errorResponse('The reason must be 300 characters or fewer', 400)
     if (!reason || reason.length < 3) return errorResponse('Give a reason for the fee change', 400)
     const kind = body.kind
-    if (kind !== 'VARIATION' && kind !== 'CORRECTION' && kind !== 'COST_REVISION') {
-      return errorResponse("kind must be 'VARIATION', 'CORRECTION' or 'COST_REVISION'", 400)
+    if (kind !== 'VARIATION' && kind !== 'CORRECTION' && kind !== 'COST_REVISION' && kind !== 'AREA_REVISION') {
+      return errorResponse("kind must be 'VARIATION', 'CORRECTION', 'COST_REVISION' or 'AREA_REVISION'", 400)
     }
 
     const result = await withProjectPaymentsLock(g.project.id, async (tx) => {
       const plan = await tx.paymentPlan.findFirst({ where: { projectId: g.project.id } })
       if (!plan) return { error: 'Set up the fee first', status: 400 }
+
+      // A per sq ft fee is its stages, so it changes by area (every rate stage
+      // follows) or by adding a stage, not by a typed amount.
+      if (plan.basis === 'PER_SQFT') {
+        if (kind !== 'AREA_REVISION') return { error: 'This fee is per sq ft: revise the area, or add a stage for extra work', status: 400 }
+        const area = parseArea(body.area)
+        if (area === null) return { error: 'Enter the new built-up area in sq ft, more than 0', status: 400 }
+        if (plan.areaCentiSqft !== null && area === plan.areaCentiSqft) return { error: 'That is the current area; nothing changes', status: 400 }
+        const phases = await tx.paymentPhase.findMany({ where: { projectId: g.project.id, ratePerSqft: { not: null } } })
+        const received = await allocatedByPhase(tx, g.project.id)
+        let delta = BigInt(0)
+        for (const p of phases) {
+          const amount = amountForArea(p.ratePerSqft!, area)
+          const got = received.get(p.id) ?? BigInt(0)
+          if (amount + percentOf(amount, plan.gstBp) < got) {
+            return { error: `${p.name} has already been paid more than it would come to at this area`, status: 400 }
+          }
+          if (amount <= BigInt(0)) return { error: `${p.name} would come to less than one paisa at this area`, status: 400 }
+          if (p.isActive) delta += amount - p.amount
+          await tx.paymentPhase.update({ where: { id: p.id }, data: { amount } })
+        }
+        await tx.paymentPlan.update({ where: { id: plan.id }, data: { areaCentiSqft: area } })
+        await tx.paymentFeeChange.create({
+          data: { planId: plan.id, kind, amountDelta: delta, areaCentiSqft: area, reason, createdById: g.payload.userId },
+        })
+        await audit(tx, g.project.id, g.payload.userId, 'AREA_REVISION', {
+          areaFrom: plan.areaCentiSqft === null ? 'none' : areaText(plan.areaCentiSqft), areaTo: areaText(area), amountDelta: delta, reason,
+        })
+        return { ok: true as const }
+      }
+      if (kind === 'AREA_REVISION') return { error: 'An area revision is only for a fee set per sq ft', status: 400 }
+
       const { fee, estimatedCost } = await currentFee(tx, plan.id)
 
       let delta: bigint

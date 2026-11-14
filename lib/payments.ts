@@ -67,6 +67,34 @@ export function parsePercentBp(raw: unknown): number | null {
   return bp > 0 && bp <= 10000 ? bp : null
 }
 
+/** GST rate "18" / "18%" / 0 to basis points (1800). 0 to 100, at most 2 decimals; 0 means no GST. */
+export function parseGstBp(raw: unknown): number | null {
+  if (raw === 0 || (typeof raw === 'string' && /^0+(\.0+)?%?$/.test(raw.trim()))) return 0
+  return parsePercentBp(raw)
+}
+
+/** Largest area accepted: 10 crore sq ft. */
+const MAX_AREA_CENTI = BigInt(10000000000)
+
+/** "12,500" or "5140.82" (sq ft) to hundredths of a sq ft, exactly. More than 0; null otherwise. */
+export function parseArea(raw: unknown): bigint | null {
+  const text = typeof raw === 'number' ? (Number.isFinite(raw) ? raw.toFixed(2) : '') : typeof raw === 'string' ? raw : ''
+  const m = text.replace(/[,\s]/g, '').replace(/sq\.?ft$/i, '').match(/^(\d{1,9})(?:\.(\d{1,2}))?$/)
+  if (!m) return null
+  const v = BigInt(m[1]!) * BigInt(100) + BigInt((m[2] ?? '').padEnd(2, '0') || '0')
+  return v > BigInt(0) && v <= MAX_AREA_CENTI ? v : null
+}
+
+/** rate (paise per sq ft) x area (hundredths of a sq ft), rounded half up, in paise. */
+export function amountForArea(ratePaise: bigint, areaCenti: bigint): bigint {
+  return (ratePaise * areaCenti + BigInt(50)) / BigInt(100)
+}
+
+/** "12,500 sq ft" for history lines. */
+export function areaText(centi: bigint): string {
+  return `${(Number(centi) / 100).toLocaleString('en-IN', { maximumFractionDigits: 2 })} sq ft`
+}
+
 /** amount x bp / 10000, rounded half up, in paise. */
 export function percentOf(amount: bigint, bp: number): bigint {
   return (amount * BigInt(bp) + BigInt(5000)) / BigInt(10000)
@@ -143,6 +171,7 @@ export async function checkAllocations(
   if (!Array.isArray(raw)) return { error: 'allocations must be a list' }
   if (raw.length > 100) return { error: 'Too many stages in one payment' }
   const phases = await tx.paymentPhase.findMany({ where: { projectId, isActive: true }, select: { id: true, name: true, amount: true } })
+  const gstBp = (await tx.paymentPlan.findFirst({ where: { projectId }, select: { gstBp: true } }))?.gstBp ?? 0
   const received = await allocatedByPhase(tx, projectId)
   const rows: { phaseId: string; amount: bigint }[] = []
   const seen = new Set<string>()
@@ -154,7 +183,7 @@ export async function checkAllocations(
     seen.add(phase.id)
     const amount = parseRupees(entry.amount)
     if (amount === null || amount <= BigInt(0)) return { error: `Enter an amount for ${phase.name}, more than 0` }
-    const balance = phase.amount - (received.get(phase.id) ?? BigInt(0))
+    const balance = phase.amount + percentOf(phase.amount, gstBp) - (received.get(phase.id) ?? BigInt(0))
     if (amount > balance) {
       return { error: `${phase.name} has only ${formatInr(Number(balance > BigInt(0) ? balance : BigInt(0)))} left to pay. Put the rest towards another stage, or leave it as an advance.` }
     }
@@ -198,17 +227,26 @@ export async function loadPaymentsSummary(projectId: string): Promise<PaymentsSu
   const users = await prisma.user.findMany({ where: { id: { in: [...userIds] } }, select: { id: true, name: true } })
   const nameOf = (id: string | null) => users.find((u) => u.id === id)?.name ?? 'Someone'
 
-  let fee = BigInt(0)
+  let ledgerFee = BigInt(0)
   let estimatedCost: bigint | null = null
-  for (const c of plan?.feeChanges ?? []) { fee += c.amountDelta; if (c.estimatedCost !== null) estimatedCost = c.estimatedCost }
+  for (const c of plan?.feeChanges ?? []) { ledgerFee += c.amountDelta; if (c.estimatedCost !== null) estimatedCost = c.estimatedCost }
+  const gstBp = plan?.gstBp ?? 0
+  const perSqft = plan?.basis === 'PER_SQFT'
+  const active = phases.filter((p) => p.isActive)
+  // A per sq ft fee is its stages (rate x area, plus any fixed stages); the
+  // other kinds are the agreed fee and its changes, which the stages should match.
+  const fee = perSqft ? active.reduce((s, p) => s + p.amount, BigInt(0)) : ledgerFee
+  const gst = perSqft ? active.reduce((s, p) => s + percentOf(p.amount, gstBp), BigInt(0)) : percentOf(fee, gstBp)
 
   const phaseName = new Map(phases.map((p) => [p.id, p.name]))
   const allocated = new Map<string, bigint>()
   let received = BigInt(0)
+  let tds = BigInt(0)
   let allocatedTotal = BigInt(0)
   for (const r of receipts) {
     if (r.reversedAt) continue
     received += r.amount
+    tds += r.tds
     for (const a of r.allocations) {
       allocated.set(a.phaseId, (allocated.get(a.phaseId) ?? BigInt(0)) + a.amount)
       allocatedTotal += a.amount
@@ -218,35 +256,46 @@ export async function loadPaymentsSummary(projectId: string): Promise<PaymentsSu
   const today = new Date(); today.setUTCHours(0, 0, 0, 0)
   const phaseViews = phases.map((p) => {
     const got = allocated.get(p.id) ?? BigInt(0)
-    const balance = p.amount - got
+    const pGst = percentOf(p.amount, gstBp)
+    const balance = p.amount + pGst - got
     const status: PhaseStatus = balance <= BigInt(0) ? 'PAID' : got > BigInt(0) ? 'PART_PAID' : 'UNPAID'
     return {
-      id: p.id, name: p.name, amount: n(p.amount), received: n(got), balance: n(balance),
+      id: p.id, group: p.groupName, name: p.name, amount: n(p.amount),
+      ratePerSqft: p.ratePerSqft === null ? null : n(p.ratePerSqft), gst: n(pGst), gross: n(p.amount + pGst),
+      received: n(got), balance: n(balance),
       dueDate: p.dueDate?.toISOString() ?? null, note: p.note, sortOrder: p.sortOrder, isActive: p.isActive,
       status, overdue: p.isActive && balance > BigInt(0) && !!p.dueDate && p.dueDate < today,
     }
   })
-  const phasesTotal = phases.filter((p) => p.isActive).reduce((s, p) => s + p.amount, BigInt(0))
+  const phasesTotal = active.reduce((s, p) => s + p.amount, BigInt(0))
+  const credited = received + tds
+  const payable = fee + gst
 
   const warnings: string[] = []
-  if (plan && phases.some((p) => p.isActive) && phasesTotal !== fee) {
+  if (plan && !perSqft && active.length > 0 && phasesTotal !== fee) {
     const diff = fee - phasesTotal
     warnings.push(diff > BigInt(0)
       ? `The stages add up to ${formatInr(n(phasesTotal))}, ${formatInr(n(diff))} less than the fee. Add a stage or raise one so the whole fee is billed.`
       : `The stages add up to ${formatInr(n(phasesTotal))}, ${formatInr(n(-diff))} more than the fee. Lower a stage, or change the fee.`)
   }
-  if (received > fee && plan) warnings.push(`${formatInr(n(received - fee))} more has been received than the fee.`)
-  const onAccount = received - allocatedTotal
+  if (credited > payable && plan) warnings.push(`${formatInr(n(credited - payable))} more has been paid than the fee and GST.`)
+  const onAccount = credited - allocatedTotal
   if (onAccount > BigInt(0)) warnings.push(`${formatInr(n(onAccount))} received as an advance, not linked to any stage yet.`)
 
   return {
-    plan: plan ? { basis: plan.basis as FeeBasis, percentBp: plan.percentBp, createdAt: plan.createdAt.toISOString() } : null,
+    plan: plan ? {
+      basis: plan.basis as FeeBasis, percentBp: plan.percentBp, gstBp,
+      areaCentiSqft: plan.areaCentiSqft === null ? null : n(plan.areaCentiSqft),
+      ratePerSqft: perSqft ? n(active.reduce((s, p) => s + (p.ratePerSqft ?? BigInt(0)), BigInt(0))) : null,
+      createdAt: plan.createdAt.toISOString(),
+    } : null,
     fee: {
       current: n(fee),
       estimatedCost: estimatedCost === null ? null : n(estimatedCost),
       changes: (plan?.feeChanges ?? []).map((c) => ({
         id: c.id, kind: c.kind as FeeChangeKind, amountDelta: n(c.amountDelta),
         estimatedCost: c.estimatedCost === null ? null : n(c.estimatedCost),
+        areaCentiSqft: c.areaCentiSqft === null ? null : n(c.areaCentiSqft),
         reason: c.reason, createdAt: c.createdAt.toISOString(), createdByName: nameOf(c.createdById),
       })),
     },
@@ -254,18 +303,19 @@ export async function loadPaymentsSummary(projectId: string): Promise<PaymentsSu
     receipts: receipts.map((r) => {
       const alloc = r.allocations.reduce((s, a) => s + a.amount, BigInt(0))
       return {
-        id: r.id, receivedOn: r.receivedOn.toISOString(), amount: n(r.amount), mode: r.mode as PaymentMode,
+        id: r.id, receivedOn: r.receivedOn.toISOString(), amount: n(r.amount), tds: n(r.tds), mode: r.mode as PaymentMode,
         reference: r.reference, payer: r.payer, note: r.note,
         createdAt: r.createdAt.toISOString(), createdByName: nameOf(r.createdById),
         allocations: r.allocations.map((a) => ({ id: a.id, phaseId: a.phaseId, phaseName: phaseName.get(a.phaseId) ?? 'Stage', amount: n(a.amount), createdAt: a.createdAt.toISOString() })),
         allocated: n(alloc),
-        onAccount: r.reversedAt ? 0 : n(r.amount - alloc),
+        onAccount: r.reversedAt ? 0 : n(r.amount + r.tds - alloc),
         reversed: r.reversedAt ? { at: r.reversedAt.toISOString(), byName: nameOf(r.reversedById), reason: r.reversalReason ?? '' } : null,
       }
     }),
     totals: {
-      fee: n(fee), phasesTotal: n(phasesTotal), received: n(received), allocated: n(allocatedTotal),
-      onAccount: n(onAccount), outstanding: n(fee - received),
+      fee: n(fee), gst: n(gst), payable: n(payable), tds: n(tds), credited: n(credited),
+      phasesTotal: n(phasesTotal), received: n(received), allocated: n(allocatedTotal),
+      onAccount: n(onAccount), outstanding: n(payable - credited),
     },
     warnings,
     history: history.map((h) => ({
@@ -276,18 +326,19 @@ export async function loadPaymentsSummary(projectId: string): Promise<PaymentsSu
 }
 
 /** One readable line per audit entry. */
-const CHANGED_FIELD: Record<string, string> = { name: 'name', amount: 'amount', dueDate: 'due date', note: 'note', sortOrder: 'position' }
+const CHANGED_FIELD: Record<string, string> = { name: 'name', group: 'group', rate: 'rate', amount: 'amount', dueDate: 'due date', note: 'note', sortOrder: 'position' }
 
 function describeAudit(action: string, d: Record<string, unknown>): string {
   const inr = (v: unknown) => (typeof v === 'number' ? formatInr(v) : '')
   switch (action) {
-    case 'SETUP': return `Fee set up: ${inr(d.fee)}${d.basis === 'PERCENT' ? ` (${d.percent} of ${inr(d.estimatedCost)})` : ''}`
+    case 'SETUP': return `Fee set up: ${inr(d.fee)}${d.basis === 'PERCENT' ? ` (${d.percent} of ${inr(d.estimatedCost)})` : d.basis === 'PER_SQFT' ? ` (${inr(d.rate)} per sq ft x ${d.area})` : ''}${d.gst ? `, GST ${d.gst}` : ''}`
+    case 'AREA_REVISION': return `Area revised from ${d.areaFrom} to ${d.areaTo}: fee ${(d.amountDelta as number) >= 0 ? '+' : ''}${inr(d.amountDelta)}. ${d.reason ?? ''}`
     case 'FEE_CHANGE': return `${FEE_CHANGE_LABELS[d.kind as FeeChangeKind] ?? 'Fee change'}: ${(d.amountDelta as number) >= 0 ? '+' : ''}${inr(d.amountDelta)}, fee now ${inr(d.feeAfter)}. ${d.reason ?? ''}`
     case 'PHASE_ADD': return `Stage added: ${d.name}, ${inr(d.amount)}`
     case 'PHASE_EDIT': return `Stage "${d.name}" changed: ${Object.keys((d.changes as object) ?? {}).map((k) => CHANGED_FIELD[k] ?? k).join(', ')}`
     case 'PHASE_ARCHIVE': return `Stage removed from the schedule: ${d.name}`
     case 'PHASE_RESTORE': return `Stage put back in the schedule: ${d.name}`
-    case 'RECEIPT': return `Payment recorded: ${inr(d.amount)} by ${d.mode}${d.reference ? ` (${d.reference})` : ''}`
+    case 'RECEIPT': return `Payment recorded: ${inr(d.amount)} by ${d.mode}${d.tds ? ` + TDS ${inr(d.tds)}` : ''}${d.reference ? ` (${d.reference})` : ''}`
     case 'REVERSE': return `Payment entry of ${inr(d.amount)} cancelled: ${d.reason ?? ''}`
     case 'ALLOCATE': return `Advance of ${inr(d.total)} linked to stages`
     default: return action

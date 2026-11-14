@@ -285,12 +285,12 @@ model TaskTemplate {
 /// One line of a task template: the task title and the category it is filed
 /// under when applied. sortOrder keeps the order the list was written in.
 model TaskTemplateItem {
-  id             String   @id @default(cuid())
-  organizationId String   @default("rig360")
+  id             String  @id @default(cuid())
+  organizationId String  @default("rig360")
   templateId     String
   title          String
   categoryId     String?
-  sortOrder      Int      @default(0)
+  sortOrder      Int     @default(0)
 
   template TaskTemplate  @relation(fields: [templateId], references: [id], onDelete: Cascade)
   category TaskCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
@@ -1038,9 +1038,13 @@ model PaymentPlan {
   id             String   @id @default(cuid())
   organizationId String   @default("rig360")
   projectId      String   @unique
-  basis          String // FIXED | PERCENT
+  basis          String // FIXED | PERCENT | PER_SQFT
   /// PERCENT only: the fee percentage in basis points (750 = 7.50%).
   percentBp      Int?
+  /// PER_SQFT only: the built-up area in hundredths of a sq ft (12,500.5 sq ft = 1250050).
+  areaCentiSqft  BigInt?
+  /// GST charged on top of every stage, in basis points (1800 = 18%); 0 for none.
+  gstBp          Int      @default(0)
   createdById    String
   createdAt      DateTime @default(now())
 
@@ -1062,6 +1066,8 @@ model PaymentFeeChange {
   amountDelta    BigInt
   /// PERCENT plans: the construction-cost estimate after this change, in paise.
   estimatedCost  BigInt?
+  /// PER_SQFT plans: the area after this change, in hundredths of a sq ft.
+  areaCentiSqft  BigInt?
   reason         String
   createdById    String
   createdAt      DateTime @default(now())
@@ -1078,8 +1084,13 @@ model PaymentPhase {
   id             String    @id @default(cuid())
   organizationId String    @default("rig360")
   projectId      String
+  /// Discipline the stage belongs to ("Architecture design", "MEP design"); null = ungrouped.
+  groupName      String?
   name           String
+  /// The fee for the stage in paise, before GST. For a rate stage it is rate x area.
   amount         BigInt
+  /// PER_SQFT plans: paise per sq ft; the amount follows the area. null = fixed amount.
+  ratePerSqft    BigInt?
   dueDate        DateTime?
   note           String?
   sortOrder      Int       @default(0)
@@ -1101,7 +1112,11 @@ model PaymentReceipt {
   organizationId String    @default("rig360")
   projectId      String
   receivedOn     DateTime
+  /// Money received, in paise.
   amount         BigInt
+  /// Income tax the client deducted at source (TDS) and paid to the government
+  /// for us; it counts as paid, on top of the money received. Paise.
+  tds            BigInt    @default(0)
   mode           String // BANK | UPI | CHEQUE | CASH | OTHER
   reference      String?
   payer          String?

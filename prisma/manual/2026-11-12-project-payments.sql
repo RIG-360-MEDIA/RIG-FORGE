@@ -9,6 +9,8 @@ CREATE TABLE IF NOT EXISTS public."PaymentPlan" (
     "projectId" TEXT NOT NULL,
     "basis" TEXT NOT NULL,
     "percentBp" INTEGER,
+    "areaCentiSqft" BIGINT,
+    "gstBp" INTEGER NOT NULL DEFAULT 0,
     "createdById" TEXT NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -22,6 +24,7 @@ CREATE TABLE IF NOT EXISTS public."PaymentFeeChange" (
     "kind" TEXT NOT NULL,
     "amountDelta" BIGINT NOT NULL,
     "estimatedCost" BIGINT,
+    "areaCentiSqft" BIGINT,
     "reason" TEXT NOT NULL,
     "createdById" TEXT NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -33,8 +36,10 @@ CREATE TABLE IF NOT EXISTS public."PaymentPhase" (
     "id" TEXT NOT NULL,
     "organizationId" TEXT NOT NULL DEFAULT 'rig360',
     "projectId" TEXT NOT NULL,
+    "groupName" TEXT,
     "name" TEXT NOT NULL,
     "amount" BIGINT NOT NULL,
+    "ratePerSqft" BIGINT,
     "dueDate" TIMESTAMP(3),
     "note" TEXT,
     "sortOrder" INTEGER NOT NULL DEFAULT 0,
@@ -51,6 +56,7 @@ CREATE TABLE IF NOT EXISTS public."PaymentReceipt" (
     "projectId" TEXT NOT NULL,
     "receivedOn" TIMESTAMP(3) NOT NULL,
     "amount" BIGINT NOT NULL,
+    "tds" BIGINT NOT NULL DEFAULT 0,
     "mode" TEXT NOT NULL,
     "reference" TEXT,
     "payer" TEXT,
@@ -87,6 +93,14 @@ CREATE TABLE IF NOT EXISTS public."PaymentAuditLog" (
 
     CONSTRAINT "PaymentAuditLog_pkey" PRIMARY KEY ("id")
 );
+
+-- Columns added after the first version of this file (a no-op on a fresh run).
+ALTER TABLE public."PaymentPlan" ADD COLUMN IF NOT EXISTS "areaCentiSqft" BIGINT;
+ALTER TABLE public."PaymentPlan" ADD COLUMN IF NOT EXISTS "gstBp" INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE public."PaymentFeeChange" ADD COLUMN IF NOT EXISTS "areaCentiSqft" BIGINT;
+ALTER TABLE public."PaymentPhase" ADD COLUMN IF NOT EXISTS "groupName" TEXT;
+ALTER TABLE public."PaymentPhase" ADD COLUMN IF NOT EXISTS "ratePerSqft" BIGINT;
+ALTER TABLE public."PaymentReceipt" ADD COLUMN IF NOT EXISTS "tds" BIGINT NOT NULL DEFAULT 0;
 
 CREATE UNIQUE INDEX IF NOT EXISTS "PaymentPlan_projectId_key" ON public."PaymentPlan"("projectId");
 
@@ -166,9 +180,21 @@ DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'PaymentPhase_amount_positive' AND conrelid = 'public."PaymentPhase"'::regclass) THEN
     ALTER TABLE public."PaymentPhase" ADD CONSTRAINT "PaymentPhase_amount_positive" CHECK ("amount" > 0);
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'PaymentPlan_basis_valid' AND conrelid = 'public."PaymentPlan"'::regclass) THEN
-    ALTER TABLE public."PaymentPlan" ADD CONSTRAINT "PaymentPlan_basis_valid" CHECK ("basis" IN ('FIXED', 'PERCENT'));
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'PaymentReceipt_tds_valid' AND conrelid = 'public."PaymentReceipt"'::regclass) THEN
+    ALTER TABLE public."PaymentReceipt" ADD CONSTRAINT "PaymentReceipt_tds_valid" CHECK ("tds" >= 0);
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'PaymentPlan_gst_valid' AND conrelid = 'public."PaymentPlan"'::regclass) THEN
+    ALTER TABLE public."PaymentPlan" ADD CONSTRAINT "PaymentPlan_gst_valid" CHECK ("gstBp" BETWEEN 0 AND 10000);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'PaymentPlan_area_positive' AND conrelid = 'public."PaymentPlan"'::regclass) THEN
+    ALTER TABLE public."PaymentPlan" ADD CONSTRAINT "PaymentPlan_area_positive" CHECK ("areaCentiSqft" IS NULL OR "areaCentiSqft" > 0);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'PaymentPhase_rate_positive' AND conrelid = 'public."PaymentPhase"'::regclass) THEN
+    ALTER TABLE public."PaymentPhase" ADD CONSTRAINT "PaymentPhase_rate_positive" CHECK ("ratePerSqft" IS NULL OR "ratePerSqft" > 0);
+  END IF;
+  -- Replaced, not skipped, when it exists: an earlier version allowed fewer bases.
+  ALTER TABLE public."PaymentPlan" DROP CONSTRAINT IF EXISTS "PaymentPlan_basis_valid";
+  ALTER TABLE public."PaymentPlan" ADD CONSTRAINT "PaymentPlan_basis_valid" CHECK ("basis" IN ('FIXED', 'PERCENT', 'PER_SQFT'));
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'PaymentReceipt_mode_valid' AND conrelid = 'public."PaymentReceipt"'::regclass) THEN
     ALTER TABLE public."PaymentReceipt" ADD CONSTRAINT "PaymentReceipt_mode_valid" CHECK ("mode" IN ('BANK', 'UPI', 'CHEQUE', 'CASH', 'OTHER'));
   END IF;
@@ -201,6 +227,7 @@ BEGIN
     RAISE EXCEPTION 'A reversed payment receipt cannot be changed';
   END IF;
   IF NEW."amount" IS DISTINCT FROM OLD."amount"
+     OR NEW."tds" IS DISTINCT FROM OLD."tds"
      OR NEW."receivedOn" IS DISTINCT FROM OLD."receivedOn"
      OR NEW."projectId" IS DISTINCT FROM OLD."projectId"
      OR NEW."organizationId" IS DISTINCT FROM OLD."organizationId"

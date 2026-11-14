@@ -12,7 +12,7 @@ import { formatInr, type PaymentMode, type PaymentsSummary } from '@/lib/payment
 
 /**
  * Record money received: { receivedOn: 'YYYY-MM-DD', amount, mode,
- * reference?, payer?, note?, allocations?: [{ phaseId, amount }],
+ * tds?, reference?, payer?, note?, allocations?: [{ phaseId, amount }],
  * confirmDuplicate? }. What is not counted against a phase stays on account.
  *
  * A receipt with the same amount and the same reference, or the same amount
@@ -34,6 +34,14 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     if (receivedOn.getUTCFullYear() < 2000) return errorResponse('The received date is too far in the past', 400)
     const amount = parseRupees(body.amount)
     if (amount === null || amount <= BigInt(0)) return errorResponse('Enter the amount received in rupees, more than 0', 400)
+    // TDS the client deducted: optional, counts as paid on top of the money.
+    let tds = BigInt(0)
+    if (body.tds !== undefined && body.tds !== null && body.tds !== '') {
+      const v = parseRupees(body.tds)
+      if (v === null) return errorResponse('Enter the TDS deducted in rupees, or leave it empty', 400)
+      if (v > amount * BigInt(4)) return errorResponse('The TDS looks too large for this payment; check the amounts', 400)
+      tds = v
+    }
     if (!PAYMENT_MODE_VALUES.includes(body.mode as PaymentMode)) return errorResponse('Choose how it was paid', 400)
     const reference = cleanText(body.reference, 100)
     const payer = cleanText(body.payer, 100)
@@ -61,11 +69,11 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
           }
         }
       }
-      const checked = await checkAllocations(tx, g.project.id, body.allocations, amount)
+      const checked = await checkAllocations(tx, g.project.id, body.allocations, amount + tds)
       if ('error' in checked) return { error: checked.error, status: 400 }
 
       const receipt = await tx.paymentReceipt.create({
-        data: { projectId: g.project.id, receivedOn, amount, mode: body.mode as string, reference, payer, note, createdById: g.payload.userId },
+        data: { projectId: g.project.id, receivedOn, amount, tds, mode: body.mode as string, reference, payer, note, createdById: g.payload.userId },
       })
       if (checked.rows.length) {
         await tx.paymentAllocation.createMany({
@@ -73,7 +81,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
         })
       }
       await audit(tx, g.project.id, g.payload.userId, 'RECEIPT', {
-        receiptId: receipt.id, amount, mode: body.mode, reference, receivedOn, allocated: checked.total, onAccount: amount - checked.total,
+        receiptId: receipt.id, amount, tds, mode: body.mode, reference, receivedOn, allocated: checked.total, onAccount: amount + tds - checked.total,
       })
       return { ok: true as const }
     })
