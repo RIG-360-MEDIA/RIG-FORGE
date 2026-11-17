@@ -8,7 +8,7 @@ import { getOrgIdentity } from '@/lib/org-branding'
 import { isAssistantEnabled } from '@/lib/llm/provider'
 import { streamPlainAnswer } from '@/lib/llm/stream'
 import { isBylawsIndexingEnabled } from '@/lib/rag/index-bylaws-file'
-import { ANSWER_MAX_OUTPUT_TOKENS, answerProviders, buildAnswerMessages, cleanCitations, retrieve } from '@/lib/rag/answer'
+import { ANSWER_MAX_OUTPUT_TOKENS, answerProviders, buildAnswerMessages, bylawsStates, cleanCitations, retrieve } from '@/lib/rag/answer'
 
 export const runtime = 'nodejs'
 
@@ -33,10 +33,14 @@ export async function POST(request: NextRequest): Promise<Response> {
   const query = typeof body?.query === 'string' ? body.query.trim() : ''
   if (!query) return errorResponse('query is required', 400)
   if (query.length > 1000) return errorResponse('query must not exceed 1000 characters', 400)
+  // Optional: the State dropdown. Only the national documents and that
+  // state's are searched (lib/rag/regions.ts).
+  const state = typeof body?.state === 'string' && body.state.trim() ? body.state.trim() : undefined
 
   let retrieval
   try {
-    retrieval = await retrieve('bylaws', query)
+    if (state && !(await bylawsStates()).includes(state)) return errorResponse('No bylaws are indexed for that state', 400)
+    retrieval = await retrieve('bylaws', query, 8, { state })
   } catch (error) {
     // Detail server-side only: Qdrant/embedding errors can include internal URLs.
     console.error('[POST /api/nas/bylaws/answer]', error)
@@ -53,6 +57,7 @@ export async function POST(request: NextRequest): Promise<Response> {
           type: 'matches',
           requirement: retrieval.requirement,
           allMatched: retrieval.allMatched,
+          state: retrieval.state ?? null,
           matches: retrieval.passages.map((p) => ({ ...p, score: Math.round(p.score * 1000) / 1000, excerpt: p.text, text: undefined })),
         })
         let meta = null

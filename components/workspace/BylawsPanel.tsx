@@ -1,12 +1,16 @@
 'use client'
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { FileSearch, ScrollText, Search } from 'lucide-react'
 
 import PassageText from '@/components/workspace/PassageText'
 import { tidy } from '@/lib/rag/highlight'
+import { stateOfPath } from '@/lib/rag/regions'
+
+/** Where the chosen state is remembered in this browser. */
+const STATE_KEY = 'forge.bylaws.state'
 
 interface BylawsMatch {
   server: string
@@ -95,20 +99,46 @@ export default function BylawsPanel() {
   const [answer, setAnswer] = useState('')
   const [answering, setAnswering] = useState(false)
   const [asked, setAsked] = useState('')
+  // The State dropdown: '' searches every document. With a state, only its
+  // bylaws and the national codes are searched, its own first.
+  const [states, setStates] = useState<string[]>([])
+  const [state, setState] = useState('')
+  const [askedState, setAskedState] = useState('')
   // A newer search makes the frames of an older one stale.
   const searchId = useRef(0)
+
+  useEffect(() => {
+    let saved = ''
+    try { saved = localStorage.getItem(STATE_KEY) ?? '' } catch { /* storage blocked */ }
+    let live = true
+    fetch('/api/nas/bylaws/states', { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (!live) return
+        const list: string[] = Array.isArray(j?.data?.states) ? j.data.states : Array.isArray(j?.states) ? j.states : []
+        setStates(list)
+        if (saved && list.includes(saved)) setState(saved)
+      })
+      .catch(() => { /* no dropdown; search still works */ })
+    return () => { live = false }
+  }, [])
+
+  const chooseState = (s: string) => {
+    setState(s)
+    try { if (s) localStorage.setItem(STATE_KEY, s); else localStorage.removeItem(STATE_KEY) } catch { /* storage blocked */ }
+  }
 
   const runSearch = async () => {
     const query = q.trim()
     if (!query) return
     const id = ++searchId.current
-    setLoading(true); setErr(null); setNotConfigured(false); setAnswer(''); setMatches(null); setMeta(null); setAsked(query)
+    setLoading(true); setErr(null); setNotConfigured(false); setAnswer(''); setMatches(null); setMeta(null); setAsked(query); setAskedState(state)
     try {
       const res = await fetch('/api/nas/bylaws/answer', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query }),
+        body: JSON.stringify(state ? { query, state } : { query }),
       })
       if (!res.ok) {
         const j = await res.json().catch(() => null)
@@ -147,6 +177,18 @@ export default function BylawsPanel() {
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2 flex-wrap">
+        {states.length > 0 && (
+          <select
+            value={state}
+            onChange={(e) => chooseState(e.target.value)}
+            aria-label="State"
+            title="Search this state's bylaws and the national codes, its own first"
+            className="px-2 py-1 text-sm border border-border-default rounded bg-surface-raised text-text-primary"
+          >
+            <option value="">All states</option>
+            {states.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        )}
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
@@ -173,7 +215,10 @@ export default function BylawsPanel() {
       {matches && (
         <div className="border border-border-default rounded divide-y divide-border-default">
           <div className="px-3 py-2 text-xs font-mono text-text-secondary flex justify-between">
-            <span>{matches.length} result{matches.length === 1 ? '' : 's'} for “{asked}”</span>
+            <span>
+              {matches.length} result{matches.length === 1 ? '' : 's'} for “{asked}”
+              {askedState && <> in {askedState} bylaws + national codes</>}
+            </span>
             <button onClick={() => { searchId.current++; setMatches(null); setMeta(null); setAnswer(''); setAnswering(false) }} className="hover:text-text-primary">✕ clear</button>
           </div>
           {(answer || answering) && (
@@ -214,7 +259,14 @@ export default function BylawsPanel() {
                   <span className="font-mono text-text-secondary mr-1.5">[{i + 1}]</span>
                   <ScrollText className="inline h-4 w-4 mr-1.5 -mt-0.5 align-middle" aria-hidden="true" />{m.fileName}
                 </a>
-                <span className="text-text-secondary text-xs font-mono shrink-0">{Math.round(m.score * 100)}% match</span>
+                <span className="flex items-center gap-2 shrink-0">
+                  {askedState && (
+                    <span className="text-[11px] px-1.5 py-0.5 rounded border border-border-default text-text-secondary">
+                      {stateOfPath(m.path) === askedState ? askedState : 'National'}
+                    </span>
+                  )}
+                  <span className="text-text-secondary text-xs font-mono">{Math.round(m.score * 100)}% match</span>
+                </span>
               </div>
               {m.section && (
                 <p className="text-xs text-text-secondary">

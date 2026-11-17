@@ -218,6 +218,58 @@ export interface ChunkSearchHit extends ChunkPayload {
 }
 
 /**
+ * What a search may look in: only passages of these documents (`paths`),
+ * and those of `preferred` ranked first. The Bylaws tab's State dropdown
+ * (lib/rag/regions.ts): the chosen state's documents plus the national ones.
+ */
+export interface SearchScope {
+  paths: string[]
+  preferred: Set<string>
+}
+
+const documentsCache = new Map<string, { at: number; paths: Promise<string[]> }>()
+const DOCUMENTS_TTL_MS = 10 * 60 * 1000
+
+/**
+ * Every document in a collection for an organisation, by path: the first
+ * passage of each (chunkIndex 0, an indexed field), so one point per
+ * document. Cached for 10 minutes; the bylaws index changes nightly.
+ */
+export function listDocumentPaths(organizationId: string, collection: string = COLLECTION): Promise<string[]> {
+  const key = `${organizationId}\u0000${collection}`
+  const had = documentsCache.get(key)
+  if (had && Date.now() - had.at < DOCUMENTS_TTL_MS) return had.paths
+  const paths = (async () => {
+    const out = new Set<string>()
+    let offset: string | number | undefined
+    for (let page = 0; page < 50; page++) {
+      const res = await withCollection(collection, () => getClient().scroll(collection, {
+        filter: { must: [
+          { key: 'organizationId', match: { value: organizationId } },
+          { key: 'chunkIndex', match: { value: 0 } },
+        ] },
+        with_payload: ['path'],
+        with_vector: false,
+        limit: 500,
+        ...(offset !== undefined ? { offset } : {}),
+      }))
+      for (const p of res.points) {
+        const path = (p.payload as { path?: unknown } | null | undefined)?.path
+        if (typeof path === 'string') out.add(path)
+      }
+      const next = res.next_page_offset
+      if (next === null || next === undefined || typeof next === 'object') break
+      offset = next
+    }
+    return [...out].sort()
+  })()
+  // A failed listing is not kept: the next call tries again.
+  paths.catch(() => documentsCache.delete(key))
+  documentsCache.set(key, { at: Date.now(), paths })
+  return paths
+}
+
+/**
  * Minimum cosine similarity for a passage to be returned at all. Without one,
  * search always returns `limit` passages however unrelated, and the assistant
  * will confidently cite irrelevant text.
@@ -245,11 +297,18 @@ export async function searchChunks(
   limit = 8,
   collection: string = COLLECTION,
   minScore: number = MIN_SCORE,
+  /** Only passages of these documents (see SearchScope). */
+  paths?: string[],
 ): Promise<ChunkSearchHit[]> {
+  // No documents in scope: nothing to find. Never sent as an empty match-any.
+  if (paths && paths.length === 0) return []
   const res = await withCollection(collection, () => getClient().search(collection, {
     vector,
     limit,
-    filter: { must: [{ key: 'organizationId', match: { value: organizationId } }] },
+    filter: { must: [
+      { key: 'organizationId', match: { value: organizationId } },
+      ...(paths ? [{ key: 'path', match: { any: paths } }] : []),
+    ] },
     with_payload: true,
     score_threshold: minScore,
   }))
@@ -312,6 +371,26 @@ export function rerankByKeyword<T extends { score: number; text: string }>(
   return scored.slice(0, limit).map((s) => ({ ...s.hit, matchType: s.keywordScore > 0 ? ('hybrid' as const) : ('vector' as const) }))
 }
 
+/** How much a passage of the chosen state's documents is lifted when
+ * ranking by meaning. multilingual-e5-large puts relevant passages within
+ * about 0.06 of each other, so 0.03 puts the state's ahead of a national
+ * passage that is about as close, not ahead of a clearly better one. */
+const STATE_BOOST = Number(process.env.RAG_STATE_BOOST ?? 0.03)
+
+/** rerankByKeyword with the scope's preferred documents lifted by
+ * STATE_BOOST. The scores returned are the real ones. */
+export function rerankInScope<T extends { score: number; text: string; path: string }>(
+  candidates: T[],
+  queryText: string,
+  limit: number,
+  scope?: SearchScope,
+): Array<T & { matchType: 'vector' | 'hybrid' }> {
+  if (!scope?.preferred.size) return rerankByKeyword(candidates, queryText, limit)
+  // The real score travels as a field and is put back afterwards.
+  const lifted = candidates.map((c) => ({ ...c, realScore: c.score, score: c.score + (scope.preferred.has(c.path) ? STATE_BOOST : 0) }))
+  return rerankByKeyword(lifted, queryText, limit).map(({ realScore, ...h }) => ({ ...h, score: realScore } as unknown as T & { matchType: 'vector' | 'hybrid' }))
+}
+
 /**
  * Vector search, then re-ranked with a keyword-overlap boost.
  *
@@ -330,9 +409,10 @@ export async function searchChunksHybrid(
   queryText: string,
   limit = 8,
   collection: string = COLLECTION,
+  scope?: SearchScope,
 ): Promise<HybridChunkSearchHit[]> {
-  const candidates = await searchChunks(organizationId, vector, limit * 4, collection)
-  return rerankByKeyword(candidates, queryText, limit)
+  const candidates = await searchChunks(organizationId, vector, limit * 4, collection, MIN_SCORE, scope?.paths)
+  return rerankInScope(candidates, queryText, limit, scope)
 }
 
 export interface ConstrainedSearchHit extends HybridChunkSearchHit {
@@ -415,12 +495,14 @@ export async function searchChunksConstrained(
   queryText: string,
   limit = 8,
   collection: string = COLLECTION,
+  /** Only these documents, the preferred ones first (the Bylaws tab's State). */
+  scope?: SearchScope,
 ): Promise<ConstrainedSearchResult> {
   const constraints = analyzeQuery(queryText)
   if (!isConstrained(constraints)) {
-    return { hits: await searchChunksHybrid(organizationId, vector, queryText, limit, collection), constraints, allMatched: true }
+    return { hits: await searchChunksHybrid(organizationId, vector, queryText, limit, collection, scope), constraints, allMatched: true }
   }
-  let pool = await searchChunks(organizationId, vector, CONSTRAINED_POOL_SIZE, collection, MIN_SCORE - CONSTRAINED_POOL_MARGIN)
+  let pool = await searchChunks(organizationId, vector, CONSTRAINED_POOL_SIZE, collection, MIN_SCORE - CONSTRAINED_POOL_MARGIN, scope?.paths)
   // A question in Hindi scores English table passages lower than Hindi
   // prose, so the English tables that answer it can miss the pool. Search
   // again with the same parts in English ("FAR for a 500 sq m plot") and
@@ -428,7 +510,7 @@ export async function searchChunksConstrained(
   if (/\p{Script=Devanagari}/u.test(queryText)) {
     try {
       const english = await embedQuery(describeConstraints(constraints))
-      const more = await searchChunks(organizationId, english, CONSTRAINED_POOL_SIZE, collection, MIN_SCORE - CONSTRAINED_POOL_MARGIN)
+      const more = await searchChunks(organizationId, english, CONSTRAINED_POOL_SIZE, collection, MIN_SCORE - CONSTRAINED_POOL_MARGIN, scope?.paths)
       const byKey = new Map(pool.map((h) => [passageKey(h.server, h.path, h.chunkIndex), h]))
       for (const h of more) {
         const k = passageKey(h.server, h.path, h.chunkIndex)
@@ -442,7 +524,7 @@ export async function searchChunksConstrained(
   }
   const candidates = pool.filter((h) => mightMatch(h.text, constraints))
   const around = await neighbourPassages(organizationId, candidates, collection)
-  const passing: Array<ChunkSearchHit & { order: number; tieBreak: number; matchedRow?: string; section?: string; values?: string }> = []
+  const passing: Array<ChunkSearchHit & { order: number; tieBreak: number; useScore: number; quality: number; matchedRow?: string; section?: string; values?: string }> = []
   for (const hit of candidates) {
     const prev: ChunkPayload[] = []
     for (let b = CONTEXT_PASSAGES; b >= 1; b--) {
@@ -455,13 +537,18 @@ export async function searchChunksConstrained(
     // The row is in another passage of the same table: show that passage,
     // which has the row, with this hit's score.
     const shown = !m.shift ? hit : m.shift > 0 ? next ?? hit : prev[prev.length + m.shift] ?? hit
-    passing.push({ ...hit, ...shown, score: hit.score, order: rank(m), tieBreak: m.tieBreak ?? 0, matchedRow: m.row, section: m.section, values: m.values })
+    passing.push({ ...hit, ...shown, score: hit.score, order: rank(m), tieBreak: m.tieBreak ?? 0, useScore: m.useScore, quality: m.quality, matchedRow: m.row, section: m.section, values: m.values })
   }
   if (passing.length > 0) {
     // The best kind of match first (the asked use, then an exact table row,
-    // then a residential table when no use was asked), then meaning + keywords.
+    // then a residential table when no use was asked), then meaning +
+    // keywords. With a state chosen, its passages go ahead of national ones
+    // that match the asked use no better, when they give a figure (a table
+    // row or a figure in the text): a passage that only names the topic, or
+    // is under another use, never pushes the national row that answers down.
     const ranked = rerankByKeyword(passing, queryText, passing.length)
-    ranked.sort((a, b) => b.order - a.order || documentPriority(b.fileName) - documentPriority(a.fileName) || a.tieBreak - b.tieBreak)
+    const own = (h: { path: string; quality: number }) => (scope?.preferred.has(h.path) && h.quality >= 2 ? 1 : 0)
+    ranked.sort((a, b) => b.useScore - a.useScore || own(b) - own(a) || b.order - a.order || documentPriority(b.fileName) - documentPriority(a.fileName) || a.tieBreak - b.tieBreak)
     // The same row is often in two passages (overlap, or a table split
     // across them): show it once.
     const seen = new Set<string>()
@@ -472,7 +559,7 @@ export async function searchChunksConstrained(
       return true
     })
     return {
-      hits: unique.slice(0, limit).map(({ order: _o, tieBreak: _t, ...h }) => ({ ...h, matchType: 'hybrid' as const })),
+      hits: unique.slice(0, limit).map(({ order: _o, tieBreak: _t, useScore: _u, quality: _q, ...h }) => ({ ...h, matchType: 'hybrid' as const })),
       constraints,
       allMatched: true,
     }
@@ -480,6 +567,6 @@ export async function searchChunksConstrained(
   // Nothing meets every part: return the closest passages by meaning (still
   // above the normal floor), flagged so the caller says so instead of
   // presenting them as the answer.
-  const closest = rerankByKeyword(pool.filter((h) => h.score >= MIN_SCORE), queryText, limit)
+  const closest = rerankInScope(pool.filter((h) => h.score >= MIN_SCORE), queryText, limit, scope)
   return { hits: closest, constraints, allMatched: false }
 }

@@ -432,3 +432,56 @@ The MDDA file is inside `By_Laws` anyway (`By_Laws/MDDA UTTARAKHAND/`). What it 
 - "सेट बैक" occurs 86 times.
 
 **Deploy:** copy `connector.py` **and `krutidev.py`** to `~/nas-connector` on TRIJYA-3, restart the connector, then run `bylaws-sync`.
+
+## 18. State dropdown in the Bylaws tab (18 Nov)
+
+**Problem.** "Setback for a 500 sq m commercial plot" matched both the MDDA
+(Uttarakhand) table and the Model Building Bye-Laws, and the answer came from
+whichever passage scored higher (4.5 / 3 / 1.5 / 1.5 instead of MDDA's
+7.5 / 3.0 / 3.0). The user had to type "Dehradun" or "Uttarakhand" into every
+question.
+
+**Change.**
+- The Bylaws tab has a **State** dropdown ("All states" + every state that has
+  documents). The choice is remembered in the browser.
+- A document's state comes from its **folder** under By_Laws
+  (`lib/rag/regions.ts`: "MDDA UTTARAKHAND" → Uttarakhand). File names do not
+  count. Documents in no state folder (NBC, ECSBC, NEC, the reference books)
+  are national.
+- With a state chosen, the Qdrant search is filtered to that state's
+  documents plus the national ones (`path` match-any). Other states' documents
+  are left out. The state's passages rank first: first among table-row
+  matches, and lifted by `RAG_STATE_BOOST` (0.03) when ranking by meaning.
+- The answer prompt names the state and labels each passage
+  "(Uttarakhand bylaws)" or "(national)". The state's rules apply over
+  national ones, and a national rule is used only for what the state's
+  bylaws do not cover.
+- New `GET /api/nas/bylaws/states`; `POST /api/nas/bylaws/answer` takes an
+  optional `state`. The document list is read from Qdrant (chunkIndex 0 per
+  document) and cached for 10 minutes.
+- Chat is unchanged.
+
+**Adding a state:** put its bylaws in a folder named after the state (or a
+known authority, e.g. "MDDA ...", "DDA ...") under `utility data/By_Laws`.
+After the nightly sync it appears in the dropdown.
+
+**Ranking with a state.** A state passage goes ahead of a national one only
+when it matches the asked use as well (commercial for a commercial question)
+and gives a figure (a table row or a figure in the text). A state passage that
+only names the topic never pushes down the national row that answers.
+
+**No leaks.** Every Qdrant search carries both the organisation filter and the
+state's document list: the table-row search, the plain search, the English
+re-search for Hindi questions, and the "closest passages" fallback. An empty
+document list returns nothing; it never widens to every document. The `state`
+from the browser is accepted only if it is in the list of indexed states, so
+free text never reaches the prompt.
+
+Tests:
+- `scripts/test-rag.ts` ("State dropdown"): state from the folder, Uttar
+  Pradesh vs Uttarakhand, scope, ranking, prompt labels.
+- `scripts/test-bylaws-state.ts`: end to end through the real Qdrant client
+  against a fake Qdrant that applies the filters. Uttar Pradesh passages score
+  higher than Uttarakhand's, so a missing filter shows up as a leak. Covers
+  every search path, a second organisation, an organisation with no
+  documents, and 50 concurrent questions.

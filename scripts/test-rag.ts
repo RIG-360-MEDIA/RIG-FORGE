@@ -160,6 +160,49 @@ async function main() {
   check('findBylawsFolder finds the bylaws folder ("utility data/By_Laws") on the real WD layout', found === '/utility data/By_Laws', String(found))
   globalThis.fetch = realFetch
 
+  // ── State dropdown: which state a bylaws document belongs to ──────────────
+  console.log('\n## State dropdown — state from the folder, scope, ranking')
+  const regions = await import('../lib/rag/regions')
+  const docs = [
+    '/utility data/By_Laws/MDDA UTTARAKHAND/MDDA Compiled_byelaws_uttarakhand.pdf',
+    '/utility data/By_Laws/MDDA UTTARAKHAND/G-O-07-01-2022 (1).pdf',
+    '/utility data/By_Laws/UTTAR PRADESH/UP Building Bylaws 2025.pdf',
+    '/utility data/By_Laws/NBCs/NBC 2016 VOL1.pdf',
+    '/utility data/By_Laws/NBCs/NBC_MBBL.pdf',
+    '/utility data/By_Laws/UK(UP_Zamindari_Abolition)(A)_Bill_2025.pdf',
+    '/utility data/By_Laws/ARCHITECTURAL STANDARDS/Neufert STANDARDS.pdf',
+  ]
+  check('MDDA UTTARAKHAND folder -> Uttarakhand', regions.stateOfPath(docs[0]!) === 'Uttarakhand', String(regions.stateOfPath(docs[0]!)))
+  check('UTTAR PRADESH folder -> Uttar Pradesh, not Uttarakhand', regions.stateOfPath(docs[2]!) === 'Uttar Pradesh', String(regions.stateOfPath(docs[2]!)))
+  check('NBC, standards and a root file are national (file names do not count)',
+    [docs[3], docs[4], docs[5], docs[6]].every((d) => regions.stateOfPath(d!) === null))
+  check('underscored folder names work ("MDDA_UTTARAKHAND", "Dehradun")',
+    regions.stateOfFolder('MDDA_UTTARAKHAND') === 'Uttarakhand' && regions.stateOfFolder('Dehradun') === 'Uttarakhand')
+  check('folders that only contain "up"/"mp" in a word are not states', regions.stateOfFolder('Backup') === null && regions.stateOfFolder('Samples') === null)
+  check('dropdown lists the states with documents, sorted', JSON.stringify(regions.statesOf(docs)) === JSON.stringify(['Uttar Pradesh', 'Uttarakhand']), JSON.stringify(regions.statesOf(docs)))
+  const scope = regions.stateScope(docs, 'Uttarakhand')
+  check('Uttarakhand scope: its documents + national, not Uttar Pradesh',
+    scope.paths.length === 6 && !scope.paths.includes(docs[2]!) && scope.preferred.size === 2 && scope.preferred.has(docs[0]!), JSON.stringify(scope.paths))
+  const qd = await import('../lib/rag/qdrant')
+  const ranked = qd.rerankInScope([
+    { path: docs[3]!, text: 'setback commercial', score: 0.86 },
+    { path: docs[0]!, text: 'setback commercial', score: 0.85 },
+    { path: docs[4]!, text: 'setback commercial', score: 0.95 },
+  ], 'setback commercial', 3, scope)
+  check('the state\'s passage goes ahead of a national one about as close, not ahead of a clearly better one',
+    ranked.map((h) => h.path).join('|') === [docs[4], docs[0], docs[3]].join('|'), ranked.map((h) => h.path.split('/').pop()).join(' | '))
+  check('scores returned are the real ones, not the lifted ones', ranked[1]!.score === 0.85, String(ranked[1]!.score))
+  check('no scope: ranking unchanged', qd.rerankInScope([{ path: 'a', text: 'setback', score: 0.5 }, { path: 'b', text: 'setback', score: 0.6 }], 'setback', 2).map((h) => h.path).join() === 'b,a')
+  const ansMod = await import('../lib/rag/answer')
+  const shown = ansMod.renderPassages([
+    { server: 'WD', path: docs[0]!, fileName: 'MDDA Compiled_byelaws_uttarakhand.pdf', chunkIndex: 1, score: 0.9, text: 'a' },
+    { server: 'WD', path: docs[3]!, fileName: 'NBC 2016 VOL1.pdf', chunkIndex: 1, score: 0.9, text: 'b' },
+  ], 'Uttarakhand')
+  check('with a state, the model is told whose rules each passage is',
+    shown.includes('MDDA Compiled_byelaws_uttarakhand.pdf (Uttarakhand bylaws)') && shown.includes('NBC 2016 VOL1.pdf (national)'), shown)
+  check('without a state, passages are labelled as before',
+    !ansMod.renderPassages([{ server: 'WD', path: docs[0]!, fileName: 'x.pdf', chunkIndex: 1, score: 0.9, text: 'a' }]).includes('bylaws)'))
+
   // ── FIX 3 + 4: extraction for indexing ────────────────────────────────────
   console.log('\n## Fixes 3+4 — indexing extraction: full documents, failures reported')
   const { extractForIndex, extractText, isExtractable } = await import('../lib/nas/extract')
