@@ -304,9 +304,10 @@ def _pdf_text(b):
                 if not ocr_ok or ocred >= OCR_MAX_PAGES:
                     skipped += 1
                     continue
-                pix = doc[i].get_pixmap(matrix=fitz.Matrix(connector.OCR_ZOOM, connector.OCR_ZOOM))
-                img = connector.Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-                piece = connector.pytesseract.image_to_string(img, lang=lang, nice=connector.OCR_NICE)
+                # The connector's OCR (the one the bylaws use): it replaced
+                # OCR_ZOOM, which this still read, so every scanned PDF here
+                # failed with AttributeError from 12 Nov.
+                piece = connector._ocr_page(doc[i], lang)
                 ocred += 1
             parts.append(piece)
             size += len(piece)
