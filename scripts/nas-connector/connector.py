@@ -41,6 +41,10 @@ INDEX_LOCK = threading.Lock()
 INDEX_MAX_ENTRIES = int(os.environ.get("NAS_INDEX_MAX", "80000"))
 INDEX_MAX_DEPTH = int(os.environ.get("NAS_INDEX_DEPTH", "9"))
 INDEX_INTERVAL = int(os.environ.get("NAS_INDEX_INTERVAL", "1800"))  # 30 min
+# Longest one file-name walk may take. It was 5 minutes: on a busy NAS the WD
+# walk then stopped halfway (331k files one day, 160k the next) and search
+# silently missed the rest. A walk cut short never replaces a fuller index.
+INDEX_WALK_SECONDS = int(os.environ.get("NAS_INDEX_WALK_SECONDS", "1500"))
 
 app = FastAPI(title="trijya-nas-connector")
 
@@ -75,7 +79,8 @@ def _build_index(server: str):
     with INDEX_LOCK:
         INDEX_META[server] = {**INDEX_META.get(server, {}), "building": True}
     entries = []
-    deadline = time.time() + 300
+    deadline = time.time() + INDEX_WALK_SECONDS
+    cut_short = False
     try:
         conn, share = _connect(server)
     except Exception:
@@ -89,6 +94,7 @@ def _build_index(server: str):
         queue = deque([("/", 0)])
         while queue:
             if len(entries) >= INDEX_MAX_ENTRIES or time.time() > deadline:
+                cut_short = True
                 break
             p, depth = queue.popleft()
             try:
@@ -112,6 +118,12 @@ def _build_index(server: str):
             conn.close()
         except Exception:
             pass
+    with INDEX_LOCK:
+        prev = INDEX.get(server)
+        if cut_short and prev is not None and len(prev) > len(entries):
+            # Keep the fuller index; the next round tries again.
+            INDEX_META[server] = {**INDEX_META.get(server, {}), "building": False, "lastShortWalk": len(entries)}
+            return
     squashed = [_squash(e["name"]) for e in entries]
     with INDEX_LOCK:
         INDEX[server] = entries
