@@ -144,6 +144,9 @@ async function main() {
     const all = await inOrg('trijya', () => ans.retrieve('bylaws', q, 8))
     console.log(`   all states:       ${all.passages.map((p) => `${where(p)}:${p.chunkIndex}`).join(', ') || '(none)'}`)
     check('without a state, Uttar Pradesh is searched too (the fake really has it)', all.passages.some((p) => p.path === UP))
+    // The never-"not found" second search must keep the state too.
+    const wider = await inOrg('trijya', () => ans.widerRetrieval({ ...scoped, passages: [] })())
+    check('the wider second search keeps the state: no Uttar Pradesh passage', wider.state === 'Uttarakhand' && wider.passages.every((p) => allowed.has(p.path)), wider.passages.filter((p) => !allowed.has(p.path)).map((p) => p.path).join(', '))
   }
 
   console.log('\n## The 500 sq m commercial answer')

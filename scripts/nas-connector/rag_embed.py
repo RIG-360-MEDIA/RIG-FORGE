@@ -38,7 +38,46 @@ GPU_MB = max(512, int(os.environ.get("NAS_RAG_EMBED_GPU_MB", "4096")))
 # own directory ("External data path escapes model directory").
 MODEL_DIR = os.path.expanduser(os.environ.get("NAS_RAG_MODEL_DIR", "~/.cache/rag-models"))
 
-_lock = threading.Lock()
+_lock = threading.Lock()  # model loading
+
+
+class _QueueLock:
+    """One micro-batch on the model at a time, live searches first.
+
+    The whole-NAS indexer sends 64-passage batches back to back. With one lock
+    held per request, a live search's 1-text query waited for the whole batch
+    in front of it (about 70 s when the GPU was full and batches ran on the
+    CPU), so Forge's 90 s embed timeout was hit and the search failed. Now the
+    lock is taken per micro-batch, and a waiting urgent request (a search:
+    URGENT_MAX texts or fewer) goes before any waiting bulk one, so a search
+    waits for at most one micro-batch. Bulk requests still finish in order.
+    """
+
+    def __init__(self):
+        self._c = threading.Condition()
+        self._busy = False
+        self._urgent_waiting = 0
+
+    def acquire(self, urgent):
+        with self._c:
+            if urgent:
+                self._urgent_waiting += 1
+            try:
+                while self._busy or (not urgent and self._urgent_waiting > 0):
+                    self._c.wait()
+                self._busy = True
+            finally:
+                if urgent:
+                    self._urgent_waiting -= 1
+
+    def release(self):
+        with self._c:
+            self._busy = False
+            self._c.notify_all()
+
+
+URGENT_MAX = max(1, int(os.environ.get("NAS_RAG_EMBED_URGENT_MAX", "4")))
+_run_lock = _QueueLock()
 _states = {}  # model id -> dict(session, tokenizer, pooling, normalize, inputs)
 
 
@@ -170,18 +209,25 @@ def embed(texts, model=None):
         raise ValueError("texts must be a non-empty list of strings")
     if len(texts) > MAX_BATCH:
         raise ValueError(f"at most {MAX_BATCH} texts per request")
-    with _lock:  # one request at a time: bounded CPU and memory
+    with _lock:  # load each model once
         if model not in _states:
             _states[model] = _load(model)
         s = _states[model]
-        # Embed in length order: each micro-batch is padded to its longest
-        # text, so grouping similar lengths avoids computing on padding (the
-        # padding is masked out, so results are the same). Restore the order
-        # before returning.
-        order = sorted(range(len(texts)), key=lambda i: len(texts[i]))
-        vecs = [None] * len(texts)
-        for i in range(0, len(order), MICROBATCH):
-            idx = order[i:i + MICROBATCH]
-            for j, v in zip(idx, _run_safe(s, [texts[k] for k in idx])):
-                vecs[j] = v
+    urgent = len(texts) <= URGENT_MAX
+    # Embed in length order: each micro-batch is padded to its longest
+    # text, so grouping similar lengths avoids computing on padding (the
+    # padding is masked out, so results are the same). Restore the order
+    # before returning. One micro-batch at a time on the model (bounded CPU
+    # and memory), searches first: see _QueueLock.
+    order = sorted(range(len(texts)), key=lambda i: len(texts[i]))
+    vecs = [None] * len(texts)
+    for i in range(0, len(order), MICROBATCH):
+        idx = order[i:i + MICROBATCH]
+        _run_lock.acquire(urgent)
+        try:
+            out = _run_safe(s, [texts[k] for k in idx])
+        finally:
+            _run_lock.release()
+        for j, v in zip(idx, out):
+            vecs[j] = v
     return vecs

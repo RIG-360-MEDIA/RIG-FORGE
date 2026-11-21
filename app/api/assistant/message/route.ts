@@ -47,8 +47,8 @@ import { isNasEnabled } from '@/lib/nas/client'
 import { isBylawsIndexingEnabled } from '@/lib/rag/index-bylaws-file'
 import { isRagIndexingEnabled } from '@/lib/rag/index-nas-file'
 import {
-  ANSWER_MAX_OUTPUT_TOKENS, RAG_TOOL, answerProviders, buildAnswerMessages, cleanCitations, isFollowUp, notFoundMessage, questionForAnswer, ragSourceFor, retrieve,
-  searchQueryFor, sourcesFooter,
+  RAG_TOOL, answerNeverNotFound, isFollowUp, questionForAnswer, ragSourceFor, retrieve,
+  searchQueryFor, sourcesFooter, widerRetrieval,
   type RagRetrieval, type RagSource,
 } from '@/lib/rag/answer'
 
@@ -743,24 +743,36 @@ async function streamDocumentAnswer(
   emit: (delta: string) => void,
 ): Promise<{ text: string; provider: string | null; model: string | null; inputTokens: number | null; outputTokens: number | null; latencyMs: number }> {
   const t0 = Date.now()
-  const r = plan.retrieval
-  const none = { provider: null, model: null, inputTokens: null, outputTokens: null }
-  if (r.passages.length === 0) {
-    const msg = notFoundMessage(r)
-    emit(msg)
-    return { text: msg, ...none, latencyMs: Date.now() - t0 }
-  }
-
   const brand = await getOrgIdentity(getOrgId())
-  const messages = buildAnswerMessages(r, plan.question, plan.history, brand.appName)
-  const { text, meta } = await streamPlainAnswer(messages, { ...answerProviders(), temperature: 0.2, maxOutputTokens: ANSWER_MAX_OUTPUT_TOKENS }, (d) => emit(cleanCitations(d)))
-
-  let answer = cleanCitations(text)
+  // Passages of the first search, then of a wider second one; failing both,
+  // an answer from the model itself. Never "not found".
+  const out = await answerNeverNotFound({
+    first: plan.retrieval,
+    second: widerRetrieval(plan.retrieval),
+    question: plan.question,
+    history: plan.history,
+    orgName: brand.appName,
+    emit,
+  })
+  const meta = out.meta
+  const r = out.retrieval
+  let answer = out.text
   if (!answer.trim()) {
     // No provider answered: show the passages that would have been used.
-    answer = 'I found these in the documents but could not write up an answer just now:\n\n' +
-      r.passages.slice(0, 3).map((p, i) => `[${i + 1}] ${p.values ?? p.matchedRow ?? p.text.slice(0, 300)}`).join('\n\n')
+    answer = r
+      ? 'Here is what the documents say:\n\n' + r.passages.slice(0, 3).map((p, i) => `[${i + 1}] ${p.values ?? p.matchedRow ?? p.text.slice(0, 300)}`).join('\n\n')
+      : 'I could not write up an answer just now. Please try again in a moment.'
     emit(answer)
+  }
+  if (!r) {
+    return {
+      text: answer,
+      provider: meta?.provider ?? null,
+      model: meta?.model ?? null,
+      inputTokens: meta?.inputTokens ?? null,
+      outputTokens: meta?.outputTokens ?? null,
+      latencyMs: Date.now() - t0,
+    }
   }
   const footer = sourcesFooter(answer, r.passages, r.source)
   emit(footer)

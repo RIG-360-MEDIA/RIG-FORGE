@@ -48,7 +48,23 @@ const STATES: Array<[string, RegExp]> = [
   ['Chandigarh', /chandigarh/],
   ['Puducherry', /puducherry|pondicherry/],
   ['Ladakh', /ladakh/],
+  ['Dadra and Nagar Haveli and Daman and Diu', /dadra|\bdaman\b/], // not "andaman"
+  ['Lakshadweep', /lakshadweep/],
+  ['Andaman and Nicobar Islands', /andaman|nicobar/],
 ]
+
+/**
+ * BIS "Standardized Development and Building Regulations, 2023" (SP 73): a
+ * model based on the NBC that BIS offers each state to adopt, one copy per
+ * state with only the cover changed. Not the bylaws in force: a state's own
+ * bylaws (MDDA, ...) always rank above it, and answers say it is a model.
+ */
+const BIS_MODEL = /standardi[sz]ed[\s_-]*development[\s_-]*(?:and|&)[\s_-]*building[\s_-]*regulations|(?<![a-z])sp[\s_-]*73(?:[\s_:-]*2023|(?!\d))/i
+
+/** A BIS model regulation (any state's copy, or the national master). */
+export function isModelRegulation(pathOrName: string): boolean {
+  return BIS_MODEL.test(pathOrName)
+}
 
 /** The state a folder name stands for, or null. */
 export function stateOfFolder(name: string): string | null {
@@ -74,15 +90,36 @@ export function statesOf(paths: string[]): string[] {
   return [...new Set(paths.map(stateOfPath).filter((s): s is string => s !== null))].sort()
 }
 
-/** What a search with `state` chosen covers: its documents and the national
- * ones. `preferred` marks the state's own. */
+/**
+ * What a search with `state` chosen covers: its documents and the national
+ * ones. `preferred` marks the state's own bylaws, ranked first; its copy of
+ * the BIS model is searched but not preferred. The national BIS master is
+ * left out when the state has its own copy (the same text twice).
+ */
 export function stateScope(paths: string[], state: string): { paths: string[]; preferred: Set<string> } {
   const preferred = new Set<string>()
   const allowed: string[] = []
+  const ownModel = paths.some((p) => stateOfPath(p) === state && isModelRegulation(p))
   for (const p of paths) {
     const s = stateOfPath(p)
-    if (s === state) preferred.add(p)
-    if (s === null || s === state) allowed.push(p)
+    const model = isModelRegulation(p)
+    if (s === state && !model) preferred.add(p)
+    if (s === state || (s === null && !(model && ownModel))) allowed.push(p)
   }
   return { paths: allowed, preferred }
+}
+
+/**
+ * With no state chosen: every document except the per-state copies of the
+ * BIS model, which hold the same text 36 times over and would fill every
+ * result list with one passage. The national master stands for them; with
+ * no master, the first state copy does. Null when nothing is left out (no
+ * filter needed).
+ */
+export function allStatesScope(paths: string[]): { paths: string[]; preferred: Set<string> } | null {
+  const copies = paths.filter((p) => isModelRegulation(p) && stateOfPath(p) !== null).sort()
+  if (copies.length <= 1) return null
+  const hasMaster = paths.some((p) => isModelRegulation(p) && stateOfPath(p) === null)
+  const drop = new Set(hasMaster ? copies : copies.slice(1))
+  return { paths: paths.filter((p) => !drop.has(p)), preferred: new Set() }
 }

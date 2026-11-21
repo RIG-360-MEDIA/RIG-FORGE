@@ -6,9 +6,8 @@ import { isNasEnabled } from '@/lib/nas/client'
 import { getOrgId } from '@/lib/tenant-context'
 import { getOrgIdentity } from '@/lib/org-branding'
 import { isAssistantEnabled } from '@/lib/llm/provider'
-import { streamPlainAnswer } from '@/lib/llm/stream'
 import { isBylawsIndexingEnabled } from '@/lib/rag/index-bylaws-file'
-import { ANSWER_MAX_OUTPUT_TOKENS, answerProviders, buildAnswerMessages, bylawsStates, cleanCitations, retrieve } from '@/lib/rag/answer'
+import { type RagRetrieval, answerNeverNotFound, bylawsStates, retrieve, widerRetrieval } from '@/lib/rag/answer'
 
 export const runtime = 'nodejs'
 
@@ -17,11 +16,13 @@ export const runtime = 'nodejs'
 // answer from the passages found. NDJSON, one frame per line:
 //
 //   {"type":"matches","requirement":...,"allMatched":...,"matches":[...]}   first
+//   {"type":"general"}                                                     the passages do not answer: hide them
 //   {"type":"text","delta":"..."}                                          the answer, as it is written
 //   {"type":"done","provider":...,"model":...}                             last
 //
-// Without an LLM (ASSISTANT_ENABLED off) or with no passages, only matches +
-// done are sent: the tab then shows the passages alone, as before.
+// When neither this search nor a wider second one answers the question, the
+// answer is written without the documents ("general" frame first). Without
+// an LLM (ASSISTANT_ENABLED off) only matches + done are sent.
 export async function POST(request: NextRequest): Promise<Response> {
   const token = getTokenFromCookies(request)
   if (!token) return errorResponse('Authentication required', 401)
@@ -53,19 +54,22 @@ export async function POST(request: NextRequest): Promise<Response> {
     async start(controller) {
       const write = (frame: object) => controller.enqueue(encoder.encode(JSON.stringify(frame) + '\n'))
       try {
-        write({
-          type: 'matches',
-          requirement: retrieval.requirement,
-          allMatched: retrieval.allMatched,
-          state: retrieval.state ?? null,
-          matches: retrieval.passages.map((p) => ({ ...p, score: Math.round(p.score * 1000) / 1000, excerpt: p.text, text: undefined })),
-        })
+        write({ type: 'matches', ...matchesFrame(retrieval) })
         let meta = null
-        if (retrieval.passages.length > 0 && isAssistantEnabled()) {
+        if (isAssistantEnabled()) {
           const brand = await getOrgIdentity(orgId)
-          const messages = buildAnswerMessages(retrieval, query, [], brand.appName)
-          // Cloud first, as in chat; see streamDocumentAnswer in app/api/assistant/message/route.ts.
-          ;({ meta } = await streamPlainAnswer(messages, { ...answerProviders(), temperature: 0.2, maxOutputTokens: ANSWER_MAX_OUTPUT_TOKENS }, (delta) => write({ type: 'text', delta: cleanCitations(delta) })))
+          const out = await answerNeverNotFound({
+            first: retrieval,
+            second: widerRetrieval(retrieval),
+            question: query,
+            history: [],
+            orgName: brand.appName,
+            emit: (delta) => write({ type: 'text', delta }),
+            // The wider search's passages, which its answer's citations refer to.
+            onSecond: (r) => write({ type: 'matches', ...matchesFrame(r) }),
+            onGeneral: () => write({ type: 'general' }),
+          })
+          meta = out.meta
         }
         write({ type: 'done', provider: meta?.provider ?? null, model: meta?.model ?? null })
       } catch (error) {
@@ -84,4 +88,13 @@ export async function POST(request: NextRequest): Promise<Response> {
       'X-Accel-Buffering': 'no',
     },
   })
+}
+
+function matchesFrame(r: RagRetrieval) {
+  return {
+    requirement: r.requirement,
+    allMatched: r.allMatched,
+    state: r.state ?? null,
+    matches: r.passages.map((p) => ({ ...p, score: Math.round(p.score * 1000) / 1000, excerpt: p.text, text: undefined })),
+  }
 }
