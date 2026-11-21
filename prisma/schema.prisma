@@ -180,6 +180,12 @@ model Project {
   thread  ProjectThread?
   tickets Ticket[]
 
+  // Payments (admins only; see PaymentPlan)
+  paymentPlan     PaymentPlan?
+  paymentPhases   PaymentPhase[]
+  paymentReceipts PaymentReceipt[]
+  proposals       Proposal[]
+
   @@index([leadId])
   @@index([clientId])
   @@index([organizationId])
@@ -219,16 +225,78 @@ model Task {
   startDate      DateTime? // when work is planned to begin; must be <= dueDate (enforced in the API, not the DB)
   dueDate        DateTime?
   completedAt    DateTime?
+  // The trade or kind of work (Electrical, Plumbing, Drawings...). Optional:
+  // tasks without one show under "No category". See TaskCategory.
+  categoryId     String?
   isActive       Boolean    @default(true)
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 
-  assignee User?       @relation(fields: [assigneeId], references: [id])
-  project  Project     @relation(fields: [projectId], references: [id])
+  assignee User?         @relation(fields: [assigneeId], references: [id])
+  project  Project       @relation(fields: [projectId], references: [id])
+  category TaskCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   thread   TaskThread?
 
   @@index([projectId])
   @@index([assigneeId])
+  @@index([categoryId])
+  @@index([organizationId])
+}
+
+/// A company-wide kind of work that tasks are grouped by in a project's task
+/// list (Electrical, Plumbing, Civil, Drawings, Approvals...). Shared across
+/// all projects so lists, templates and reports line up; admins and project
+/// leads can add one from inside a project. Archiving (isActive=false) hides it
+/// from pickers but keeps it on tasks that already use it.
+model TaskCategory {
+  id             String   @id @default(cuid())
+  organizationId String   @default("rig360")
+  name           String
+  sortOrder      Int      @default(0)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  tasks         Task[]
+  templateItems TaskTemplateItem[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+}
+
+/// A ready-made task list (e.g. "Architectural design", 41 items) that is
+/// copied into a project's Task List in one step, then assigned there.
+/// Company-wide; admins create, edit and archive them (or import them from
+/// an Excel sheet). Applying copies the items: later edits to a template do
+/// not change projects it was already applied to.
+model TaskTemplate {
+  id             String   @id @default(cuid())
+  organizationId String   @default("rig360")
+  name           String
+  description    String?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  items TaskTemplateItem[]
+
+  @@index([organizationId])
+}
+
+/// One line of a task template: the task title and the category it is filed
+/// under when applied. sortOrder keeps the order the list was written in.
+model TaskTemplateItem {
+  id             String  @id @default(cuid())
+  organizationId String  @default("rig360")
+  templateId     String
+  title          String
+  categoryId     String?
+  sortOrder      Int     @default(0)
+
+  template TaskTemplate  @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  category TaskCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  @@index([templateId])
   @@index([organizationId])
 }
 
@@ -954,4 +1022,186 @@ model NasReindexRun {
   heartbeatAt    DateTime         @default(now())
 
   @@index([organizationId, startedAt])
+}
+
+// ─── Project payments (ADMIN and SUPER_ADMIN only) ───────────────────────────
+//
+// A ledger, not editable totals. Money is whole paise (BigInt). The fee is the
+// sum of PaymentFeeChange rows; a receipt is never edited or deleted (a
+// mistake is reversed, with a reason); what a receipt paid is its
+// PaymentAllocation rows. Received, balances and "on account" are always
+// calculated from these, so they cannot be typed in or drift. Every action is
+// also written to PaymentAuditLog.
+
+/// How a project's fee is set: a fixed amount, or a percentage of an estimated
+/// construction cost. One per project.
+model PaymentPlan {
+  id             String   @id @default(cuid())
+  organizationId String   @default("rig360")
+  projectId      String   @unique
+  basis          String // FIXED | PERCENT | PER_SQFT
+  /// PERCENT only: the fee percentage in basis points (750 = 7.50%).
+  percentBp      Int?
+  /// PER_SQFT only: the built-up area in hundredths of a sq ft (12,500.5 sq ft = 1250050).
+  areaCentiSqft  BigInt?
+  /// GST charged on top of every stage, in basis points (1800 = 18%); 0 for none.
+  gstBp          Int      @default(0)
+  createdById    String
+  createdAt      DateTime @default(now())
+
+  project    Project            @relation(fields: [projectId], references: [id])
+  feeChanges PaymentFeeChange[]
+
+  @@index([organizationId])
+}
+
+/// One change to a project's fee, append-only. The first is the agreed fee
+/// (INITIAL); later ones are VARIATION (extra or reduced scope), COST_REVISION
+/// (new construction-cost estimate on a PERCENT plan) or CORRECTION.
+model PaymentFeeChange {
+  id             String   @id @default(cuid())
+  organizationId String   @default("rig360")
+  planId         String
+  kind           String
+  /// Change to the fee in paise; negative to reduce it.
+  amountDelta    BigInt
+  /// PERCENT plans: the construction-cost estimate after this change, in paise.
+  estimatedCost  BigInt?
+  /// PER_SQFT plans: the area after this change, in hundredths of a sq ft.
+  areaCentiSqft  BigInt?
+  reason         String
+  createdById    String
+  createdAt      DateTime @default(now())
+
+  plan PaymentPlan @relation(fields: [planId], references: [id])
+
+  @@index([planId])
+  @@index([organizationId])
+}
+
+/// A billing stage of a project ("Concept design", "Working drawings") with
+/// the amount due for it. Archived (isActive=false) instead of deleted.
+model PaymentPhase {
+  id             String    @id @default(cuid())
+  organizationId String    @default("rig360")
+  projectId      String
+  /// Discipline the stage belongs to ("Architecture design", "MEP design"); null = ungrouped.
+  groupName      String?
+  name           String
+  /// The fee for the stage in paise, before GST. For a rate stage it is rate x area.
+  amount         BigInt
+  /// PER_SQFT plans: paise per sq ft; the amount follows the area. null = fixed amount.
+  ratePerSqft    BigInt?
+  dueDate        DateTime?
+  note           String?
+  sortOrder      Int       @default(0)
+  isActive       Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  project     Project             @relation(fields: [projectId], references: [id])
+  allocations PaymentAllocation[]
+
+  @@index([projectId])
+  @@index([organizationId])
+}
+
+/// Money received from the client. Never edited or deleted: a wrong entry is
+/// reversed (reversedAt + reason), and both stay in the history.
+model PaymentReceipt {
+  id             String    @id @default(cuid())
+  organizationId String    @default("rig360")
+  projectId      String
+  receivedOn     DateTime
+  /// Money received, in paise.
+  amount         BigInt
+  /// Income tax the client deducted at source (TDS) and paid to the government
+  /// for us; it counts as paid, on top of the money received. Paise.
+  tds            BigInt    @default(0)
+  mode           String // BANK | UPI | CHEQUE | CASH | OTHER
+  reference      String?
+  payer          String?
+  note           String?
+  createdById    String
+  createdAt      DateTime  @default(now())
+  reversedAt     DateTime?
+  reversedById   String?
+  reversalReason String?
+
+  project     Project             @relation(fields: [projectId], references: [id])
+  allocations PaymentAllocation[]
+
+  @@index([projectId])
+  @@index([organizationId])
+}
+
+/// Part of a receipt counted against a phase. Immutable. A receipt's
+/// allocations never exceed its amount; the rest is "on account".
+model PaymentAllocation {
+  id             String   @id @default(cuid())
+  organizationId String   @default("rig360")
+  receiptId      String
+  phaseId        String
+  amount         BigInt
+  createdById    String
+  createdAt      DateTime @default(now())
+
+  receipt PaymentReceipt @relation(fields: [receiptId], references: [id])
+  phase   PaymentPhase   @relation(fields: [phaseId], references: [id])
+
+  @@index([receiptId])
+  @@index([phaseId])
+  @@index([organizationId])
+}
+
+/// Who did what to a project's payments, and when. Append-only.
+model PaymentAuditLog {
+  id             String   @id @default(cuid())
+  organizationId String   @default("rig360")
+  projectId      String
+  userId         String
+  action         String
+  detail         Json
+  createdAt      DateTime @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([organizationId])
+}
+
+/// A company's proposal letterhead and standard terms (one row per company):
+/// firm name, address, signatory, bank details, reference numbering and the
+/// clauses every proposal carries. Edited by admins in Proposals > Firm details.
+model ProposalSettings {
+  id             String   @id @default(cuid())
+  organizationId String   @unique @default("rig360")
+  /// Everything else, as JSON (see lib/proposal-types.ts ProposalSettingsData).
+  data           Json
+  updatedById    String
+  updatedAt      DateTime @updatedAt
+
+  @@index([organizationId])
+}
+
+/// A fee proposal / offer letter for a project. The text lives in content
+/// (see lib/proposal-types.ts ProposalContent). The reference number is
+/// given once and never reused (serial unique per company).
+model Proposal {
+  id             String    @id @default(cuid())
+  organizationId String    @default("rig360")
+  projectId      String
+  serial         Int
+  refNo          String
+  status         String    @default("DRAFT") // DRAFT | SENT | ACCEPTED | DECLINED
+  content        Json
+  createdById    String
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  sentAt         DateTime?
+  acceptedAt     DateTime?
+
+  project Project @relation(fields: [projectId], references: [id])
+
+  @@unique([organizationId, serial])
+  @@index([projectId])
+  @@index([organizationId])
 }

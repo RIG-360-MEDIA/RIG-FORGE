@@ -1,66 +1,32 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
-import type { TaskSummary, PaginatedResponse, ApiResponse } from '@/lib/types'
+import { useState, useMemo } from 'react'
+import type { TaskSummary } from '@/lib/types'
+import TaskFormModal from './tasks/TaskFormModal'
+import DeleteTaskDialog from './tasks/DeleteTaskDialog'
+import { useProjectTasks } from './tasks/useProjectTasks'
+import {
+  PAYMENT_POINTS, POINTS_LABELS, PRIORITY_STYLES, STATUS_LABELS,
+  compareByDue, formatDate, isOverdue, optionClass, type Priority, type TaskStatus,
+} from './tasks/shared'
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-type TaskStatus = 'TODO' | 'IN_PROGRESS' | 'DONE'
-type Priority   = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
-
-interface Member {
-  userId: string
-  name: string
-  avatarUrl: string | null
-}
+// The work already handed out: every task that has someone on it, by status,
+// with who, deadline and priority. Items nobody has been given yet live in
+// the Task List tab (the plan); both tabs read the same tasks.
 
 export interface TasksTabProps {
   projectId: string
-  isAdmin: boolean
-  isLead: boolean
+  /** Admin (projects.manage) or the project lead: may edit and delete any task. */
+  canManage: boolean
   currentUserId: string
   /**
-   * May this user raise a new task here? True for anyone on the project, which
-   * is everyone who can open this tab, EXCEPT external client/supplier users.
-   * Separate from `isAdmin`/`isLead`, which still gate editing and deleting.
+   * May this user raise a new task here? True for anyone on the project
+   * EXCEPT external client/supplier users.
    */
   canCreate: boolean
 }
 
 type FilterMode = 'all' | 'mine' | 'TODO' | 'IN_PROGRESS' | 'DONE'
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-const PRIORITY_STYLES: Record<Priority, string> = {
-  LOW:      'bg-gray-700 text-gray-300',
-  MEDIUM:   'bg-blue-900 text-blue-300',
-  HIGH:     'bg-orange-900 text-orange-300',
-  CRITICAL: 'bg-red-900 text-red-300',
-}
-
-/** Marks a task can carry. 5 means payment related — see lib/tasks.ts. */
-const PAYMENT_POINTS = 5
-const POINTS_LABELS: Record<number, string> = {
-  1: '1 mark — small task',
-  2: '2 marks — bigger task',
-  5: '5 marks — payment related',
-}
-
-const STATUS_LABELS: Record<TaskStatus, string> = {
-  TODO:        'To Do',
-  IN_PROGRESS: 'In Progress',
-  DONE:        'Done',
-}
-
-function isOverdue(task: TaskSummary): boolean {
-  if (!task.dueDate || task.status === 'DONE') return false
-  return new Date(task.dueDate) < new Date()
-}
-
-function formatDate(date: Date | null): string {
-  if (!date) return 'No due date'
-  return new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-}
 
 // ─── TaskRow ──────────────────────────────────────────────────────────────────
 
@@ -76,420 +42,83 @@ interface TaskRowProps {
 function TaskRow({ task, currentUserId, canManage, onStatusChange, onEdit, onDelete }: TaskRowProps) {
   const [expanded, setExpanded] = useState(false)
   const [updating, setUpdating] = useState(false)
-
-  async function handleStatusChange(e: React.ChangeEvent<HTMLSelectElement>) {
-    const next = e.target.value as TaskStatus
-    setUpdating(true)
-    await onStatusChange(task.id, next)
-    setUpdating(false)
-  }
-
-  const overdue    = isOverdue(task)
-  const isAssignee = task.assigneeId === currentUserId
-  // Status can be changed by admin/lead or the task's assignee.
-  // Others get a read-only badge.
-  const canChangeStatus = canManage || isAssignee
+  const overdue = isOverdue(task)
+  // Status can be changed by admin/lead or the task's assignee; others read it.
+  const canChangeStatus = canManage || task.assigneeId === currentUserId
 
   return (
-    <>
-      <tr
-        role="button"
-        tabIndex={0}
-        aria-expanded={expanded}
-        aria-label={`Toggle task details: ${task.title}`}
-        className="border-b border-border-default hover:bg-surface-raised/50 cursor-pointer transition-colors"
-        onClick={() => setExpanded((v) => !v)}
-        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded((v) => !v) } }}
-      >
-        <td className="py-3 px-4 max-w-xs">
-          {/* Payment-related tasks read in red, as requested, so they stand out
-              in a long list without having to open each one. */}
-          <span
-            className={`text-sm font-medium truncate block ${
-              task.points === PAYMENT_POINTS ? 'text-status-danger' : 'text-primary'
-            }`}
-          >
-            {task.title}
-          </span>
-        </td>
-        <td className="py-3 px-4 text-sm text-muted whitespace-nowrap">
-          {task.assigneeName ?? 'Unassigned'}
-        </td>
-        <td className="py-3 px-4 whitespace-nowrap">
-          <span className={`text-xs ${overdue ? 'text-status-danger' : 'text-muted'}`}>
-            {formatDate(task.dueDate)}
-          </span>
-          {overdue && (
-            <span className="ml-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-status-danger/20 text-status-danger">
-              OVERDUE
+    <div className="border-b border-border-default">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5">
+        <button type="button" onClick={() => setExpanded((v) => !v)} aria-expanded={expanded} className="flex-1 min-w-[12rem] text-left" title="Show details">
+          {/* Payment-related tasks read in red so they stand out in a long list. */}
+          <span className={`text-sm font-medium ${task.points === PAYMENT_POINTS ? 'text-status-danger' : 'text-primary'}`}>{task.title}</span>
+          {task.categoryName && (
+            <span className="ml-2 text-[10px] font-medium px-1.5 py-0.5 rounded bg-surface-sunken text-secondary uppercase tracking-wide align-middle">
+              {task.categoryName}
             </span>
           )}
-        </td>
-        <td className="py-3 px-4">
-          <div className="flex items-center gap-1.5">
-            <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${PRIORITY_STYLES[task.priority as Priority] ?? PRIORITY_STYLES.MEDIUM}`}>
-              {task.priority}
+        </button>
+        <span className="w-32 shrink-0 text-xs text-muted truncate">{task.assigneeName ?? 'Unassigned'}</span>
+        <span className="w-36 shrink-0 whitespace-nowrap">
+          <span className={`text-xs ${overdue ? 'text-status-danger' : 'text-muted'}`}>{formatDate(task.dueDate)}</span>
+          {overdue && <span className="ml-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-status-danger/20 text-status-danger">OVERDUE</span>}
+        </span>
+        <span className="w-24 shrink-0 flex items-center gap-1.5">
+          <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${PRIORITY_STYLES[task.priority as Priority] ?? PRIORITY_STYLES.MEDIUM}`}>{task.priority}</span>
+          {task.points != null && (
+            <span
+              title={POINTS_LABELS[task.points] ?? `${task.points} marks`}
+              className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${task.points === PAYMENT_POINTS ? 'bg-status-danger/20 text-status-danger' : 'bg-surface-raised text-muted'}`}
+            >
+              {task.points}
             </span>
-            {task.points != null && (
-              <span
-                title={POINTS_LABELS[task.points] ?? `${task.points} marks`}
-                className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                  task.points === PAYMENT_POINTS
-                    ? 'bg-status-danger/20 text-status-danger'
-                    : 'bg-surface-raised text-muted'
-                }`}
-              >
-                {task.points}
-              </span>
-            )}
-          </div>
-        </td>
-        <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+          )}
+        </span>
+        <span className="w-28 shrink-0">
           {canChangeStatus ? (
             <select
               value={task.status}
-              onChange={handleStatusChange}
               disabled={updating}
-              className="text-xs bg-background-primary border border-border-default rounded px-2 py-1 text-primary focus:outline-none focus:border-accent disabled:opacity-50 [color-scheme:light]"
+              onChange={async (e) => { setUpdating(true); await onStatusChange(task.id, e.target.value as TaskStatus); setUpdating(false) }}
+              aria-label={`Status for ${task.title}`}
+              className="w-full text-xs bg-background-primary border border-border-default rounded px-2 py-1 text-primary focus:outline-none focus:border-accent disabled:opacity-50 [color-scheme:light]"
             >
-              <option value="TODO" className="bg-background-primary text-primary">To Do</option>
-              <option value="IN_PROGRESS" className="bg-background-primary text-primary">In Progress</option>
-              <option value="DONE" className="bg-background-primary text-primary">Done</option>
+              <option value="TODO" className={optionClass}>To Do</option>
+              <option value="IN_PROGRESS" className={optionClass}>In Progress</option>
+              <option value="DONE" className={optionClass}>Done</option>
             </select>
           ) : (
-            <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase bg-surface-sunken text-secondary">
-              {STATUS_LABELS[task.status as TaskStatus] ?? task.status}
-            </span>
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase bg-surface-sunken text-secondary">{STATUS_LABELS[task.status as TaskStatus] ?? task.status}</span>
           )}
-        </td>
+        </span>
         {canManage && (
-          <td className="py-3 px-4 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-            <button
-              type="button"
-              onClick={() => onEdit(task)}
-              className="text-xs text-secondary hover:text-primary px-2 py-1 transition-colors"
-              title="Edit task"
-            >
-              Edit
-            </button>
-            <button
-              type="button"
-              onClick={() => onDelete(task)}
-              className="text-xs text-secondary hover:text-status-danger px-2 py-1 transition-colors ml-1"
-              title="Delete task"
-            >
-              Delete
-            </button>
-          </td>
+          <span className="shrink-0 whitespace-nowrap">
+            <button type="button" onClick={() => onEdit(task)} className="text-xs text-secondary hover:text-primary px-2 py-1">Edit</button>
+            <button type="button" onClick={() => onDelete(task)} className="text-xs text-secondary hover:text-status-danger px-2 py-1">Delete</button>
+          </span>
         )}
-      </tr>
+      </div>
 
       {expanded && (
-        <tr className="border-b border-border-default bg-surface-raised/30">
-          <td colSpan={canManage ? 6 : 5} className="px-6 py-4">
-            <div className="space-y-2 text-sm">
-              {task.description && (
-                <div>
-                  <span className="text-muted text-xs uppercase tracking-wider">Description</span>
-                  <p className="mt-1 text-foreground whitespace-pre-line">{task.description}</p>
-                </div>
-              )}
-              {task.expectedOutput && (
-                <div>
-                  <span className="text-muted text-xs uppercase tracking-wider">Expected Output</span>
-                  <p className="mt-1 text-foreground">{task.expectedOutput}</p>
-                </div>
-              )}
-              <div className="flex gap-6 text-xs text-muted pt-1">
-                <span>Status: <span className="text-foreground">{STATUS_LABELS[task.status as TaskStatus] ?? task.status}</span></span>
-                <span>Priority: <span className="text-foreground">{task.priority}</span></span>
-                <span>Marks: <span className={task.points === PAYMENT_POINTS ? 'text-status-danger' : 'text-foreground'}>
-                  {task.points != null ? (POINTS_LABELS[task.points] ?? task.points) : '—'}
-                </span></span>
-                <span>Assignee: <span className="text-foreground">{task.assigneeName ?? 'Unassigned'}</span></span>
-                <span>Start: <span className="text-foreground">{formatDate(task.startDate)}</span></span>
-                <span>Due: <span className="text-foreground">{formatDate(task.dueDate)}</span></span>
-              </div>
+        <div className="px-6 pb-4 pt-1 space-y-2 text-sm bg-surface-raised/30">
+          {task.description && (
+            <div>
+              <span className="text-muted text-xs uppercase tracking-wider">Description</span>
+              <p className="mt-1 text-foreground whitespace-pre-line">{task.description}</p>
             </div>
-          </td>
-        </tr>
-      )}
-    </>
-  )
-}
-
-// ─── TaskFormModal ────────────────────────────────────────────────────────────
-
-interface TaskFormModalProps {
-  mode: 'create' | 'edit'
-  projectId: string
-  members: Member[]
-  task?: TaskSummary | null   // required when mode === 'edit'
-  onClose: () => void
-  onSaved: (task: TaskSummary) => void
-}
-
-function TaskFormModal({ mode, projectId, members, task, onClose, onSaved }: TaskFormModalProps) {
-  const isEdit = mode === 'edit'
-  const [title, setTitle]               = useState(task?.title ?? '')
-  // One text field. Tasks used to have a separate Expected Output; an older
-  // task that has one is folded into the description when edited, so nothing
-  // is lost and the separate field empties out over time.
-  const [description, setDescription]   = useState(() => {
-    const d = task?.description?.trim() ?? ''
-    const eo = task?.expectedOutput?.trim() ?? ''
-    if (!eo) return d
-    return d ? `${d}\n\nExpected output: ${eo}` : `Expected output: ${eo}`
-  })
-  const [assigneeId, setAssigneeId]     = useState(task?.assigneeId ?? '')
-  const [priority, setPriority]         = useState<Priority>((task?.priority as Priority) ?? 'MEDIUM')
-  const [points, setPoints]             = useState<string>(task?.points != null ? String(task.points) : '')
-  const [startDate, setStartDate]       = useState(
-    task?.startDate ? new Date(task.startDate).toISOString().slice(0, 10) : '',
-  )
-  const [dueDate, setDueDate]           = useState(
-    task?.dueDate ? new Date(task.dueDate).toISOString().slice(0, 10) : '',
-  )
-  const [status, setStatus]             = useState<TaskStatus>((task?.status as TaskStatus) ?? 'TODO')
-  const [submitting, setSubmitting]     = useState(false)
-  const [error, setError]               = useState<string | null>(null)
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    // Only the title is required.
-    if (!title.trim()) {
-      setError('Title is required.')
-      return
-    }
-    setSubmitting(true)
-    setError(null)
-    try {
-      const url    = isEdit ? `/api/tasks/${task!.id}` : '/api/tasks'
-      const method = isEdit ? 'PATCH' : 'POST'
-      const payload: Record<string, unknown> = {
-        title: title.trim(),
-        description: description.trim() || null,
-        // Folded into the description above (see the initial value).
-        expectedOutput: null,
-        assigneeId: assigneeId || null,
-        priority,
-        points: points === '' ? null : Number(points),
-        startDate: startDate || null,
-        dueDate: dueDate || null,
-        status,
-      }
-      if (startDate && dueDate && new Date(startDate) > new Date(dueDate)) {
-        setError('Start date must be on or before the due date.')
-        setSubmitting(false)
-        return
-      }
-      if (!isEdit) payload.projectId = projectId
-
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(payload),
-      })
-      const json = await res.json() as ApiResponse<TaskSummary>
-      if (!res.ok || json.error) {
-        setError(json.error ?? `Failed to ${isEdit ? 'update' : 'create'} task.`)
-        return
-      }
-      if (json.data) onSaved(json.data)
-      onClose()
-    } catch {
-      setError('Network error. Please try again.')
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  const fieldClass =
-    'mt-1 w-full bg-background-primary border border-border-default rounded px-3 py-2 text-sm text-primary placeholder:text-muted focus:outline-none focus:border-accent [color-scheme:light]'
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="bg-surface-raised border border-border-default rounded-lg w-full max-w-lg mx-4 p-6 space-y-4 text-primary">
-        <h2 className="text-lg font-semibold text-primary">{isEdit ? 'Edit Task' : 'New Task'}</h2>
-
-        {error && (
-          <div className="text-sm text-status-danger bg-status-danger/10 border border-status-danger/30 rounded px-3 py-2">
-            {error}
+          )}
+          {task.expectedOutput && (
+            <div>
+              <span className="text-muted text-xs uppercase tracking-wider">Expected Output</span>
+              <p className="mt-1 text-foreground">{task.expectedOutput}</p>
+            </div>
+          )}
+          <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted pt-1">
+            <span>Category: <span className="text-foreground">{task.categoryName ?? 'None'}</span></span>
+            <span>Marks: <span className={task.points === PAYMENT_POINTS ? 'text-status-danger' : 'text-foreground'}>{task.points != null ? (POINTS_LABELS[task.points] ?? task.points) : '—'}</span></span>
+            <span>Start: <span className="text-foreground">{formatDate(task.startDate)}</span></span>
+            <span>Due: <span className="text-foreground">{formatDate(task.dueDate)}</span></span>
           </div>
-        )}
-
-        <form onSubmit={handleSubmit} className="space-y-3">
-          <div>
-            <label className="text-xs text-muted uppercase tracking-wider">Title *</label>
-            <input
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              className={fieldClass}
-              placeholder="Task title"
-              required
-            />
-          </div>
-
-          <div>
-            <label className="text-xs text-muted uppercase tracking-wider">Description</label>
-            <textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              rows={4}
-              className={`${fieldClass} resize-y`}
-              placeholder="Optional: what needs to be done and what should be delivered"
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs text-muted uppercase tracking-wider">Assignee</label>
-              <select
-                value={assigneeId}
-                onChange={(e) => setAssigneeId(e.target.value)}
-                className={fieldClass}
-              >
-                <option value="" className="bg-background-primary text-primary">Unassigned</option>
-                {members.map((m) => (
-                  <option key={m.userId} value={m.userId} className="bg-background-primary text-primary">
-                    {m.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="text-xs text-muted uppercase tracking-wider">Priority</label>
-              <select
-                value={priority}
-                onChange={(e) => setPriority(e.target.value as Priority)}
-                className={fieldClass}
-              >
-                <option value="LOW" className="bg-background-primary text-primary">Low</option>
-                <option value="MEDIUM" className="bg-background-primary text-primary">Medium</option>
-                <option value="HIGH" className="bg-background-primary text-primary">High</option>
-                <option value="CRITICAL" className="bg-background-primary text-primary">Critical</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="text-xs text-muted uppercase tracking-wider">Marks</label>
-              <select
-                value={points}
-                onChange={(e) => setPoints(e.target.value)}
-                className={fieldClass}
-              >
-                <option value="" className="bg-background-primary text-primary">— None —</option>
-                <option value="1" className="bg-background-primary text-primary">1 — Small task</option>
-                <option value="2" className="bg-background-primary text-primary">2 — Bigger task</option>
-                <option value="5" className="bg-background-primary text-primary">5 — Payment related</option>
-              </select>
-              {points === '5' && (
-                <p className="mt-1 text-[10px] text-status-danger">
-                  Payment task — will be set to at least HIGH priority
-                </p>
-              )}
-            </div>
-
-            <div>
-              <label className="text-xs text-muted uppercase tracking-wider">Start Date</label>
-              <input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                className={fieldClass}
-              />
-            </div>
-
-            <div>
-              <label className="text-xs text-muted uppercase tracking-wider">Due Date</label>
-              <input
-                type="date"
-                value={dueDate}
-                onChange={(e) => setDueDate(e.target.value)}
-                min={startDate || undefined}
-                className={fieldClass}
-              />
-            </div>
-
-            <div>
-              <label className="text-xs text-muted uppercase tracking-wider">Status</label>
-              <select
-                value={status}
-                onChange={(e) => setStatus(e.target.value as TaskStatus)}
-                className={fieldClass}
-              >
-                <option value="TODO" className="bg-background-primary text-primary">To Do</option>
-                <option value="IN_PROGRESS" className="bg-background-primary text-primary">In Progress</option>
-                <option value="DONE" className="bg-background-primary text-primary">Done</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="flex justify-end gap-3 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 text-sm text-muted hover:text-primary transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="px-4 py-2 text-sm bg-accent text-white rounded hover:bg-accent-hover disabled:opacity-50 transition-colors"
-            >
-              {submitting
-                ? (isEdit ? 'Saving…' : 'Creating…')
-                : (isEdit ? 'Save Changes' : 'Create Task')}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  )
-}
-
-// ─── TaskGroup ────────────────────────────────────────────────────────────────
-
-interface TaskGroupProps {
-  label: string
-  tasks: TaskSummary[]
-  currentUserId: string
-  canManage: boolean
-  onStatusChange: (taskId: string, status: TaskStatus) => Promise<void>
-  onEdit: (task: TaskSummary) => void
-  onDelete: (task: TaskSummary) => void
-}
-
-function TaskGroup({ label, tasks, currentUserId, canManage, onStatusChange, onEdit, onDelete }: TaskGroupProps) {
-  return (
-    <div>
-      <div className="flex items-center gap-3 px-4 py-2">
-        <span className="text-xs font-bold tracking-widest text-muted uppercase">{label}</span>
-        <div className="flex-1 border-t border-border-default" />
-        <span className="text-xs text-muted">{tasks.length}</span>
-      </div>
-      {tasks.length === 0 ? (
-        <p className="text-xs text-muted px-4 pb-2 italic">No tasks</p>
-      ) : (
-        <div className="overflow-x-auto">
-        <table className="w-full">
-          <tbody>
-            {tasks.map((t) => (
-              <TaskRow
-                key={t.id}
-                task={t}
-                currentUserId={currentUserId}
-                canManage={canManage}
-                onStatusChange={onStatusChange}
-                onEdit={onEdit}
-                onDelete={onDelete}
-              />
-            ))}
-          </tbody>
-        </table>
         </div>
       )}
     </div>
@@ -498,160 +127,88 @@ function TaskGroup({ label, tasks, currentUserId, canManage, onStatusChange, onE
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function TasksTab({ projectId, isAdmin, isLead, currentUserId, canCreate }: TasksTabProps) {
-  const canManage = isAdmin || isLead
+export default function TasksTab({ projectId, canManage, currentUserId, canCreate }: TasksTabProps) {
+  const { tasks, setTasks, members, categories, loading, error, setError, notice, flash, patchTask, replaceTasks, deleteTask } = useProjectTasks(projectId)
 
-  const [tasks, setTasks]               = useState<TaskSummary[]>([])
-  const [members, setMembers]           = useState<Member[]>([])
-  const [loading, setLoading]           = useState(true)
-  const [error, setError]               = useState<string | null>(null)
   const [filter, setFilter]             = useState<FilterMode>(canManage ? 'all' : 'mine')
+  const [person, setPerson]             = useState('')
   const [search, setSearch]             = useState('')
   const [showModal, setShowModal]       = useState(false)
   const [editingTask, setEditingTask]   = useState<TaskSummary | null>(null)
   const [deletingTask, setDeletingTask] = useState<TaskSummary | null>(null)
-  const [deleteSubmitting, setDeleteSubmitting] = useState(false)
-  const [deleteError, setDeleteError]   = useState<string | null>(null)
 
-  const fetchTasks = useCallback(async () => {
-    setError(null)
-    try {
-      const params = new URLSearchParams({ projectId, limit: '50' })
-      const res = await fetch(`/api/tasks?${params}`, { credentials: 'include' })
-      const json = await res.json() as ApiResponse<PaginatedResponse<TaskSummary>>
-      if (!res.ok || json.error) {
-        setError(json.error ?? 'Failed to load tasks.')
-        return
-      }
-      setTasks(json.data?.items ?? [])
-    } catch {
-      setError('Network error loading tasks.')
-    } finally {
-      setLoading(false)
-    }
-  }, [projectId])
+  // Only work that has been handed to someone; the rest is in the Task List.
+  const assigned = useMemo(() => tasks.filter((t) => t.assigneeId), [tasks])
+  const notAssigned = useMemo(() => tasks.filter((t) => !t.assigneeId && t.status !== 'DONE').length, [tasks])
+  const people = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const t of assigned) m.set(t.assigneeId!, t.assigneeName ?? 'Someone')
+    return [...m].sort((a, b) => a[1].localeCompare(b[1]))
+  }, [assigned])
 
-  const fetchMembers = useCallback(async () => {
-    try {
-      // includeSuperAdmins: a super admin can be given a task on any project
-      // without being added to it, so they must appear in the assignee picker.
-      const res = await fetch(`/api/projects/${projectId}/members?includeSuperAdmins=1`, { credentials: 'include' })
-      if (!res.ok) return
-      const json = await res.json() as ApiResponse<Member[]>
-      if (json.data) setMembers(json.data)
-    } catch {
-      // Members are optional for the modal — fail silently
-    }
-  }, [projectId])
-
-  useEffect(() => {
-    void fetchTasks()
-    void fetchMembers()
-  }, [fetchTasks, fetchMembers])
-
-  async function handleStatusChange(taskId: string, status: TaskStatus): Promise<void> {
-    // Optimistic update
-    setTasks((prev) => prev.map((t) => t.id === taskId ? { ...t, status } : t))
-    try {
-      const res = await fetch(`/api/tasks/${taskId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ status }),
-      })
-      if (!res.ok) {
-        // Revert on failure
-        void fetchTasks()
-      }
-    } catch {
-      void fetchTasks()
-    }
-  }
-
-  function handleTaskCreated(task: TaskSummary) {
-    setTasks((prev) => [task, ...prev])
-  }
-
-  function handleTaskUpdated(task: TaskSummary) {
-    setTasks((prev) => prev.map((t) => (t.id === task.id ? task : t)))
-  }
-
-  async function handleDeleteConfirm() {
-    if (!deletingTask) return
-    setDeleteSubmitting(true)
-    setDeleteError(null)
-    try {
-      const res = await fetch(`/api/tasks/${deletingTask.id}`, {
-        method: 'DELETE',
-        credentials: 'include',
-      })
-      const json = await res.json() as ApiResponse<{ id: string }>
-      if (!res.ok || json.error) {
-        setDeleteError(json.error ?? 'Failed to delete task.')
-        return
-      }
-      setTasks((prev) => prev.filter((t) => t.id !== deletingTask.id))
-      setDeletingTask(null)
-    } catch {
-      setDeleteError('Network error. Please try again.')
-    } finally {
-      setDeleteSubmitting(false)
-    }
-  }
-
-  // ── Filtering ──────────────────────────────────────────────────────────────
-
-  const filtered = tasks.filter((t) => {
+  const filtered = assigned.filter((t) => {
     if (filter === 'mine' && t.assigneeId !== currentUserId) return false
-    if (filter === 'TODO' && t.status !== 'TODO') return false
-    if (filter === 'IN_PROGRESS' && t.status !== 'IN_PROGRESS') return false
-    if (filter === 'DONE' && t.status !== 'DONE') return false
+    if ((filter === 'TODO' || filter === 'IN_PROGRESS' || filter === 'DONE') && t.status !== filter) return false
+    if (person && t.assigneeId !== person) return false
     if (search.trim()) {
       const q = search.toLowerCase()
-      return t.title.toLowerCase().includes(q) || (t.assigneeName?.toLowerCase().includes(q) ?? false)
+      return t.title.toLowerCase().includes(q)
+        || (t.assigneeName?.toLowerCase().includes(q) ?? false)
+        || (t.categoryName?.toLowerCase().includes(q) ?? false)
     }
     return true
   })
 
   const grouped: Record<TaskStatus, TaskSummary[]> = {
-    TODO:        filtered.filter((t) => t.status === 'TODO'),
-    IN_PROGRESS: filtered.filter((t) => t.status === 'IN_PROGRESS'),
-    DONE:        filtered.filter((t) => t.status === 'DONE'),
+    TODO:        filtered.filter((t) => t.status === 'TODO').sort(compareByDue),
+    IN_PROGRESS: filtered.filter((t) => t.status === 'IN_PROGRESS').sort(compareByDue),
+    DONE:        filtered.filter((t) => t.status === 'DONE').sort(compareByDue),
   }
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  async function handleStatusChange(taskId: string, status: TaskStatus) {
+    await patchTask(taskId, { status })
+  }
+
+  const filters: { id: FilterMode; label: string }[] = [
+    { id: 'all', label: 'All' }, { id: 'mine', label: 'My Tasks' },
+    { id: 'TODO', label: 'To Do' }, { id: 'IN_PROGRESS', label: 'In Progress' }, { id: 'DONE', label: 'Done' },
+  ]
 
   return (
     <div className="space-y-4">
+      {/* Items in the plan that nobody has been given yet. */}
+      {canManage && !loading && notAssigned > 0 && (
+        <div className="flex flex-wrap items-center gap-2 text-sm bg-surface-raised border border-border-default rounded px-4 py-2.5">
+          <span className="text-primary">
+            {notAssigned} {notAssigned === 1 ? 'item' : 'items'} in the task list {notAssigned === 1 ? 'is' : 'are'} not assigned yet.
+          </span>
+          <a href="#tasklist" className="text-accent hover:underline text-xs font-medium">Open Task List</a>
+        </div>
+      )}
 
       {/* Filter bar */}
       <div className="flex flex-wrap items-center gap-2">
-        {canManage && (
-          <>
-            {(['all', 'mine', 'TODO', 'IN_PROGRESS', 'DONE'] as FilterMode[]).map((f) => (
-              <button
-                key={f}
-                type="button"
-                onClick={() => setFilter(f)}
-                className={[
-                  'px-3 py-1.5 text-xs font-medium rounded transition-colors',
-                  filter === f
-                    ? 'bg-accent text-white'
-                    : 'bg-surface-raised text-secondary hover:text-primary',
-                ].join(' ')}
-              >
-                {f === 'all' ? 'All' : f === 'mine' ? 'My Tasks' : STATUS_LABELS[f as TaskStatus]}
-              </button>
-            ))}
-          </>
+        {filters.map((f) => (
+          <button
+            key={f.id}
+            type="button"
+            onClick={() => setFilter(f.id)}
+            className={`px-3 py-1.5 text-xs font-medium rounded transition-colors ${filter === f.id ? 'bg-accent text-white' : 'bg-surface-raised text-secondary hover:text-primary'}`}
+          >
+            {f.label}
+          </button>
+        ))}
+        {people.length > 1 && (
+          <select
+            value={person}
+            onChange={(e) => setPerson(e.target.value)}
+            aria-label="Show one person's tasks"
+            className="text-xs bg-surface-raised border border-border-default rounded px-2 py-1.5 text-primary focus:outline-none focus:border-accent [color-scheme:light]"
+          >
+            <option value="" className={optionClass}>Everyone</option>
+            {people.map(([id, name]) => <option key={id} value={id} className={optionClass}>{name}</option>)}
+          </select>
         )}
-
-        {!canManage && (
-          <span className="px-3 py-1.5 text-xs font-medium rounded bg-accent text-white">
-            My Tasks
-          </span>
-        )}
-
         <input
           type="text"
           value={search}
@@ -659,125 +216,98 @@ export default function TasksTab({ projectId, isAdmin, isLead, currentUserId, ca
           placeholder="Search tasks…"
           className="ml-auto bg-surface-raised border border-border-default rounded px-3 py-1.5 text-xs focus:outline-none focus:border-accent w-48"
         />
-
-        {/* canCreate, not canManage: anyone on the project may raise a task,
-            but only admins and the lead may edit or delete one. */}
         {canCreate && (
-          <button
-            type="button"
-            onClick={() => setShowModal(true)}
-            className="px-3 py-1.5 text-xs font-medium rounded bg-accent text-white hover:bg-accent/80 transition-colors"
-          >
+          <button type="button" onClick={() => setShowModal(true)} className="px-3 py-1.5 text-xs font-medium rounded bg-accent text-white hover:bg-accent/80 transition-colors">
             + New Task
           </button>
         )}
       </div>
 
-      {/* Error */}
+      {notice && (
+        <div role="status" className="text-sm text-status-success bg-status-success/10 border border-status-success/30 rounded px-3 py-2">{notice}</div>
+      )}
       {error && (
-        <div className="text-sm text-status-danger bg-status-danger/10 border border-status-danger/30 rounded px-3 py-2">
-          {error}
+        <div className="flex items-start gap-2 text-sm text-status-danger bg-status-danger/10 border border-status-danger/30 rounded px-3 py-2">
+          <span className="flex-1">{error}</span>
+          <button type="button" onClick={() => setError(null)} className="text-xs hover:underline">Dismiss</button>
         </div>
       )}
 
-      {/* Loading */}
       {loading && (
         <div className="space-y-2">
-          {[...Array(4)].map((_, i) => (
-            <div key={i} className="h-10 bg-surface-raised rounded animate-pulse" />
+          {[...Array(4)].map((_, i) => <div key={i} className="h-10 bg-surface-raised rounded animate-pulse" />)}
+        </div>
+      )}
+
+      {!loading && (
+        <div className="space-y-6">
+          {(['TODO', 'IN_PROGRESS', 'DONE'] as TaskStatus[]).map((status) => (
+            <div key={status}>
+              <div className="flex items-center gap-3 px-4 py-2">
+                <span className="text-xs font-bold tracking-widest text-muted uppercase">{STATUS_LABELS[status]}</span>
+                <div className="flex-1 border-t border-border-default" />
+                <span className="text-xs text-muted">{grouped[status].length}</span>
+              </div>
+              {grouped[status].length === 0 ? (
+                <p className="text-xs text-muted px-4 pb-2 italic">No tasks</p>
+              ) : (
+                grouped[status].map((t) => (
+                  <TaskRow
+                    key={t.id}
+                    task={t}
+                    currentUserId={currentUserId}
+                    canManage={canManage}
+                    onStatusChange={handleStatusChange}
+                    onEdit={setEditingTask}
+                    onDelete={setDeletingTask}
+                  />
+                ))
+              )}
+            </div>
           ))}
         </div>
       )}
 
-      {/* Task groups */}
-      {!loading && (
-        <div className="space-y-6">
-          <TaskGroup
-            label="To Do"
-            tasks={grouped.TODO}
-            currentUserId={currentUserId}
-            canManage={canManage}
-            onStatusChange={handleStatusChange}
-            onEdit={setEditingTask}
-            onDelete={setDeletingTask}
-          />
-          <TaskGroup
-            label="In Progress"
-            tasks={grouped.IN_PROGRESS}
-            currentUserId={currentUserId}
-            canManage={canManage}
-            onStatusChange={handleStatusChange}
-            onEdit={setEditingTask}
-            onDelete={setDeletingTask}
-          />
-          <TaskGroup
-            label="Done"
-            tasks={grouped.DONE}
-            currentUserId={currentUserId}
-            canManage={canManage}
-            onStatusChange={handleStatusChange}
-            onEdit={setEditingTask}
-            onDelete={setDeletingTask}
-          />
-        </div>
-      )}
-
-      {/* New task modal */}
       {showModal && (
         <TaskFormModal
           mode="create"
           projectId={projectId}
           members={members}
+          categories={categories}
           onClose={() => setShowModal(false)}
-          onSaved={handleTaskCreated}
+          onSaved={(task) => {
+            setTasks((prev) => [...prev, task])
+            // Nobody on it, so it is part of the plan, not this list.
+            if (!task.assigneeId) flash(`"${task.title}" was added to the Task List. Assign it there to see it here.`)
+          }}
         />
       )}
 
-      {/* Edit task modal */}
       {editingTask && (
         <TaskFormModal
           mode="edit"
           projectId={projectId}
           members={members}
+          categories={categories}
           task={editingTask}
           onClose={() => setEditingTask(null)}
-          onSaved={handleTaskUpdated}
+          onSaved={(task) => {
+            replaceTasks([task])
+            if (!task.assigneeId) flash(`"${task.title}" is no longer assigned, so it moved back to the Task List.`)
+          }}
         />
       )}
 
-      {/* Delete confirmation */}
       {deletingTask && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div className="bg-surface-raised border border-border-default rounded-lg w-full max-w-md mx-4 p-6 space-y-4 text-primary">
-            <h2 className="text-lg font-semibold text-primary">Delete task?</h2>
-            <p className="text-sm text-secondary">
-              This will remove <span className="font-medium text-primary">&ldquo;{deletingTask.title}&rdquo;</span> from the project. This action cannot be undone.
-            </p>
-            {deleteError && (
-              <div className="text-sm text-status-danger bg-status-danger/10 border border-status-danger/30 rounded px-3 py-2">
-                {deleteError}
-              </div>
-            )}
-            <div className="flex justify-end gap-3 pt-2">
-              <button
-                type="button"
-                onClick={() => { setDeletingTask(null); setDeleteError(null) }}
-                disabled={deleteSubmitting}
-                className="px-4 py-2 text-sm text-secondary hover:text-primary transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleDeleteConfirm()}
-                disabled={deleteSubmitting}
-                className="px-4 py-2 text-sm bg-status-danger text-white rounded hover:opacity-90 disabled:opacity-50 transition-colors"
-              >
-                {deleteSubmitting ? 'Deleting…' : 'Delete'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <DeleteTaskDialog
+          task={deletingTask}
+          onCancel={() => setDeletingTask(null)}
+          onConfirm={async () => {
+            const err = await deleteTask(deletingTask.id)
+            if (!err) setDeletingTask(null)
+            return err
+          }}
+        />
       )}
     </div>
   )

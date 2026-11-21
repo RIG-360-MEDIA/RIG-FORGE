@@ -2,15 +2,16 @@
 
 import { useEffect, useState, useCallback } from 'react'
 
-export type ProjectTabId = 'overview' | 'tasks' | 'updates'
+export type ProjectTabId = 'overview' | 'tasklist' | 'tasks' | 'updates' | 'payments' | 'proposals'
 
 function parseHash(hash: string): ProjectTabId {
   const h = hash.replace(/^#/, '').toLowerCase()
-  if (h === 'tasks' || h === 'updates') return h
+  if (h === 'tasklist' || h === 'tasks' || h === 'updates' || h === 'payments' || h === 'proposals') return h
   return 'overview'
 }
 
-export default function ProjectTabs() {
+/** showPayments: ADMIN / SUPER_ADMIN only, for Payments and Proposals (the page decides; the API checks again). */
+export default function ProjectTabs({ showPayments = false }: { showPayments?: boolean }) {
   const [active, setActive] = useState<ProjectTabId>('overview')
 
   const syncFromLocation = useCallback(() => {
@@ -31,8 +32,10 @@ export default function ProjectTabs() {
 
   const tabs: { id: ProjectTabId; label: string }[] = [
     { id: 'overview', label: 'OVERVIEW' },
+    { id: 'tasklist', label: 'TASK LIST' },
     { id: 'tasks', label: 'TASKS' },
     { id: 'updates', label: 'UPDATES' },
+    ...(showPayments ? [{ id: 'payments' as const, label: 'PAYMENTS' }, { id: 'proposals' as const, label: 'PROPOSALS' }] : []),
   ]
 
   return (

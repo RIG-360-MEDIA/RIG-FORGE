@@ -8,8 +8,12 @@ import { userCan } from '@/lib/permissions'
 import ProjectHeader from '@/components/projects/detail/ProjectHeader'
 import { useProjectTab } from '@/components/projects/detail/ProjectTabs'
 import OverviewTab from '@/components/projects/detail/OverviewTab'
+import TaskListTab from '@/components/projects/detail/TaskListTab'
 import TasksTab from '@/components/projects/detail/TasksTab'
 import UpdatesTab from '@/components/projects/detail/UpdatesTab'
+import PaymentsTab from '@/components/projects/detail/PaymentsTab'
+import ProposalsTab from '@/components/projects/detail/ProposalsTab'
+import { isAdminRole } from '@/lib/roles'
 import EditProjectModal from '@/components/projects/detail/EditProjectModal'
 import AddMemberModal from '@/components/projects/detail/AddMemberModal'
 import Button from '@/components/ui/Button'
@@ -79,6 +83,13 @@ export default function ProjectDetailPage() {
 
   const isAdmin = userCan(user, 'projects.manage')
   const isLead = project?.leadId === user?.id
+  // The same rule the task APIs apply (canManageProjectTasks): the project's
+  // lead, or someone with tasks.manage; never an external user. Using
+  // projects.manage here showed buttons whose saves were then refused.
+  const canManageTasks = !user?.isExternal && (isLead || userCan(user, 'tasks.manage'))
+  // Payments: the base role ADMIN or SUPER_ADMIN only, never an external user
+  // (the same rule every payments API applies).
+  const canSeePayments = !!user && isAdminRole(user.role) && !user.isExternal
 
   useEffect(() => {
     if (!authLoading && !user) router.push('/login')
@@ -184,6 +195,7 @@ export default function ProjectDetailPage() {
       <ProjectHeader
         project={project}
         isAdmin={isAdmin}
+        showPayments={canSeePayments}
         onEditClick={() => setEditOpen(true)}
         onAddMemberClick={() => setAddMemberOpen(true)}
       />
@@ -198,14 +210,26 @@ export default function ProjectDetailPage() {
             onProjectChange={setProject}
           />
         )}
+        {tab === 'tasklist' && (
+          <TaskListTab
+            projectId={project.id}
+            canManage={canManageTasks}
+            canManageCategories={userCan(user, 'tasks.manage')}
+          />
+        )}
         {tab === 'tasks' && (
           <TasksTab
             projectId={project.id}
-            isAdmin={isAdmin}
-            isLead={isLead}
+            canManage={canManageTasks}
             currentUserId={userId ?? ''}
             canCreate={!user?.isExternal}
           />
+        )}
+        {tab === 'proposals' && canSeePayments && (
+          <ProposalsTab projectId={project.id} projectName={project.name} />
+        )}
+        {tab === 'payments' && canSeePayments && (
+          <PaymentsTab projectId={project.id} />
         )}
         {tab === 'updates' && (
           <UpdatesTab

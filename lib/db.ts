@@ -21,7 +21,8 @@ const TENANT_MODELS = new Set<string>([
   'GoogleIntegration', 'StandupDigest', 'Conversation', 'ConversationMember',
   'ChatMessage', 'MessageReaction', 'MessageStar', 'Block', 'PushSubscription',
   'Issue', 'CustomRole', 'NasIndexedFile', 'BylawsIndexedFile',
-  'BylawsReindexRun', 'NasReindexRun',
+  'BylawsReindexRun', 'NasReindexRun', 'TaskCategory', 'TaskTemplate', 'TaskTemplateItem',
+  'PaymentPlan', 'PaymentFeeChange', 'PaymentPhase', 'PaymentReceipt', 'PaymentAllocation', 'PaymentAuditLog', 'ProposalSettings', 'Proposal',
 ])
 
 /**

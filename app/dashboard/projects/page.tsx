@@ -229,10 +229,21 @@ export default function ProjectsPage() {
       )}
 
       {/* ── Page header ────────────────────────────────────────────────────── */}
-      <div className="pb-6">
-        <p className="type-meta text-accent-ink">Delivery Portfolio</p>
-        <h1 className="type-h1">{canViewAll ? 'Projects' : 'My Projects'}</h1>
-        <p className="type-body-muted mt-1">{total} active projects</p>
+      <div className="pb-6 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="type-meta text-accent-ink">Delivery Portfolio</p>
+          <h1 className="type-h1">{canViewAll ? 'Projects' : 'My Projects'}</h1>
+          <p className="type-body-muted mt-1">{total} active projects</p>
+        </div>
+        {userCan(user, 'tasks.manage') && (
+          <button
+            type="button"
+            onClick={() => router.push('/dashboard/projects/templates')}
+            className="px-3 py-1.5 text-xs font-medium rounded border border-border-default text-primary hover:border-accent transition-colors"
+          >
+            Task templates
+          </button>
+        )}
       </div>
 
       {/* ── Filters ────────────────────────────────────────────────────────── */}
