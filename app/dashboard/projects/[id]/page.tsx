@@ -211,11 +211,13 @@ export default function ProjectDetailPage() {
           />
         )}
         {tab === 'tasklist' && (
-          <TaskListTab
-            projectId={project.id}
-            canManage={canManageTasks}
-            canManageCategories={userCan(user, 'tasks.manage')}
-          />
+          <div className="px-4 sm:px-6 lg:px-8 py-6">
+            <TaskListTab
+              projectId={project.id}
+              canManage={canManageTasks}
+              canManageCategories={userCan(user, 'tasks.manage')}
+            />
+          </div>
         )}
         {tab === 'tasks' && (
           <TasksTab
@@ -226,10 +228,14 @@ export default function ProjectDetailPage() {
           />
         )}
         {tab === 'proposals' && canSeePayments && (
-          <ProposalsTab projectId={project.id} projectName={project.name} />
+          <div className="px-4 sm:px-6 lg:px-8 py-6">
+            <ProposalsTab projectId={project.id} projectName={project.name} />
+          </div>
         )}
         {tab === 'payments' && canSeePayments && (
-          <PaymentsTab projectId={project.id} />
+          <div className="px-4 sm:px-6 lg:px-8 py-6">
+            <PaymentsTab projectId={project.id} />
+          </div>
         )}
         {tab === 'updates' && (
           <UpdatesTab

@@ -39,15 +39,16 @@ export default function ProjectTabs({ showPayments = false }: { showPayments?: b
   ]
 
   return (
-    <div className="flex">
+    // Six tabs do not fit a phone screen: the row scrolls sideways instead of widening the page.
+    <div className="flex overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       {tabs.map((t) => {
         const isActive = active === t.id
         return (
           <button
             key={t.id}
             type="button"
-            onClick={() => setTab(t.id)}
-            className={`px-6 py-3 font-mono text-xs tracking-[0.2em] uppercase cursor-pointer border-b-2 transition-colors duration-150 ${
+            onClick={(e) => { setTab(t.id); e.currentTarget.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' }) }}
+            className={`shrink-0 whitespace-nowrap px-4 sm:px-6 py-3 font-mono text-xs tracking-[0.2em] uppercase cursor-pointer border-b-2 transition-colors duration-150 ${
               isActive
                 ? 'text-primary border-accent'
                 : 'text-muted border-transparent hover:text-secondary'

@@ -222,7 +222,7 @@ function SetupCard({ projectId, onDone }: { projectId: string; onDone: (s: Payme
         </div>
       )}
       {basis === 'PERCENT' && (
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <label className={label}>Construction cost (₹)<input inputMode="decimal" value={cost} onChange={(e) => setCost(e.target.value)} placeholder="e.g. 2,00,00,000" className={field} /></label>
           <label className={label}>Fee (%)<input inputMode="decimal" value={percent} onChange={(e) => setPercent(e.target.value)} placeholder="e.g. 7.5" className={field} /></label>
           <label className={label}>GST (%)<input inputMode="decimal" value={gst} onChange={(e) => setGst(e.target.value)} className={field} /></label>
@@ -278,10 +278,10 @@ function AllocationEditor({ phases, total, values, onChange }: {
           return (
             <li key={p.id} className="flex items-center gap-3 px-3 py-2">
               <span className="flex-1 min-w-0">
-                <span className="block text-sm text-primary truncate">{p.name}</span>
-                <span className="block text-[11px] text-muted truncate">{p.group ? `${p.group} · ` : ''}{formatInr(p.balance)} left to pay{p.gst > 0 ? ' incl. GST' : ''}</span>
+                <span className="block text-sm text-primary break-words">{p.name}</span>
+                <span className="block text-[11px] text-muted">{p.group ? `${p.group} · ` : ''}{formatInr(p.balance)} left to pay{p.gst > 0 ? ' incl. GST' : ''}</span>
               </span>
-              <span className="w-36 shrink-0">
+              <span className="w-28 sm:w-36 shrink-0">
               <input
                 inputMode="decimal"
                 value={v}

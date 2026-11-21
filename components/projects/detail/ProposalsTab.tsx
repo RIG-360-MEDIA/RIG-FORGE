@@ -130,7 +130,7 @@ function NewProposalModal({ projectId, projectName, onClose, onCreated }: {
   return (
     <Modal title="New proposal" onClose={busy ? () => {} : onClose} wide>
       <p className="text-sm text-secondary">For <b className="text-primary">{projectName}</b>. The AI writes the letter, project brief and scope of work from these details; the fees and terms below are used exactly as given.</p>
-      <div className="grid grid-cols-[7rem_1fr_1fr] gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-[7rem_1fr_1fr] gap-3">
         <label className={label}>Dear
           <select value={salutation} onChange={(e) => setSalutation(e.target.value)} className={field}>
             {['Sir', 'Madam', 'Sir/Madam', 'Sirs'].map((s) => <option key={s}>{s}</option>)}
@@ -169,7 +169,7 @@ function NewProposalModal({ projectId, projectName, onClose, onCreated }: {
         {showFees && (
           <div className="space-y-3 border-t border-border-default p-3">
             <StagesEditor stages={stages} onChange={setStages} />
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <label className={label}>Built-up area, if known (sq ft)<input value={area} onChange={(e) => setArea(e.target.value)} inputMode="decimal" placeholder="optional" className={field} /></label>
               <label className={label}>GST (%)<input value={gst} onChange={(e) => setGst(e.target.value)} inputMode="decimal" className={field} /></label>
               <label className={label}>Landscape (₹ per acre, 0 = none)<input value={landscape} onChange={(e) => setLandscape(e.target.value)} inputMode="decimal" className={field} /></label>
@@ -304,7 +304,7 @@ function ProposalEditor({ projectId, initial, onBack, onChanged }: {
 
       <section className="rounded-xl border border-border-default p-4 space-y-3">
         <h3 className="text-sm font-semibold text-primary">Cover letter</h3>
-        <div className="grid grid-cols-[7rem_1fr_1fr_10rem] gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-[7rem_1fr_1fr_10rem] gap-3">
           <label className={label}>Dear<input value={c.client.salutation} disabled={readOnly} onChange={(e) => edit({ client: { ...c.client, salutation: e.target.value } })} className={field} /></label>
           <label className={label}>Client<input value={c.client.name} disabled={readOnly} onChange={(e) => edit({ client: { ...c.client, name: e.target.value } })} className={field} /></label>
           <label className={label}>City<input value={c.client.city} disabled={readOnly} onChange={(e) => edit({ client: { ...c.client, city: e.target.value } })} className={field} /></label>
@@ -316,7 +316,7 @@ function ProposalEditor({ projectId, initial, onBack, onChanged }: {
 
       <section className="rounded-xl border border-border-default p-4 space-y-3">
         <h3 className="text-sm font-semibold text-primary">Project brief and scope of work</h3>
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <label className={`${label} col-span-1`}>Title<input value={c.brief.title} disabled={readOnly} onChange={(e) => edit({ brief: { ...c.brief, title: e.target.value } })} className={field} /></label>
           <label className={label}>Project<input value={c.projectType} disabled={readOnly} onChange={(e) => edit({ projectType: e.target.value })} className={field} /></label>
           <label className={label}>Location<input value={c.location} disabled={readOnly} onChange={(e) => edit({ location: e.target.value })} className={field} /></label>
@@ -336,7 +336,7 @@ function ProposalEditor({ projectId, initial, onBack, onChanged }: {
       <section className="rounded-xl border border-border-default p-4 space-y-3">
         <h3 className="text-sm font-semibold text-primary">Professional fees</h3>
         <StagesEditor stages={c.fees.stages} disabled={readOnly} onChange={(stages) => editFees({ stages })} />
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <label className={label}>Built-up area, if known (sq ft)<input value={c.fees.areaSqft} disabled={readOnly} onChange={(e) => editFees({ areaSqft: e.target.value })} className={field} /></label>
           <label className={label}>GST (%)<input value={String(c.fees.gstPercent)} disabled={readOnly} inputMode="decimal" onChange={(e) => editFees({ gstPercent: Number(e.target.value) || 0 })} className={field} /></label>
           <label className={label}>Landscape (₹ per acre)<input value={String(c.fees.landscapePerAcre ?? 0)} disabled={readOnly} inputMode="decimal" onChange={(e) => editFees({ landscapePerAcre: Number(e.target.value.replace(/,/g, '')) || 0 })} className={field} /></label>
