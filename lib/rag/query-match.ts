@@ -33,6 +33,9 @@
  * not constrained.
  */
 
+import { isModelRegulation } from './regions'
+
+
 export type TopicKey = 'far' | 'setback' | 'coverage' | 'parking' | 'height' | 'stair' | 'basement' | 'road' | 'ventilation'
 export type UseKey = 'residential' | 'group_housing' | 'commercial' | 'healthcare' | 'educational' | 'industrial' | 'hotel' | 'assembly' | 'fuel'
 export type DimKey = 'area' | 'height' | 'road'
@@ -41,7 +44,8 @@ export type DimKey = 'area' | 'height' | 'road'
 const TOPICS: Record<TopicKey, { label: string; terms: string[] }> = {
   far: { label: 'FAR', terms: ['far', 'floor area ratio', 'f.a.r', 'fsi', 'floor space index', 'bfar', 'mfar', 'एफ.ए.आर', 'एफ.एआर', 'एफ0ए0आर0', 'एफ0ए0आए0', 'एफएआर', 'फ्लोर एरिया रेशियो'] },
   setback: { label: 'setback', terms: ['setback', 'setbacks', 'set-back', 'set-backs', 'set back', 'set backs', 'setbac', 'setbak', 'set bak', 'सेटबैक', 'सेटबैक्स', 'सैटबैक', 'सेट बैक', 'सैट बैक', 'सेट-बैक', 'सैट-बैक', 'सेटबेक', 'सैटबेक', 'सेट बेक', 'सैट बेक'] },
-  coverage: { label: 'ground coverage', terms: ['ground coverage', 'coverage', 'ground cover', 'भू-आच्छादन', 'भू आच्छादन', 'आच्छादन'] },
+  // "आच्छादनः" with the visarga, as MDDA's FAR tables head the column.
+  coverage: { label: 'ground coverage', terms: ['ground coverage', 'coverage', 'ground cover', 'भू-आच्छादन', 'भू आच्छादन', 'आच्छादन', 'भू-आच्छादनः', 'आच्छादनः'] },
   parking: { label: 'parking', terms: ['parking', 'ecs', 'e.c.s', 'car space', 'car spaces', 'पार्किंग', 'पाकिंग', 'ई0सी0एस0'] },
   height: { label: 'height', terms: ['height', 'heights', 'storey', 'storeys', 'stories', 'floors', 'ऊँचाई', 'ऊंचाई', 'मंजिल'] },
   stair: { label: 'staircase', terms: ['stair', 'stairs', 'staircase', 'staircases', 'stairway', 'सीढ़ी', 'सीढी', 'जीना'] },
@@ -55,7 +59,8 @@ const TOPICS: Record<TopicKey, { label: string; terms: string[] }> = {
 const USES: Record<UseKey, { label: string; q: string[]; doc: string[] }> = {
   residential: {
     label: 'residential',
-    q: ['residential', 'house', 'houses', 'bungalow', 'villa', 'dwelling', 'flat', 'flats', 'apartment', 'apartments', 'plotted', 'row house', 'row housing', 'semi-detached', 'detached', 'आवासीय', 'मकान', 'घर'],
+    // Common misspellings too: a missed use drops the question to "any use".
+    q: ['residential', 'residental', 'recidential', 'residencial', 'house', 'houses', 'bungalow', 'villa', 'dwelling', 'flat', 'flats', 'apartment', 'apartments', 'plotted', 'row house', 'row housing', 'semi-detached', 'detached', 'आवासीय', 'मकान', 'घर'],
     doc: ['residential', 'plotted', 'row-housing', 'row housing', 'semi-detached', 'detached', 'single unit', 'single-unit', 'multi-unit', 'multi-units', 'multi units', 'single/multi-units', 'dwelling', 'dwellings', 'आवासीय'],
   },
   group_housing: {
@@ -65,7 +70,7 @@ const USES: Record<UseKey, { label: string; q: string[]; doc: string[] }> = {
   },
   commercial: {
     label: 'commercial',
-    q: ['commercial', 'shop', 'shops', 'shopping', 'mall', 'malls', 'showroom', 'office', 'offices', 'mixed use', 'व्यवसायिक', 'व्यावसायिक', 'दुकान', 'कार्यालय'],
+    q: ['commercial', 'comercial', 'commerical', 'commercail', 'comercail', 'commercal', 'shop', 'shops', 'shopping', 'mall', 'malls', 'showroom', 'office', 'offices', 'mixed use', 'व्यवसायिक', 'व्यावसायिक', 'दुकान', 'कार्यालय'],
     doc: ['commercial', 'comm', 'shop', 'shops', 'shopping', 'mall', 'malls', 'office', 'offices', 'office buildings', 'mixed use', 'व्यवसायिक', 'व्यावसायिक', 'ग्यवसायिक', 'यवसायिक', 'कार्यालय', 'दुकान', 'दुकानें'],
   },
   healthcare: {
@@ -83,11 +88,12 @@ const USES: Record<UseKey, { label: string; q: string[]; doc: string[] }> = {
     q: ['industrial', 'industry', 'industries', 'factory', 'factories', 'msme', 'warehouse', 'औद्योगिक', 'उद्योग', 'फैक्ट्री'],
     doc: ['industrial', 'industry', 'industries', 'factory', 'factories', 'msme', 'data centers', 'data centres', 'औद्योगिक', 'उद्योग'],
   },
-  hotel: { label: 'hotel', q: ['hotel', 'hotels', 'guest house', 'होटल'], doc: ['hotel', 'hotels', 'guest house', 'होटल'] },
+  // Motels, resorts and guest houses head their own rows in MDDA's commercial FAR table.
+  hotel: { label: 'hotel', q: ['hotel', 'hotels', 'guest house', 'motel', 'motels', 'resort', 'resorts', 'eco resort', 'होटल', 'मोटल', 'रिसॉर्ट'], doc: ['hotel', 'hotels', 'guest house', 'motel', 'resort', 'resorts', 'eco resorts', 'होटल'] },
   assembly: {
     label: 'assembly / hall',
-    q: ['marriage hall', 'banquet', 'auditorium', 'convention', 'cinema', 'multiplex', 'miniplex', 'सिनेमा'],
-    doc: ['marriage hall', 'banquet', 'multipurpose hall', 'auditorium', 'convention', 'cinema', 'multiplex', 'miniplex', 'सभा भवन', 'मल्टीप्लेक्स', 'सिनेमा'],
+    q: ['marriage hall', 'banquet', 'auditorium', 'convention', 'cinema', 'multiplex', 'miniplex', 'wedding point', 'wedding points', 'wedding venue', 'सिनेमा', 'वेडिंग'],
+    doc: ['marriage hall', 'banquet', 'multipurpose hall', 'auditorium', 'convention', 'cinema', 'multiplex', 'miniplex', 'wedding points', 'wedding point', 'सभा भवन', 'मल्टीप्लेक्स', 'सिनेमा'],
   },
   fuel: {
     label: 'petrol pump',
@@ -99,7 +105,8 @@ const USES: Record<UseKey, { label: string; q: string[]; doc: string[] }> = {
 const ANY_USE = /all\s+occupanc(?:y|ies)|all\s+(?:types\s+of\s+)?buildings|all\s+uses|सभी\s+प्रकार\s+के\s+भवन/i
 
 const escapeRe = (w: string) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-const fold = (s: string) => s.toLowerCase().normalize('NFC')
+// Devanagari digits ("५०० वर्ग मीटर") as 0-9, so a plot size typed in Hindi is read.
+const fold = (s: string) => s.toLowerCase().normalize('NFC').replace(/[०-९]/g, (d) => String(d.charCodeAt(0) - 0x0966))
 /** Same text (case kept: headings are found by their capitals), dashes and minus as "-", whitespace as one space. */
 const flat = (s: string) => s.normalize('NFC').replace(/[–—−]/g, '-').replace(/\s+/g, ' ')
 // A whole word or phrase: not inside a longer word, in any script.
@@ -155,10 +162,35 @@ const ROAD_IN_QUERY = [
 
 const QUESTION_WORDS = new Set(['what', 'which', 'when', 'where', 'shall', 'should', 'must', 'have', 'does', 'that', 'this', 'with', 'from', 'than', 'many', 'much', 'required', 'requirement', 'allowed', 'permissible', 'needed', 'rules', 'rule', 'find', 'show', 'tell', 'about', 'bylaws', 'bylaw', 'byelaws', 'लिए', 'होगा', 'होगी', 'कितना', 'कितनी', 'क्या'])
 
+/** "half acre", "quarter acre": the fraction as a number before the unit. */
+const FRACTION_WORDS: Array<[RegExp, string]> = [
+  [/\b(?:half|1\/2)\s*(?:an?\s*)?(?=acres?\b|hectares?\b)/g, '0.5 '],
+  [/\b(?:quarter|1\/4)\s*(?:of\s*)?(?:an?\s*)?(?=acres?\b|hectares?\b)/g, '0.25 '],
+]
+/** A plot given by its sides: "50 x 100 ft", "15 × 30 m", "30 by 40 feet". */
+const DIMENSIONS = new RegExp(String.raw`(\d+(?:\.\d+)?)\s*(?:'|ft|feet)?\s*(?:x|×|\*|by)\s*(\d+(?:\.\d+)?)\s*(ft|feet|foot|'|${'m|mt|mtr|mtrs|meters?|metres?|मीटर'}|फीट)(?![\p{L}\p{M}])`, 'u')
+
+/** Hindi words for sub-uses that head their own rows in the Hindi bylaws tables. */
+const HINDI_SUBUSE: Record<string, string[]> = {
+  mall: ['मॉल', 'माल'], malls: ['मॉल', 'माल'], multiplex: ['मल्टीफ्लेक्स', 'मल्टीप्लेक्स'],
+  hotel: ['होटल'], hotels: ['होटल'], hospital: ['चिकित्सालय', 'अस्पताल'], school: ['विद्यालय', 'शिक्षण'],
+  shop: ['दुकान'], shops: ['दुकान', 'दुकानें'], office: ['कार्यालय'], offices: ['कार्यालय'],
+}
+
 export function analyzeQuery(query: string): QueryConstraints {
   let f = fold(query)
+  for (const [re, to] of FRACTION_WORDS) f = f.replace(re, to)
   let area: number | null = null, areaAsAsked: string | null = null
-  for (const u of AREA_UNITS) {
+  const dim = DIMENSIONS.exec(f)
+  if (dim) {
+    const a = Number(dim[1]), b = Number(dim[2]), feet = /ft|feet|foot|'|फीट/.test(dim[3]!)
+    if (a > 0 && b > 0 && a * b < 1e7) {
+      area = Math.round(a * b * (feet ? 0.09290304 : 1) * 100) / 100
+      areaAsAsked = `${a} × ${b} ${feet ? 'ft' : 'm'}`
+      f = f.slice(0, dim.index) + ' '.repeat(dim[0].length) + f.slice(dim.index + dim[0].length)
+    }
+  }
+  for (const u of area === null ? AREA_UNITS : []) {
     const m = new RegExp(`${NUMQ}\\s*(?:${u.re})(?![\\p{L}\\p{M}])`, 'u').exec(f)
     if (!m) continue
     const v = Number(m[1]!.replace(/,/g, ''))
@@ -197,6 +229,16 @@ export function analyzeQuery(query: string): QueryConstraints {
   if (height !== null) topics = topics.filter((k) => k !== 'height')
   if (road !== null) topics = topics.filter((k) => k !== 'road')
   let uses = USE_KEYS.filter((k) => useQRes[k].test(f))
+  // A use found only inside another use's longer phrase is not asked for:
+  // "guest house" is a hotel use, not also "house" (residential).
+  {
+    const spans = (k: UseKey) => [...f.matchAll(anyWordRe(USES[k].q))].map((m) => [m.index!, m.index! + m[0].length] as const)
+    const all = uses.map((k) => ({ k, sp: spans(k) }))
+    uses = uses.filter((k) => {
+      const mine = all.find((x) => x.k === k)!.sp
+      return !mine.length || mine.some(([a, b]) => !all.some((o) => o.k !== k && o.sp.some(([c, d]) => c <= a && d >= b && d - c > b - a)))
+    })
+  }
   // "group housing" is a residential use, named more precisely.
   if (uses.includes('group_housing')) uses = uses.filter((k) => k !== 'residential')
   // "petrol pump" also as "petrol" and "pump": a table may say "Petrol filling station".
@@ -212,6 +254,9 @@ export function analyzeQuery(query: string): QueryConstraints {
       for (const w of [en, ...en.split(/\s+/).filter((x) => x.length >= 4 && x !== en)]) if (!useWords.includes(w)) useWords.push(w)
     }
   }
+  // And the other way: the Hindi bylaws head sub-tables in Hindi ("मॉल
+  // /मल्टीफ्लेक्स"), so an English sub-use word also stands for its Hindi one.
+  for (const w of [...useWords]) for (const h of HINDI_SUBUSE[w] ?? []) if (!useWords.includes(h)) useWords.push(h)
   return { topics, uses, area, areaAsAsked, height, road, useWords, words }
 }
 
@@ -245,6 +290,29 @@ export function describeConstraints(c: QueryConstraints): string {
   if (uses) s = s ? `${s} (${uses})` : uses
   if (dims.length) s = s ? `${s} for ${dims.join(' on ')}` : dims.join(' on ')
   return s
+}
+
+/** The Hindi bylaws' own words for each topic and use (as in the MDDA tables). */
+const HI_TOPIC: Record<TopicKey, string> = {
+  far: 'एफ0ए0आर0', setback: 'सेट बैक', coverage: 'भू-आच्छादन', parking: 'पार्किंग', height: 'ऊँचाई',
+  stair: 'सीढ़ी', basement: 'बेसमेंट', road: 'मार्ग की चौड़ाई', ventilation: 'संवातन',
+}
+const HI_USE: Record<UseKey, string> = {
+  residential: 'आवासीय', group_housing: 'ग्रुप हाउसिंग', commercial: 'व्यवसायिक/कार्यालय', healthcare: 'चिकित्सा',
+  educational: 'शिक्षण संस्थायें', industrial: 'औद्योगिक', hotel: 'होटल', assembly: 'सभा भवन', fuel: 'पेट्रोल पम्प',
+}
+
+/** The question's parts in the Hindi bylaws' words ("व्यवसायिक/कार्यालय भूखण्ड
+ * का क्षेत्रफल 800 वर्गमीटर सेट बैक"), to search Hindi tables with an English
+ * question. '' when it names none. */
+export function describeConstraintsHindi(c: QueryConstraints): string {
+  const parts: string[] = []
+  if (c.uses.length) parts.push(c.uses.map((k) => HI_USE[k]).join(' '))
+  if (c.area !== null) parts.push(`भूखण्ड का क्षेत्रफल ${Math.round(c.area)} वर्गमीटर`)
+  if (c.height !== null) parts.push(`भवन की ऊँचाई ${c.height} मीटर`)
+  if (c.road !== null) parts.push(`मार्ग ${c.road} मीटर`)
+  if (c.topics.length) parts.push(c.topics.map((k) => HI_TOPIC[k]).join(' '))
+  return parts.join(' ')
 }
 
 // ---------------------------------------------------------------------------
@@ -308,7 +376,7 @@ interface Token {
 }
 
 const NUM = String.raw`(\d[\d,]*(?:\.\d+)?)`
-const HI_AREA = String.raw`(?:\s*(?:वर्ग\s*मीटर|वर्गमीटर|वर्गगीटर|वर्ग\s*मी\.?))?`
+const HI_AREA = String.raw`(?:\s*(?:वर्ग\s*मीटर|वर्गमीटर|वर्गगीटर|वर्ग\s*मी\.?|मीटर|मी0))?`
 const toNum = (x: string) => Number(x.replace(/,/g, ''))
 // "2016-2020", "26-08-2019": years and dates are not ranges.
 const dateLike = (a: number, b: number) =>
@@ -327,6 +395,16 @@ const TOKEN_RES: Array<{ kind: Kind; re: RegExp; read: (m: RegExpExecArray) => O
       const lo = toNum(m[2]!), hi = toNum(m[3]!)
       // "0-1000": tables write "up to 1000"; a range from zero is an OCR fragment.
       if (!(hi > lo) || lo === 0 || dateLike(lo, hi)) return null
+      // "| 2.0 | - | 1000 तक" read flat is "2.0 - 1000": a row's last figure,
+      // a dash for an empty cell, and the next row's plot size. A decimal
+      // figure followed by a number many times larger is not a range (real
+      // ones read "300 - 500", "7.5 - 12 m"). Taken as 2-1000 sq m it covered
+      // every plot up to 1000 and beat the real "600 तक" row.
+      if (/\./.test(m[2]!) && hi >= lo * 8) return null
+      // "| 3.0 | - | 5.0 |": two figures with a dash for the empty cell
+      // between them. A range of decimals is written with its unit
+      // ("1.5 - 2.5 m"); without one, these are table cells.
+      if (/\./.test(m[2]!) && /\./.test(m[3]!) && !/^\s*(?:m\b|mt|mtr|met|मीटर|sq|वर्ग|%)/iu.test(m.input.slice(m.index + m[0].length, m.index + m[0].length + 8))) return null
       return { lo, hi, loInc: !(m[1] && m[1].includes('>') && !m[1].includes('=')), hiInc: true }
     } },
   // Hindi: "1000 तक", "100 वर्गमीटर तक" (not the second half of "से ... तक")
@@ -362,7 +440,8 @@ function findTokens(t: string): Token[] {
       const after = t.slice(e, e + 16)
       // "up to 50 percent": a share, not a plot area, height or road width.
       if (/^\s*(?:%|percent|per cent|प्रतिशत)/iu.test(after)) continue
-      const unit = AREA_SUFFIX.test(after) || /वर्ग/.test(m[0]) ? 'area' : LEN_SUFFIX.test(after) ? 'len' : null
+      // "12.0 मीटर से 15.0 मीटर तक": metres (no वर्ग) inside a Hindi range are a length.
+      const unit = AREA_SUFFIX.test(after) || /वर्ग/.test(m[0]) ? 'area' : LEN_SUFFIX.test(after) || /(?:मीटर|मी0)/.test(m[0]) ? 'len' : null
       if (kind === 'exact' && unit !== 'area') continue
       taken.push([s, e])
       out.push({ s, e, text: t.slice(s, e).trim(), kind, unit, ...r })
@@ -381,6 +460,8 @@ function tokenDim(t: string, k: Token, from: number): DimKey | null {
   if (k.unit === 'len') {
     if (/^[\s-]*(?:m|mt|mtr|meters?|metres?|मीटर)\s*(?:wide\s*)?(?:road|street|width)/iu.test(after)) return 'road'
     if (/^[\s-]*(?:m|mt|mtr|meters?|metres?|मीटर)\.?\s*(?:height|high|tall|ऊँचाई|ऊंचाई)/iu.test(after)) return 'height'
+    // "12.0 मीटर से 15.0 मीटर तक ऊंचे भवनों": the unit is inside the token, "high" follows it.
+    if (/^\s*(?:ऊँचे|ऊंचे|ऊँचा|ऊंचा|ऊँचाई|ऊंचाई|high|tall)/u.test(after)) return 'height'
   }
   let best: { dim: DimKey; at: number } | null = null
   const head = t.slice(from, k.s)
@@ -476,30 +557,49 @@ function useScore(c: QueryConstraints, { nearest, heading }: UseFound): number {
 }
 
 // Column labels of common tables, so a row can be read out ("Front 3 m, ...").
-const COLUMN_SETS: Array<{ re: RegExp; labels: string[]; unit?: string; topic: TopicKey }> = [
+// The Hindi tables of the Uttarakhand (MDDA) bylaws give plains and hills side
+// by side: without these labels the model read "600 तक 7.5 3.0 3.0 - 5.0 2.0
+// 2.0 -" as "side setbacks 3.0 m each" and took the hills front 5.0 for
+// something else (bylaws pressure test, Nov 2026).
+const HI_SIDES = String.raw`अग्र\s*पृष्ठ\s*पार्श्व\s*-?\s*1\s*पार्श्व\s*-?\s*2`
+const COLUMN_SETS: Array<{ re: RegExp; labels: string[]; unit?: string; units?: string[]; topic: TopicKey | TopicKey[] }> = [
   { re: /front\s*(?:\(m\))?\s*rear\s*(?:\(m\))?\s*side[-\s]?1\s*(?:\(m\))?\s*side[-\s]?2/giu, labels: ['Front', 'Rear', 'Side-1', 'Side-2'], unit: 'm', topic: 'setback' },
   { re: /base\s*far\s*max\.?\s*(?:permissible\s*)?far/giu, labels: ['Base FAR', 'Max. FAR'], topic: 'far' },
   { re: /size of ventilation shaft\s*\(square met(?:er|re)\)\s*minimum width of shaft/giu, labels: ['Shaft area (sq m)', 'Min. width (m)'], topic: 'ventilation' },
+  { re: new RegExp(String.raw`मैदानी(?:\s*क्षेत्र)?\s*पर्वतीय(?:\s*क्षेत्र)?\s*${HI_SIDES}\s*${HI_SIDES}`, 'gu'),
+    labels: ['Plains front', 'Plains rear', 'Plains side-1', 'Plains side-2', 'Hills front', 'Hills rear', 'Hills side-1', 'Hills side-2'], unit: 'm', topic: 'setback' },
+  // Commercial and other uses (MDDA 5.5 (ii)): plains coverage + FAR, hills coverage + FAR.
+  { re: /मैदानी\s*क्षेत्र\s*पर्वतीय\s*क्षेत्र\s*अधिकतम\s*भू-?\s*आच्छादनः?\s*अनुमन्य\s*एफ0ए0आर0\s*अधिकतम\s*भू-?\s*आच्छादनः?\s*अनुमन्य\s*एफ0ए0आर0/gu,
+    labels: ['Plains ground coverage', 'Plains FAR', 'Hills ground coverage', 'Hills FAR'], units: ['%', '', '%', ''], topic: ['far', 'coverage'] },
+  // Residential: plains coverage + FAR, the green-building extra FAR, hills coverage + FAR.
+  { re: /मैदानी\s*क्षेत्र\s*पर्वतीय\s*क्षेत्र\s*अधिकतम\s*भू-?\s*आच्छादनः?\s*अनुमन्य\s*एफ0ए0आर0\s*#?\s*ग्रीन\s*बिल्डिंग[^]{0,80}?अतिरिक्त\s*एफ0ए0आर0\s*अधिकतम\s*भू-?\s*आच्छादन\s*:?\s*\(?\s*%\s*में\s*\)?\s*अनुमन्य\s*एफ0ए0आर0/gu,
+    labels: ['Plains ground coverage', 'Plains FAR', 'Extra FAR for a green building rating', 'Hills ground coverage', 'Hills FAR'], units: ['%', '', '', '%', ''], topic: ['far', 'coverage'] },
 ]
 
 /** The row's values against the table's column labels, when those columns
  * are what the question asked about (FAR labels are not shown for a ground
  * coverage question, though the same table holds both). */
 function readValues(t: string, sectionStart: number, k: Token, row: string, asked: TopicKey[]): string | undefined {
-  const after = row.slice(k.text.length)
+  return readValuesFrom(t, sectionStart, k.s, row.slice(k.text.length), asked)
+}
+
+/** The figures in `after` against the column labels found above `at`. */
+function readValuesFrom(t: string, sectionStart: number, at0: number, after: string, asked: TopicKey[]): string | undefined {
   const vals = after.match(/(?<![\p{L}\d.])(?:\d+(?:\.\d+)?%?|-)(?![\p{L}\d])/gu) ?? []
   if (!vals.length) return undefined
   let cols: (typeof COLUMN_SETS)[number] | null = null, at = -1
-  const head = t.slice(Math.max(sectionStart, k.s - 1500), k.s)
+  const head = t.slice(Math.max(sectionStart, at0 - 1500), at0)
   for (const cs of COLUMN_SETS) {
     cs.re.lastIndex = 0
     for (const m of head.matchAll(cs.re)) if (m.index! > at) { at = m.index!; cols = cs }
   }
   if (!cols || vals.length < cols.labels.length) return undefined
-  if (asked.length && !asked.includes(cols.topic)) return undefined
+  const topics = Array.isArray(cols.topic) ? cols.topic : [cols.topic]
+  if (asked.length && !asked.some((a) => topics.includes(a))) return undefined
   return cols.labels.map((l, i) => {
     const v = vals[i]!
-    return v === '-' ? `${l} none` : `${l} ${v}${cols!.unit ? ` ${cols!.unit}` : ''}`
+    const unit = cols!.units?.[i] ?? cols!.unit ?? ''
+    return v === '-' ? `${l} none` : `${l} ${v}${unit === '%' ? '%' : unit ? ` ${unit}` : ''}`
   }).join(', ')
 }
 
@@ -511,7 +611,8 @@ function rowText(t: string, k: Token, next: number | undefined, max = 110, limit
   const rest = t.slice(i, end)
   const stop = rest.slice(k.e - i).search(/\s(?:[Nn]otes?|NOTES?|टिप्पणी)(?![\p{L}])|\s\d+\.\d+\.\d+(?:\.\d+)*\s|\s\(?[a-z]\)\s|\s\d{1,2}(?:\([a-z]\))?\s+(?!Notes?\b)[A-Z][a-z]/u)
   if (stop >= 0) end = Math.min(end, k.e + stop)
-  return t.slice(i, end).trim()
+  // The next group's heading after the last figure ("... 6.0 मॉल /मल्टीफ्लेक्स :") is not part of the row.
+  return t.slice(i, end).trim().replace(/(?<=[\d-])\s+[^\d]*:\s*$/u, '')
 }
 
 const isTabular = (row: string, k: Token) => {
@@ -519,6 +620,9 @@ const isTabular = (row: string, k: Token) => {
   const words = after.match(/\p{L}{2,}/gu) ?? []
   // "100 -300 sqm, the permissible FAR is 1.75." is a sentence, not a row.
   if (/,\s*\p{L}|(?<![\p{L}])(?:is|are|shall|will|should|may|be|means)(?![\p{L}])/iu.test(after)) return false
+  // The same in Hindi: "200 से अधिक होने पर प्रति 10 पशुओं पर" ("if more than
+  // 200, per 10 animals") is a condition in a sentence, not a table row.
+  if (/(?<![\p{L}\p{M}])(?:होने|होगा|होगी|होंगे|होंगी|जायेगा|जायेगी|जाएगा|जाएगी|जायेंगे|किया|किये|है|हैं|हो\s*तो|की\s*दशा)(?![\p{L}\p{M}])/u.test(after)) return false
   return /\d/.test(after) && words.length <= 6
 }
 
@@ -564,7 +668,38 @@ function pickCovering(t: string, toks: Token[], from: number, to: number, dim: D
     ? new RegExp(`(?<![\p{L}\p{M}])(?:${labelWords.map(escapeRe).join('|')})(?:s|es)?(?![\p{L}\p{M}])`, 'iu')
     : null
   const labelled = (k: Token) => (labelRe && labelRe.test(t.slice(Math.max(sectionStart, k.s - 200), k.s)) ? 0 : 1)
-  return cands.sort((a, b) => tab(a) - tab(b) || labelled(a) - labelled(b) || closedness(a) - closedness(b) || slack(a) - slack(b) || a.s - b.s)[0]!
+  // A row under a sub-heading of its own inside the table ("मॉल /मल्टीफ्लेक्स :"
+  // after the commercial rows) is for that sub-use: it comes after the
+  // table's main rows unless the question names it. Without this, a 5000 sq m
+  // commercial plot got the mall row "4001 से 15000 तक" (closed, so preferred)
+  // instead of "3000 से अधिक".
+  const sublabelled = (k: Token) => {
+    const label = groupLabel(t, toks, k, sectionStart)
+    return label && !COLUMN_HEADING.test(label) && !(labelRe && labelRe.test(label)) ? 1 : 0
+  }
+  return cands.sort((a, b) => tab(a) - tab(b) || labelled(a) - labelled(b) || sublabelled(a) - sublabelled(b) || closedness(a) - closedness(b) || slack(a) - slack(b) || a.s - b.s)[0]!
+}
+
+/** Column headings of value tables: words that head the columns, not a sub-use. */
+const COLUMN_HEADING = /अग्र|पृष्ठ|पार्श्व|मैदानी|पर्वतीय|आच्छादन|एफ0ए0आर0|front|rear|side|plains?|hills?|coverage|far\b|setback|सेट\s*बैक|मीटर|sq|area|क्षेत्रफल/iu
+
+/**
+ * The words nearest above a row inside its table: going back over the rows
+ * before it (their figures carry no words), the first stretch of words met.
+ * The column headings for the table's first group, or a sub-heading such as
+ * "मॉल /मल्टीफ्लेक्स :" for a later one. '' when none before sectionStart.
+ */
+function groupLabel(t: string, toks: Token[], k: Token, sectionStart: number): string {
+  const before = toks.filter((x) => x.e <= k.s && x.s >= sectionStart)
+  let end = k.s
+  for (let i = before.length - 1; i >= -1; i--) {
+    const start = i >= 0 ? before[i]!.e : sectionStart
+    const words = t.slice(start, end).match(/[\p{L}\p{M}]{3,}/gu)
+    if (words?.length) return words.join(' ')
+    if (i < 0) break
+    end = before[i]!.s
+  }
+  return ''
 }
 
 export interface ConstrainedHit {
@@ -655,7 +790,21 @@ export function matchPassage(text: string, c: QueryConstraints, before: string |
       const use = useAbove(t, ss, k.s)
       const us = useScore(c, use)
       if (us === 0) continue
-      const row = rowText(t, k, toks.find((x) => x.s >= k.e)?.s, 110, partEnd(k.s))
+      let row = rowText(t, k, toks.find((x) => x.s >= k.e)?.s, 110, partEnd(k.s))
+      let rowShift = shiftOf(k.s)
+      // A row cut off where its passage ends ("1000 से अधिक 40 1.10 - 45", the
+      // hills FAR 1.00 in the next passage): passages overlap, so read it
+      // where it is whole.
+      if (k.s + row.length >= partEnd(k.s) - 2 && partIndex(k.s) + 1 < partStart.length) {
+        const nextFrom = partEnd(k.s)
+        const j = t.indexOf(k.text, nextFrom)
+        const k2 = j >= 0 && j < partEnd(nextFrom) ? toks.find((x) => x.s === j) : undefined
+        if (k2) {
+          const row2 = rowText(t, k2, toks.find((x) => x.s >= k2.e)?.s, 110, partEnd(k2.s))
+          // The same row, carried on (not another row with the same label further on).
+          if (row2.length > row.length && row2.startsWith(row)) { row = row2; rowShift = shiftOf(k2.s) }
+        }
+      }
       const hit: ConstrainedHit = {
         quality: k.kind === 'exact' || !isTabular(row, k) || garbled(row) ? 2 : 3,
         useScore: us,
@@ -664,7 +813,7 @@ export function matchPassage(text: string, c: QueryConstraints, before: string |
         values: readValues(t, ss, k, row, c.topics),
         rowNamesTopic: c.topics.length > 0 && c.topics.every((x) => topicRes[x].some((re) => re.test(row))),
         residentialDefault: !c.uses.length && (use.nearest === 'residential' || use.nearest === 'group_housing'),
-        shift: shiftOf(k.s),
+        shift: rowShift,
         tieBreak: (k.kind === 'above' ? v - k.lo : k.kind === 'upto' ? k.hi : k.hi - k.lo) / v,
       }
       if (better(hit, best)) best = hit
@@ -682,7 +831,7 @@ export function matchPassage(text: string, c: QueryConstraints, before: string |
     // Here a column heading such as "Max. Building Height (m)" IS the topic.
     const ms = topicMentions(t, ss, end, true)
     if (!c.topics.every((k) => ms.some((m) => m.key === k))) continue
-    let row: string | undefined, us = 1, quality: 1 | 2 = 1, shift = 0
+    let row: string | undefined, us = 1, quality: 1 | 2 = 1, shift = 0, values: string | undefined
     if (c.uses.length) {
       const from = Math.max(ss, offset - 300)
       const find = (re: RegExp) => [...t.slice(from, end).matchAll(re)]
@@ -705,10 +854,15 @@ export function matchPassage(text: string, c: QueryConstraints, before: string |
             c.words.filter((w) => f.includes(w)).length * 0.1
         }
         const pick = lines.reduce((a, b) => (score(b) > score(a) ? b : a))
-        row = pick.l
+        row = untilNextRow(fromOwnRow(pick.l, c.useWords))
         shift = shiftOf(pick.at)
         // A line in the question's own words that states the value is an answer, not just a mention.
-        if (own.length && answers(pick.l) && !garbled(pick.l)) quality = 2
+        if (own.length && answers(row) && !garbled(row)) {
+          quality = 2
+          // A table row named by its use ("7 Motel 25 0.50 30 0.60"): read its
+          // figures against the table's column labels, as for a plot-size row.
+          values = namedRowValues(t, ss, pick.at, row, c)
+        }
       }
     }
     // A line naming the asked topic first, then the one using more of the question's words.
@@ -716,10 +870,58 @@ export function matchPassage(text: string, c: QueryConstraints, before: string |
       ? (c.topics.length && c.topics.every((k) => topicRes[k].some((re) => re.test(row!))) ? 10 : 0) +
         c.words.filter((w) => fold(row!).includes(w)).length
       : 0
-    const hit: ConstrainedHit = { quality, useScore: us, row, section: sectionAt(Math.max(ss, offset))?.label, shift, tieBreak: -said }
+    // A row read against the asked topic's columns ("Guest house 40 1.60 45 1.35" under the FAR
+    // table) before one that only names the use ("Guest house 4.5 5" in a road-width table).
+    const hit: ConstrainedHit = { quality, useScore: us, row, section: sectionAt(Math.max(ss, offset))?.label, values, rowNamesTopic: !!values, shift, tieBreak: -said }
     if (better(hit, best)) best = hit
   }
   return best
+}
+
+/** A table line ends where the next numbered or lettered row starts:
+ * "5 Wedding points 33.3 1 35 0.8 6 *Hotel s 5 stars ..." -> "5 Wedding
+ * points 33.3 1 35 0.8"; "Group Housing 35 1.80 ... 0.3 d EWS/ ..." stops
+ * before "d EWS". Only after the line's first figure. */
+function untilNextRow(line: string): string {
+  const first = line.search(/\d/)
+  if (first < 0) return line
+  const m = /\s(?:[a-h]|\d{1,2})\s+\*?\s*[A-Z][A-Za-z]/.exec(line.slice(first + 1))
+  return m ? line.slice(0, first + 1 + m.index).trim() : line
+}
+
+/** A table line from the row named in the question's words: "b Multiple
+ * Units 50 1.80 # 0.20 55 1.65 c Group Housing 35 1.80 ..." -> "c Group
+ * Housing 35 1.80 ..." for a group housing question. */
+function fromOwnRow(line: string, words: string[]): string {
+  const f = fold(line)
+  const hits = words.map((w) => f.indexOf(w)).filter((i) => i > 0)
+  if (!hits.length) return line
+  const p = Math.min(...hits)
+  // The row's own label ("c ", "7 ") just before the name, else the name itself.
+  const lead = /(?:^|\s)(?:[a-h]|\d{1,2})\s+\*?\s*$/.exec(line.slice(0, p))
+  const start = lead ? lead.index : p
+  // Only when an earlier row's figures come before it.
+  return /\d/.test(line.slice(0, start)) ? line.slice(start).trim() : line
+}
+
+/** The figures of a row named by its use ("Motel 25 0.50 30 0.60") against
+ * the column labels above it, when they directly follow the use's name. */
+function namedRowValues(t: string, sectionStart: number, at: number, row: string, c: QueryConstraints): string | undefined {
+  const f = fold(row)
+  for (const w of [...c.useWords].sort((a, b) => b.length - a.length)) {
+    const i = f.indexOf(w)
+    if (i < 0) continue
+    let after = row.slice(i + w.length)
+    after = after.replace(/^(?:s|es)\b/i, '')
+    // The figures must follow the name at once ("Motel 25 ..."), not after
+    // more words ("Hotel s 5 stars ..." is a hotel class, not its figures).
+    if (!/^\s*\*?\s*\d/.test(after)) return undefined
+    const v = readValuesFrom(t, sectionStart, at, after, c.topics)
+    // Group housing's extra FAR depends on the rating: "सिल्वर 0.1 ... गोल्ड 0.2 प्लेटिनम 0.3".
+    const g = /सिल्वर\s*([\d.]+).*?गोल्ड\s*([\d.]+).*?प्लेटिनम\s*([\d.]+)/u.exec(after)
+    return v && g ? v.replace(/Extra FAR for a green building rating [^,]+/, `Extra FAR for a green building rating: silver ${g[1]}, gold ${g[2]}, platinum ${g[3]}`) : v
+  }
+  return undefined
 }
 
 /** OCR noise in a row ("65 170 | - | 70 | _160 | 3- |", "ई0सी0एस0 अनुवर्ती wares"):
@@ -777,6 +979,7 @@ function lineAround(t: string, at: number, ss: number, end: number): string {
 export function documentPriority(fileName: string): number {
   if (/time-?saver|neufert|standards for building types/i.test(fileName)) return 0
   if (/mbbl|model building bye/i.test(fileName)) return 1
+  if (isModelRegulation(fileName)) return 1 // BIS SP 73 model, any state's copy
   if (/booklet|guide/i.test(fileName)) return 1
   if (/nbc|national building code/i.test(fileName)) return 2
   return 3

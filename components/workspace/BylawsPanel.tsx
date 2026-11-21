@@ -98,6 +98,8 @@ export default function BylawsPanel() {
   const [notConfigured, setNotConfigured] = useState(false)
   const [answer, setAnswer] = useState('')
   const [answering, setAnswering] = useState(false)
+  // The passages do not answer the question: the answer is written without them.
+  const [general, setGeneral] = useState(false)
   const [asked, setAsked] = useState('')
   // The State dropdown: '' searches every document. With a state, only its
   // bylaws and the national codes are searched, its own first.
@@ -132,7 +134,7 @@ export default function BylawsPanel() {
     const query = q.trim()
     if (!query) return
     const id = ++searchId.current
-    setLoading(true); setErr(null); setNotConfigured(false); setAnswer(''); setMatches(null); setMeta(null); setAsked(query); setAskedState(state)
+    setLoading(true); setErr(null); setNotConfigured(false); setAnswer(''); setGeneral(false); setMatches(null); setMeta(null); setAsked(query); setAskedState(state)
     try {
       const res = await fetch('/api/nas/bylaws/answer', {
         method: 'POST',
@@ -151,7 +153,9 @@ export default function BylawsPanel() {
           setMatches(r.matches || [])
           setMeta({ requirement: r.requirement ?? null, allMatched: r.allMatched !== false })
           setLoading(false)
-          setAnswering((r.matches || []).length > 0)
+          setAnswering(true)
+        } else if (f.type === 'general') {
+          setGeneral(true)
         } else if (f.type === 'text') {
           setAnswer((a) => a + String(f.delta ?? ''))
         } else if (f.type === 'error') {
@@ -215,11 +219,11 @@ export default function BylawsPanel() {
       {matches && (
         <div className="border border-border-default rounded divide-y divide-border-default">
           <div className="px-3 py-2 text-xs font-mono text-text-secondary flex justify-between">
-            <span>
+            <span>{general ? <>Answer for “{asked}”</> : <>
               {matches.length} result{matches.length === 1 ? '' : 's'} for “{asked}”
               {askedState && <> in {askedState} bylaws + national codes</>}
-            </span>
-            <button onClick={() => { searchId.current++; setMatches(null); setMeta(null); setAnswer(''); setAnswering(false) }} className="hover:text-text-primary">✕ clear</button>
+            </>}</span>
+            <button onClick={() => { searchId.current++; setMatches(null); setMeta(null); setAnswer(''); setGeneral(false); setAnswering(false) }} className="hover:text-text-primary">✕ clear</button>
           </div>
           {(answer || answering) && (
             <div className="px-3 py-3 text-sm text-text-primary space-y-2">
@@ -229,12 +233,14 @@ export default function BylawsPanel() {
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{answer}</ReactMarkdown>
                 </div>
               ) : (
-                <p className="text-xs text-text-secondary">Writing an answer from the passages below…</p>
+                <p className="text-xs text-text-secondary">Writing an answer…</p>
               )}
-              <p className="text-xs text-text-secondary">Numbers in brackets refer to the passages below. Check the figure in the document before relying on it.</p>
+              {!general && matches.length > 0 && (
+                <p className="text-xs text-text-secondary">Numbers in brackets refer to the passages below. Check the figure in the document before relying on it.</p>
+              )}
             </div>
           )}
-          {meta?.requirement && (
+          {!general && meta?.requirement && (
             meta.allMatched ? (
               <div className="px-3 py-2 text-xs text-text-secondary">
                 Every result covers <span className="font-medium text-text-primary">{meta.requirement}</span>.
@@ -246,7 +252,7 @@ export default function BylawsPanel() {
               </div>
             )
           )}
-          {matches.map((m, i) => (
+          {!general && matches.map((m, i) => (
             <div key={`${m.path}-${i}`} className="px-3 py-3 text-sm space-y-1">
               <div className="flex items-center justify-between gap-2">
                 <a
@@ -294,7 +300,7 @@ export default function BylawsPanel() {
               )}
             </div>
           ))}
-          {matches.length === 0 && !loading && (
+          {matches.length === 0 && !loading && !answering && !answer && (
             <div className="px-3 py-3 text-sm text-text-secondary">No matching passages found.</div>
           )}
         </div>

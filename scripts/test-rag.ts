@@ -183,6 +183,80 @@ async function main() {
   const scope = regions.stateScope(docs, 'Uttarakhand')
   check('Uttarakhand scope: its documents + national, not Uttar Pradesh',
     scope.paths.length === 6 && !scope.paths.includes(docs[2]!) && scope.preferred.size === 2 && scope.preferred.has(docs[0]!), JSON.stringify(scope.paths))
+  // BIS Standardized Development and Building Regulations 2023: one model,
+  // a copy per state. A model, not bylaws in force.
+  const BIS = '/utility data/By_Laws/BIS STANDARDIZED REGULATIONS 2023'
+  const bisUk = `${BIS}/States/Uttarakhand/20240115-Uttarakhand-Final-Standardized-Development-and-Building-Regulations.pdf`
+  const bisUp = `${BIS}/States/Uttar Pradesh/20240115-Uttar-Pradesh-Final-Standardized-Development-and-Building-Regulations.pdf`
+  const bisAn = `${BIS}/Union Territories/Andaman and Nicobar Islands/20240115-Andaman-Nicobar-Final-Standardized-Development-and-Building-Regulations.pdf`
+  const bisDd = `${BIS}/Union Territories/Dadra and Nagar Haveli and Daman and Diu/20240115-DD-DN-Final-Standardized-Development-and-Building-Regulations.pdf`
+  const bisMaster = `${BIS}/National Master Document/SP-732023-Standardized-Development-and-Building-Regulations-2023.pdf`
+  check('BIS copies are model regulations; MDDA and NBC are not',
+    [bisUk, bisMaster, 'SP 73:2023.pdf'].every(regions.isModelRegulation) && ![docs[0]!, docs[3]!, 'sp-7300.pdf'].some(regions.isModelRegulation))
+  check('BIS state folders map to their state; "Andaman" is not Daman and Diu',
+    regions.stateOfPath(bisUk) === 'Uttarakhand' && regions.stateOfPath(bisAn) === 'Andaman and Nicobar Islands' &&
+    regions.stateOfPath(bisDd) === 'Dadra and Nagar Haveli and Daman and Diu' && regions.stateOfPath(bisMaster) === null,
+    [bisUk, bisAn, bisDd, bisMaster].map(regions.stateOfPath).join(' | '))
+  const withBis = [...docs, bisUk, bisUp, bisMaster]
+  const ukBis = regions.stateScope(withBis, 'Uttarakhand')
+  check('Uttarakhand: its BIS copy is searched but not preferred over MDDA; the master and UP copy are left out',
+    ukBis.paths.includes(bisUk) && !ukBis.preferred.has(bisUk) && ukBis.preferred.has(docs[0]!) && !ukBis.paths.includes(bisMaster) && !ukBis.paths.includes(bisUp))
+  const allBis = regions.allStatesScope(withBis)
+  check('All states: the per-state BIS copies are left out, the master stands for them',
+    !!allBis && allBis.paths.includes(bisMaster) && !allBis.paths.includes(bisUk) && !allBis.paths.includes(bisUp) && allBis.paths.includes(docs[2]!))
+  check('All states with no BIS copies needs no filter', regions.allStatesScope(docs) === null)
+  const qmod = await import('../lib/rag/query-match')
+  check('BIS model ranks below the NBC and state bylaws', qmod.documentPriority('20240115-Uttarakhand-Final-Standardized-Development-and-Building-Regulations.pdf') < qmod.documentPriority('NBC 2016 VOL1.pdf'))
+  const bisPrompt = (await import('../lib/rag/answer')).renderPassages([
+    { server: 'WD', path: bisUk, fileName: bisUk.split('/').pop()!, chunkIndex: 1, score: 0.9, text: 'a' },
+  ], 'Uttarakhand')
+  check('the model is told a BIS passage is a model, not Uttarakhand bylaws',
+    bisPrompt.includes('BIS model regulations') && !bisPrompt.includes('(Uttarakhand bylaws)'), bisPrompt)
+  // Plot sizes as people write them (found in the bylaws pressure test).
+  const aq = qmod.analyzeQuery
+  check('"50 x 100 ft" is a 464.5 sq m plot', aq('setback for 50 x 100 ft plot').area === 464.52, String(aq('setback for 50 x 100 ft plot').area))
+  check('"15 × 30 m" is a 450 sq m plot', aq('FAR for 15 × 30 m plot').area === 450)
+  check('"half acre" is 2,023 sq m', aq('setback for half acre commercial plot').area === 2023.43)
+  check('Hindi numerals: "५०० वर्ग मीटर" is a 500 sq m plot', aq('५०० वर्ग मीटर व्यावसायिक भूखंड का सेट बैक').area === 500)
+  check('"comercial" (misspelt) is still commercial', aq('setbak for 500 sqmt comercial plott').uses.includes('commercial'))
+  check('"residental" (misspelt) is still residential', aq('FAR for residental plot 300 sq m').uses.includes('residential'))
+  // MDDA commercial setbacks as extracted (Hindi labels, "-" for no setback),
+  // and the residential FAR table. "2.0 - 1000" was read as a 2-1000 sq m
+  // range and won for every plot up to 1000 sq m.
+  const mddaCommercial = '(ii) व्यवसायिक/कार्यालय\nभूखण्ड का क्षेत्रफल(वर्गमीटर\nमें )\nसेट बैक (मीटर में ) न्यूनतम आवश्यक\nमैदानी क्षेत्र\nपर्वतीय क्षेत्र\nअग्र \nपृष्ठ \nपार्श्व-1 पार्श्व-2 \nअग्र \nपृष्ठ  पार्श्व-1 पार्श्व-2 \n200 तक\n4.5\n-\n-\n-\n3.0\n-\n-\n-\n400 तक \n6.0 \n2.0 \n3.0 \n- \n4.0 \n- \n- \n- \n600 तक \n7.5 \n3.0 \n3.0 \n- \n5.0 \n2.0 \n2.0 \n- \n1000 तक\n8.0\n3.0\n4.0\n1.5\n6.0\n3.0\n3.0\n1.5\n1500 तक \n9.0 \n4.0 \n4.5 \n3.0 \n7.0 \n4.0 \n3.5 \n3.0 \n3000 तक \n10.0 \n5.0 \n4.5 \n4.5 \n8.0 \n5.0 \n4.5 \n4.5 \n3000 से अधिक\n12.0\n6.0\n6.0\n6.0\n9.0\n6.0\n6.0\n6.0\n      मॉल /मल्टीफ्लेक्स :  \n4000 तक\n14.0\n6.0\n6.0\n6.0\n10.0\n6.0\n6.0\n6.0\n4001 से 15000 तक \n16.0 \n7.0 \n7.0 \n7.0 \n12.0 \n6.0 \n6.0 \n6.0 \n'
+  const rowOf = (q: string, text = mddaCommercial) => qmod.matchPassage(text, aq(q), [], '')?.row ?? ''
+  check('MDDA commercial 500 sq m -> the "600 तक" row, all eight figures',
+    rowOf('setback for 500 sq m commercial plot') === '600 तक 7.5 3.0 3.0 - 5.0 2.0 2.0 -', rowOf('setback for 500 sq m commercial plot'))
+  check('MDDA commercial 150 / 300 / 800 sq m -> 200 / 400 / 1000 rows',
+    rowOf('setback for 150 sq m commercial plot').startsWith('200 तक 4.5') && rowOf('setback for 300 sq m commercial plot').startsWith('400 तक 6.0 2.0 3.0') &&
+    rowOf('setback for 800 sq m commercial plot').startsWith('1000 तक 8.0'))
+  check('a 5000 sq m commercial plot gets "3000 से अधिक", not the mall row; a mall gets the mall rows',
+    rowOf('setback for 5000 sq m commercial plot') === '3000 से अधिक 12.0 6.0 6.0 6.0 9.0 6.0 6.0 6.0' &&
+    rowOf('setbacks for a mall on a 3000 sq m plot').startsWith('4000 तक 14.0') && rowOf('setbacks for a mall on a 10000 sq m plot').startsWith('4001 से 15000 तक 16.0'),
+    rowOf('setback for 5000 sq m commercial plot'))
+  const mddaFar = '(i) \nआवासीय \nक्र0 सं0 \nउपयोग समूह \n( भूखण्ड क्षेत्रफल  \nवर्गमीटर में ) \nमैदानी क्षेत्र \nपर्वतीय क्षेत्र \nअधिकतम भू- \nआच्छादनः \nअनुमन्य \nएफ0ए0आर0\n# ग्रीन बिल्डिंग \nहेतु प्राप्त रेटिंग \nके आधार पर देय \nअतिरिक्त \nएफ0ए0आर0 \nअधिकतम भू- \nआच्छादन : \n (%  में)  \nअनुमन्य \nएफ0ए0आर0 \na \nप्लाटेड \n \n1- > 75-150 तक \n70 \n1.80 \n- \n75 \n1.80 \n2-\n>150- 250 तक \n65\n1.70\n-\n70\n1.60\n3- >250- 350 तक \n60 \n1.60 \n- \n65 \n1.50 \n'
+  check('MDDA residential FAR row reads through to its FAR ("1.80 - 75" is not a range)',
+    rowOf('FAR for 100 sq m residential plot', mddaFar).startsWith('> 75-150 तक 70 1.80 - 75 1.80') && rowOf('FAR for 200 sq m residential plot', mddaFar).startsWith('>150- 250 तक 65 1.70 - 70 1.60'),
+    rowOf('FAR for 100 sq m residential plot', mddaFar))
+  // Rows named by their use in MDDA's commercial FAR table (5.5 (ii)), read
+  // against its Hindi column headings; "आच्छादनः" (with visarga) is coverage.
+  const mddaComFar = '(ii) व्यवसायिक/ कार्यालय\nक्र0\nसं0\nCategory\nउपयोग समूह\n( भूखण्ड क्षेत्रफल\nवर्गमीटर में )\nमैदानी क्षेत्र\nपर्वतीय क्षेत्र\nअधिकतम भू-\nआच्छादनः\nअनुमन्य एफ0ए0आर0\nअधिकतम भू-\nआच्छादनः\nअनुमन्य एफ0ए0आर0\n5\nWedding points\n33.3\n1\n35\n0.8\n6\n*Hotel\ns\n5 stars deluxe rating\nhotels\n45*\n3.0*\n45*\n2.0*\n7\nMotel\n25\n0.50\n30\n0.60\n8\nResorts\n25\n0.75\n30\n0.90\n10\nGuest house\n40\n1.60\n45\n1.35\n11 *Hostel\n'
+  const valsOf = (q: string, text: string) => qmod.matchPassage(text, aq(q), [], '')?.values ?? ''
+  check('"ground coverage and FAR for a motel" -> the Motel row, plains and hills',
+    valsOf('ground coverage and FAR for a motel', mddaComFar) === 'Plains ground coverage 25%, Plains FAR 0.50, Hills ground coverage 30%, Hills FAR 0.60', valsOf('ground coverage and FAR for a motel', mddaComFar))
+  check('wedding point, resort and guest house rows read the same way',
+    valsOf('FAR and ground coverage for wedding point', mddaComFar).startsWith('Plains ground coverage 33.3%, Plains FAR 1,') &&
+    valsOf('FAR for resorts', mddaComFar).includes('Plains FAR 0.75') && valsOf('what FAR is allowed for a guest house', mddaComFar).includes('Hills FAR 1.35'))
+  check('"guest house" is a hotel use, not also residential ("house")', JSON.stringify(aq('what FAR is allowed for a guest house').uses) === '["hotel"]', JSON.stringify(aq('what FAR is allowed for a guest house').uses))
+  check('a "5 stars" hotel class is not read as figures', !valsOf('FAR for hotels', mddaComFar).includes('Plains ground coverage 5'))
+  const mddaHeight = 'SET-BACKS (सेट बैक)\n12.0 मीटर से 15.0 मीटर तक ऊंचे भवनों के चारों ओर न्यूनतम 5.0 मीटर तत्पश्चात प्रत्येक 3.0 मीटर भवन ऊँंचाई अथवा उसके अंश पर सेट बैक में 1.0 मीटर अतिरिक्त'
+  check('Hindi height range "12.0 मीटर से 15.0 मीटर तक ऊंचे भवनों" answers a 15 m high building',
+    (qmod.matchPassage(mddaHeight, aq('setback required for a building 12 to 15 m high'), [], '')?.row ?? '').startsWith('12.0 मीटर से 15.0 मीटर तक'))
+  check('a Hindi condition ("200 से अधिक होने पर प्रति 10 पशुओं पर") is not a table row',
+    (qmod.matchPassage('भूखण्ड का क्षेत्रफल\n200 से अधिक होने पर प्रति 10 पशुओं पर 1 ई0सी0एस0', aq('setback for 400 sq m residential plot'), [], '')?.quality ?? 0) < 3)
+  check('English questions are also searched in the Hindi bylaws\' words',
+    qmod.describeConstraintsHindi(aq('setback for 800 sq m commercial plot')) === 'व्यवसायिक/कार्यालय भूखण्ड का क्षेत्रफल 800 वर्गमीटर सेट बैक', qmod.describeConstraintsHindi(aq('setback for 800 sq m commercial plot')))
+  check('a road width is not taken for plot dimensions', aq('setback for 500 sq m plot on 18 m road').area === 500 && aq('setback for 500 sq m plot on 18 m road').road === 18)
   const qd = await import('../lib/rag/qdrant')
   const ranked = qd.rerankInScope([
     { path: docs[3]!, text: 'setback commercial', score: 0.86 },
@@ -1026,6 +1100,13 @@ async function main() {
     check('prompt numbers the passages and gives the applicable row', sys.includes('[1] a.pdf — clause 3.2.2 FAR') && sys.includes('Applicable row, read against its column labels: FAR 1.75'))
     check('prompt cuts a long passage', !sys.includes('x'.repeat(2000)) && sys.includes('x'.repeat(1800)))
     check('prompt says the exact rule was not found when not every part matched', sys.includes('no passage covers FAR for a 200 sq m plot together'))
+    check('a bylaws prompt asks for NO_ANSWER instead of "not found"', sys.includes(ans.NO_ANSWER) && !/say that it was not found/.test(sys))
+    const nasSys = String(ans.buildAnswerMessages({ ...r, source: 'nas' as const }, 'q', [], 'X')[0]!.content)
+    check('a NAS prompt still says when the documents do not answer', !nasSys.includes(ans.NO_ANSWER) && nasSys.includes('not found in the documents'))
+    const gen = String(ans.buildGeneralAnswerMessages('bylaws', 'FAR for 200 sq m?', [], 'X', 'Uttarakhand')[0]!.content)
+    check('the general answer prompt names the state and forbids "not found" and citations', gen.includes('Uttarakhand') && /Never write that something was not found/.test(gen) && /Never invent a clause number/.test(gen))
+    check('the general answer never attributes figures to a document or to the state, and does not confirm a named clause',
+      /Never attribute a figure or rule to a named document/.test(gen) && gen.includes("never present a figure as Uttarakhand's rule") && /do not confirm that it exists/.test(gen) && /checked against the applicable bylaws/.test(gen))
     check('the conversation and then the question follow the prompt', msgs.length === 4 && msgs[3]?.role === 'user' && msgs[3]?.content === 'FAR for 200 sq m?')
     const footer = ans.sourcesFooter('FAR is 1.75 [3][1], also [1]; not [9]', passages, 'bylaws')
     check('sources list the cited passages, in citation order, with their numbers',

@@ -13,7 +13,7 @@ import { QdrantClient } from '@qdrant/js-client-rest'
 
 import { cleanPassage } from './chunk'
 import { EMBEDDING_DIM, embedQuery } from './embeddings'
-import { analyzeQuery, describeConstraints, documentPriority, isConstrained, matchPassage, mightMatch, rank, type QueryConstraints } from './query-match'
+import { analyzeQuery, describeConstraints, describeConstraintsHindi, documentPriority, isConstrained, matchPassage, mightMatch, rank, type QueryConstraints } from './query-match'
 
 const QDRANT_URL = process.env.QDRANT_URL?.trim()
 const QDRANT_API_KEY = process.env.QDRANT_API_KEY?.trim() || undefined // "" (local/no-auth) must not become a real header
@@ -502,25 +502,39 @@ export async function searchChunksConstrained(
   if (!isConstrained(constraints)) {
     return { hits: await searchChunksHybrid(organizationId, vector, queryText, limit, collection, scope), constraints, allMatched: true }
   }
-  let pool = await searchChunks(organizationId, vector, CONSTRAINED_POOL_SIZE, collection, MIN_SCORE - CONSTRAINED_POOL_MARGIN, scope?.paths)
-  // A question in Hindi scores English table passages lower than Hindi
-  // prose, so the English tables that answer it can miss the pool. Search
-  // again with the same parts in English ("FAR for a 500 sq m plot") and
-  // merge, keeping each passage's better score.
-  if (/\p{Script=Devanagari}/u.test(queryText)) {
-    try {
-      const english = await embedQuery(describeConstraints(constraints))
-      const more = await searchChunks(organizationId, english, CONSTRAINED_POOL_SIZE, collection, MIN_SCORE - CONSTRAINED_POOL_MARGIN, scope?.paths)
-      const byKey = new Map(pool.map((h) => [passageKey(h.server, h.path, h.chunkIndex), h]))
-      for (const h of more) {
-        const k = passageKey(h.server, h.path, h.chunkIndex)
-        const had = byKey.get(k)
-        if (!had || had.score < h.score) byKey.set(k, h)
-      }
-      pool = [...byKey.values()].sort((a, b) => b.score - a.score)
-    } catch (e) {
-      console.warn('[rag] English re-search failed:', (e as Error).message)
+  const floor = MIN_SCORE - CONSTRAINED_POOL_MARGIN
+  let pool = await searchChunks(organizationId, vector, CONSTRAINED_POOL_SIZE, collection, floor, scope?.paths)
+  const merge = (more: ChunkSearchHit[]) => {
+    const byKey = new Map(pool.map((h) => [passageKey(h.server, h.path, h.chunkIndex), h]))
+    for (const h of more) {
+      const k = passageKey(h.server, h.path, h.chunkIndex)
+      const had = byKey.get(k)
+      if (!had || had.score < h.score) byKey.set(k, h)
     }
+    pool = [...byKey.values()].sort((a, b) => b.score - a.score)
+  }
+  // With a state chosen, its own bylaws are searched on their own too. They
+  // are a few hundred passages against thousands of NBC and BIS ones, and an
+  // English question scores their Hindi tables low: MDDA's commercial
+  // setback table ranked 116th-558th of 6,371 for "setbacks on an 800 sqm
+  // plot", outside the pool, so the row was never matched (bylaws pressure
+  // test, Nov 2026). The row match is the relevance test that counts.
+  if (scope?.preferred.size) {
+    try {
+      merge(await searchChunks(organizationId, vector, CONSTRAINED_POOL_SIZE, collection, floor, [...scope.preferred]))
+    } catch (e) {
+      console.warn('[rag] state re-search failed:', (e as Error).message)
+    }
+  }
+  // A question in one language scores table passages in the other lower, so
+  // the tables that answer it can miss the pool. Search again with the same
+  // parts in the other language ("FAR for a 500 sq m plot" / "आवासीय
+  // भूखण्ड 500 वर्गमीटर एफ0ए0आर0") and merge, keeping each passage's better score.
+  try {
+    const other = /\p{Script=Devanagari}/u.test(queryText) ? describeConstraints(constraints) : describeConstraintsHindi(constraints)
+    if (other) merge(await searchChunks(organizationId, await embedQuery(other), CONSTRAINED_POOL_SIZE, collection, floor, scope?.paths))
+  } catch (e) {
+    console.warn('[rag] other-language re-search failed:', (e as Error).message)
   }
   const candidates = pool.filter((h) => mightMatch(h.text, constraints))
   const around = await neighbourPassages(organizationId, candidates, collection)
@@ -552,7 +566,20 @@ export async function searchChunksConstrained(
     // The same row is often in two passages (overlap, or a table split
     // across them): show it once.
     const seen = new Set<string>()
+    // When the chosen state's own bylaws give the row for the use asked, model
+    // documents (the BIS model regulations, model bye-laws, guides, reference
+    // books: documentPriority <= 1) are not shown. They are not in force, and
+    // with them in the passages the model answered an 800 sq m commercial
+    // question from the BIS table instead of MDDA's.
+    const stateAnswers = ranked.some((h) => scope?.preferred.has(h.path) && (h.quality === 3 || !!h.values) && h.useScore >= Math.max(...ranked.map((x) => x.useScore)))
+    // The question named a use and a table row for it was found: rows of
+    // tables for other uses are not shown. With MDDA's ropeway-building table
+    // ("1200-1500: Front 6.0 m ...") beside the commercial one, an office
+    // question on a 1200 sq m plot was answered from the ropeway row.
+    const useRow = constraints.uses.length > 0 && ranked.some((h) => h.quality === 3 && h.useScore === 2)
     const unique = ranked.filter((h) => {
+      if (stateAnswers && documentPriority(h.fileName) <= 1) return false
+      if (useRow && h.quality === 3 && h.useScore < 2) return false
       const key = h.matchedRow ? `${h.fileName}\u0000${h.matchedRow.replace(/\s+/g, ' ').toLowerCase()}` : `${h.path}\u0000${h.chunkIndex}`
       if (seen.has(key)) return false
       seen.add(key)
