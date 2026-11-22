@@ -179,6 +179,29 @@ async function main() {
   check('underscored folder names work ("MDDA_UTTARAKHAND", "Dehradun")',
     regions.stateOfFolder('MDDA_UTTARAKHAND') === 'Uttarakhand' && regions.stateOfFolder('Dehradun') === 'Uttarakhand')
   check('folders that only contain "up"/"mp" in a word are not states', regions.stateOfFolder('Backup') === null && regions.stateOfFolder('Samples') === null)
+  {
+    // Loose files in the Seagate "bye laws" folder: a city or authority in
+    // the file name gives the state, so they stay out of other states'
+    // searches (the Nainital bylaws turned up under Punjab).
+    const loose = (f: string) => regions.stateOfPath(`/utility data/bye laws/${f}`)
+    check('city/authority in a loose file name gives the state',
+      loose('Bye-Laws-nlrda,nainital.pdf') === 'Uttarakhand' && loose('DDUN.pdf') === 'Uttarakhand' &&
+      loose('DRAFT_MASTER_PLAN_DEHRADUN_2025.pdf') === 'Uttarakhand' && loose('Areas_Included_in_Mussoorie_Dehradun_Development_Authority.pdf') === 'Uttarakhand',
+      `${loose('Bye-Laws-nlrda,nainital.pdf')} ${loose('DDUN.pdf')}`)
+    check('city folders give the state ("haridwar bye laws", "Master Plan D.Dun 2025", "Lucknow Awas Vikas Bye Laws", "MASSOORIE GO")',
+      regions.stateOfFolder('haridwar bye laws') === 'Uttarakhand' && regions.stateOfFolder('Master Plan D.Dun 2025') === 'Uttarakhand' &&
+      regions.stateOfFolder('Lucknow Awas Vikas Bye Laws') === 'Uttar Pradesh' && regions.stateOfFolder('MOHIT AGGARWAL_MASSOORIE GO') === 'Uttarakhand')
+    check('NAS folder spellings: "2 Arunchal Pradesh", "28 WestBengal", "5 chhatisgarh", "26 uttarpradesh", "29. Delhi"',
+      regions.stateOfFolder('2 Arunchal Pradesh') === 'Arunachal Pradesh' && regions.stateOfFolder('28 WestBengal') === 'West Bengal' &&
+      regions.stateOfFolder('5 chhatisgarh') === 'Chhattisgarh' && regions.stateOfFolder('26 uttarpradesh') === 'Uttar Pradesh' && regions.stateOfFolder('29. Delhi') === 'Delhi')
+    check('a state folder beats a city in the file name; general files stay national',
+      regions.stateOfPath('/utility data/bye laws/20 Punjab/Draftbuildingrules8092017.pdf') === 'Punjab' &&
+      regions.stateOfPath('/utility data/bye laws/26 uttarpradesh/Dehradun note.pdf') === 'Uttar Pradesh' &&
+      loose('PMAY_All.pdf') === null && loose('zoning_amendment.pdf') === null && loose('byelaws.pdf') === null)
+    const mixed = ['/utility data/bye laws/Bye-Laws-nlrda,nainital.pdf', '/utility data/bye laws/20 Punjab/Draftbuildingrules8092017.pdf', '/utility data/By_Laws/NBCs/NBC 2016 VOL1.pdf']
+    const pb = regions.stateScope(mixed, 'Punjab')
+    check('Punjab search leaves out the Nainital bylaws, keeps NBC', !pb.paths.includes(mixed[0]!) && pb.paths.includes(mixed[2]!), JSON.stringify(pb.paths))
+  }
   check('dropdown lists the states with documents, sorted', JSON.stringify(regions.statesOf(docs)) === JSON.stringify(['Uttar Pradesh', 'Uttarakhand']), JSON.stringify(regions.statesOf(docs)))
   const scope = regions.stateScope(docs, 'Uttarakhand')
   check('Uttarakhand scope: its documents + national, not Uttar Pradesh',

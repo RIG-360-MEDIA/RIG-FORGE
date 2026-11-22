@@ -8,15 +8,16 @@
  * covers that state's documents and the national ones, the state's first,
  * and leaves out every other state's (see retrieve in lib/rag/answer.ts).
  *
- * Only folder names count, not file names: a file name is too loose
+ * State names count only in folder names: a file name is too loose
  * ("UK(UP_Zamindari...)" is an Uttarakhand bill that names Uttar Pradesh).
+ * Cities and authorities (Nainital, Lucknow, ...) count in either.
  */
 
 /** Name shown in the dropdown, and the folder-name pattern that means it.
  * Authority abbreviations are listed only where they are unambiguous. */
 const STATES: Array<[string, RegExp]> = [
   ['Andhra Pradesh', /andhra|\bapcrda\b/],
-  ['Arunachal Pradesh', /arunachal/],
+  ['Arunachal Pradesh', /aruna?chal/], // the NAS folder is "2 Arunchal Pradesh"
   ['Assam', /assam/],
   ['Bihar', /bihar/],
   ['Chhattisgarh', /chh?att?isgarh/],
@@ -66,23 +67,47 @@ export function isModelRegulation(pathOrName: string): boolean {
   return BIS_MODEL.test(pathOrName)
 }
 
-/** The state a folder name stands for, or null. */
-export function stateOfFolder(name: string): string | null {
-  // Underscores and hyphens as spaces, so \b works on "MDDA_UTTARAKHAND".
-  const n = name.toLowerCase().replace(/[_-]+/g, ' ')
-  for (const [state, re] of STATES) if (re.test(n)) return state
+/**
+ * Cities and development authorities that belong to one state only. Unlike
+ * state names these are also read from file names, for documents left loose
+ * in a general folder ("bye laws/Bye-Laws-nlrda,nainital.pdf"), which would
+ * otherwise count as national and turn up in every state's search.
+ */
+const PLACES: Array<[string, RegExp]> = [
+  ['Uttarakhand', /nainital|\bnlrda\b|dehra[\s.]*dun|\bd[\s.]*dun\b|\bddun\b|\bdoon\b|mus+o+r+i+e|mas+o+r+i+e|haridwar|\bhrda\b|rishikesh|roorkee|haldwani|almora|kashipur|rudrapur|udham[\s]*singh|pithoragarh|uttarkashi|tehri|chamoli|kotdwar|badrinath|kedarnath|\bsidcul\b/],
+  ['Uttar Pradesh', /lucknow|\bnoida\b|ghaziabad|kanpur|varanasi|prayagraj|allahabad|meerut|moradabad|muradabad|bareilly|gorakhpur|aligarh|saharanpur|\bupavp\b|\bupsida\b/],
+]
+
+/** Folder or file name, lowercased, with "_" and "-" as spaces so \b works
+ * on "MDDA_UTTARAKHAND" and "Bye-Laws-nlrda,nainital". */
+function plain(name: string): string {
+  return name.toLowerCase().replace(/[_-]+/g, ' ')
+}
+
+function placeOf(n: string): string | null {
+  for (const [state, re] of PLACES) if (re.test(n)) return state
   return null
 }
 
-/** The state of a document from its folders (not its file name), or null
- * for a national document. The innermost state folder wins. */
+/** The state a folder name stands for, or null. */
+export function stateOfFolder(name: string): string | null {
+  const n = plain(name)
+  for (const [state, re] of STATES) if (re.test(n)) return state
+  return placeOf(n)
+}
+
+/** The state of a document, or null for a national one. The innermost
+ * folder naming a state (or one of its cities) wins; failing that, a city
+ * or authority in the file name. State names in file names are not read:
+ * "UK(UP_Zamindari...)" is an Uttarakhand bill that names Uttar Pradesh. */
 export function stateOfPath(path: string): string | null {
-  const folders = path.split('/').filter(Boolean).slice(0, -1)
+  const parts = path.split('/').filter(Boolean)
+  const folders = parts.slice(0, -1)
   for (let i = folders.length - 1; i >= 0; i--) {
     const s = stateOfFolder(folders[i]!)
     if (s) return s
   }
-  return null
+  return placeOf(plain(parts[parts.length - 1] ?? ''))
 }
 
 /** The states that have documents, sorted, for the dropdown. */
