@@ -200,12 +200,14 @@ async function main() {
       loose('PMAY_All.pdf') === null && loose('zoning_amendment.pdf') === null && loose('byelaws.pdf') === null)
     const mixed = ['/utility data/bye laws/Bye-Laws-nlrda,nainital.pdf', '/utility data/bye laws/20 Punjab/Draftbuildingrules8092017.pdf', '/utility data/By_Laws/NBCs/NBC 2016 VOL1.pdf']
     const pb = regions.stateScope(mixed, 'Punjab')
-    check('Punjab search leaves out the Nainital bylaws, keeps NBC', !pb.paths.includes(mixed[0]!) && pb.paths.includes(mixed[2]!), JSON.stringify(pb.paths))
+    check('Punjab search: only Punjab\'s own file, not the Nainital bylaws or the NBC',
+      JSON.stringify(pb.paths) === JSON.stringify([mixed[1]]), JSON.stringify(pb.paths))
   }
   check('dropdown lists the states with documents, sorted', JSON.stringify(regions.statesOf(docs)) === JSON.stringify(['Uttar Pradesh', 'Uttarakhand']), JSON.stringify(regions.statesOf(docs)))
   const scope = regions.stateScope(docs, 'Uttarakhand')
-  check('Uttarakhand scope: its documents + national, not Uttar Pradesh',
-    scope.paths.length === 6 && !scope.paths.includes(docs[2]!) && scope.preferred.size === 2 && scope.preferred.has(docs[0]!), JSON.stringify(scope.paths))
+  check('Uttarakhand scope: its own two documents only (no NBC, MBBL, Neufert, root files or Uttar Pradesh)',
+    JSON.stringify(scope.paths) === JSON.stringify([docs[0], docs[1]]) && scope.preferred.size === 2, JSON.stringify(scope.paths))
+  check('a state with no documents gets an empty scope (never everything)', regions.stateScope(docs, 'Kerala').paths.length === 0)
   // BIS Standardized Development and Building Regulations 2023: one model,
   // a copy per state. A model, not bylaws in force.
   const BIS = '/utility data/By_Laws/BIS STANDARDIZED REGULATIONS 2023'
@@ -220,10 +222,14 @@ async function main() {
     regions.stateOfPath(bisUk) === 'Uttarakhand' && regions.stateOfPath(bisAn) === 'Andaman and Nicobar Islands' &&
     regions.stateOfPath(bisDd) === 'Dadra and Nagar Haveli and Daman and Diu' && regions.stateOfPath(bisMaster) === null,
     [bisUk, bisAn, bisDd, bisMaster].map(regions.stateOfPath).join(' | '))
-  const withBis = [...docs, bisUk, bisUp, bisMaster]
+  const bisMn = `${BIS}/States/Manipur/20240115-Manipur-Final-Standardized-Development-and-Building-Regulations.pdf`
+  const withBis = [...docs, bisUk, bisUp, bisMaster, bisMn]
   const ukBis = regions.stateScope(withBis, 'Uttarakhand')
-  check('Uttarakhand: its BIS copy is searched but not preferred over MDDA; the master and UP copy are left out',
-    ukBis.paths.includes(bisUk) && !ukBis.preferred.has(bisUk) && ukBis.preferred.has(docs[0]!) && !ukBis.paths.includes(bisMaster) && !ukBis.paths.includes(bisUp))
+  check('Uttarakhand: MDDA only; its BIS copy, the BIS master and the UP copy are all left out',
+    JSON.stringify(ukBis.paths) === JSON.stringify([docs[0], docs[1]]), JSON.stringify(ukBis.paths))
+  check('a state with only a BIS copy (Manipur) has an empty scope, and is not counted as having its own bylaws',
+    regions.stateScope(withBis, 'Manipur').paths.length === 0 && regions.statesOf(withBis).includes('Manipur') &&
+    JSON.stringify(regions.statesWithOwnDocuments(withBis)) === '["Uttar Pradesh","Uttarakhand"]', JSON.stringify(regions.statesWithOwnDocuments(withBis)))
   const allBis = regions.allStatesScope(withBis)
   check('All states: the per-state BIS copies are left out, the master stands for them',
     !!allBis && allBis.paths.includes(bisMaster) && !allBis.paths.includes(bisUk) && !allBis.paths.includes(bisUp) && allBis.paths.includes(docs[2]!))
@@ -295,8 +301,65 @@ async function main() {
     { server: 'WD', path: docs[0]!, fileName: 'MDDA Compiled_byelaws_uttarakhand.pdf', chunkIndex: 1, score: 0.9, text: 'a' },
     { server: 'WD', path: docs[3]!, fileName: 'NBC 2016 VOL1.pdf', chunkIndex: 1, score: 0.9, text: 'b' },
   ], 'Uttarakhand')
-  check('with a state, the model is told whose rules each passage is',
-    shown.includes('MDDA Compiled_byelaws_uttarakhand.pdf (Uttarakhand bylaws)') && shown.includes('NBC 2016 VOL1.pdf (national)'), shown)
+  check('with a state, its passages are labelled as its bylaws, and nothing is labelled national',
+    shown.includes('MDDA Compiled_byelaws_uttarakhand.pdf (Uttarakhand bylaws)') && !shown.includes('(national)'), shown)
+  const statePrompt = String(ansMod.buildAnswerMessages({ source: 'bylaws', query: 'q', passages: [], requirement: null, allMatched: true, state: 'Uttarakhand' }, 'FAR for 500 sq m', [], 'X')[0]!.content)
+  check('with a state, the prompt says only its own documents were searched and forbids NBC / model / other-state figures',
+    /Every passage below is from Uttarakhand's own documents/.test(statePrompt) && /Never add a figure or rule from the NBC, a model regulation or another state/.test(statePrompt) &&
+    !/national passage/.test(statePrompt), statePrompt.slice(-600))
+  {
+    // The Bylaws tab's Sources list: the cited documents, in citation order, with links.
+    const ps = [
+      { server: 'WD', path: docs[0]!, fileName: 'MDDA Compiled_byelaws_uttarakhand.pdf', chunkIndex: 4, score: 0.9, text: 'Commercial 600 तक 7.5 3.0 3.0', section: '5.4 (ii)' },
+      { server: 'WD', path: docs[1]!, fileName: 'G-O-07-01-2022 (1).pdf', chunkIndex: 2, score: 0.88, text: 'compounding fee 2.5 per cent' },
+    ]
+    const refs = ansMod.answerReferences('Front setback 7.5 m [1]. Compounding fee 2.5 per cent [2]. Again [1]; bad [7].', ps, 'bylaws')
+    check('answer references: every cited document once, in citation order, numbered, with clause, PDF and source-view links',
+      refs.length === 2 && refs[0]!.n === 1 && refs[0]!.section === '5.4 (ii)' && refs[1]!.n === 2 &&
+      refs[0]!.pdfUrl.startsWith('/api/nas/download?') && refs[0]!.sourceUrl.startsWith('/dashboard/source?c=bylaws&') && refs[0]!.sourceUrl.includes('&i=4&'),
+      JSON.stringify(refs))
+    check('a citation to a passage that does not exist ([7]) is never a reference', refs.every((x) => x.n <= ps.length))
+    check('the chat footer is built from the same references', ansMod.sourcesFooter('7.5 m [1].', ps, 'bylaws').includes('- [1] [MDDA Compiled_byelaws_uttarakhand.pdf]'))
+  }
+  {
+    // The Central tab: central documents only, recognised by folder or name.
+    const B = '/utility data/By_Laws'
+    const central = [
+      `${B}/NBCs/NBC 2016 VOL1.pdf`, `${B}/NBCs/NBC_MBBL.pdf`, `${B}/NBC-vol-1.pdf`, bisMaster,
+      `${B}/CENTRAL/Harmonised Guidelines Accessibility 2021.pdf`, `${B}/ECBC 2017.pdf`, `${B}/IS 456 2000.pdf`,
+      `${B}/Model Building Bye Laws 2016.pdf`, `${B}/URDPFI Guidelines Vol I.pdf`, `${B}/National Codes/fire.pdf`,
+    ]
+    const notCentral = [
+      docs[0]!, docs[1]!, docs[2]!, bisUk, bisMn,
+      `${B}/UK(UP_Zamindari_Abolition)(A)_Bill_2025.pdf`, `${B}/G-O-07-01-2022 (1).pdf`, `${B}/202504161857302632Bylaws_160425.pdf`,
+      `${B}/ARCHITECTURAL STANDARDS/Neufert STANDARDS.pdf`, `${B}/International Codes/IBC 2021.pdf`, `${B}/this 2016 report.pdf`,
+      '/utility data/bye laws/Bye-Laws-nlrda,nainital.pdf', `${B}/NBCs/../MDDA UTTARAKHAND/x.pdf`, `${B}/UTTAR PRADESH/NBC adoption order.pdf`,
+    ]
+    const wrongIn = central.filter((p) => !regions.isCentralDocument(p))
+    const wrongOut = notCentral.filter((p) => regions.isCentralDocument(p))
+    check('central: NBC, MBBL, BIS master, ECBC, IS codes, URDPFI, a CENTRAL/National folder', wrongIn.length === 0, wrongIn.join(' | '))
+    check('not central: state documents, BIS state copies, loose G.O.s and bills, reference books, "International", a state\'s "NBC adoption order"', wrongOut.length === 0, wrongOut.join(' | '))
+    // Every document is in exactly one of: Central, All states, or a BIS state copy (in neither).
+    const every = [...central, ...notCentral]
+    const cs = new Set(regions.centralScope(every).paths)
+    const as = new Set(regions.allStatesOnlyScope(every).paths)
+    const overlap = every.filter((p) => cs.has(p) && as.has(p))
+    const lost = every.filter((p) => !cs.has(p) && !as.has(p) && !(regions.isModelRegulation(p) && regions.stateOfPath(p)))
+    check('Central and All states never share a document, and only BIS state copies are in neither', overlap.length === 0 && lost.length === 0, `overlap: ${overlap.join(', ')} | lost: ${lost.join(', ')}`)
+    check('Central has no state document; All states has no central one and no BIS copy',
+      [...cs].every((p) => regions.stateOfPath(p) === null) && [...as].every((p) => !regions.isCentralDocument(p) && !regions.isModelRegulation(p)))
+    const centralPrompt = String(ansMod.buildAnswerMessages({ source: 'bylaws', query: 'q', passages: [], requirement: null, allMatched: true, area: 'central' }, 'stair width', [], 'X')[0]!.content)
+    check('Central prompt: national documents only, never presented as a state\'s rule',
+      /asking about the central \(national\) codes/.test(centralPrompt) && /no state's bylaws were searched/.test(centralPrompt) && /never present it as a particular state's rule/.test(centralPrompt))
+    const allPrompt = String(ansMod.buildAnswerMessages({ source: 'bylaws', query: 'q', passages: [], requirement: null, allMatched: true, area: 'all-states' }, 'setback', [], 'X')[0]!.content)
+    check('All states prompt: name the state with every figure, never combine states, no central code searched',
+      /Name the state with every figure and never combine figures from different states/.test(allPrompt) && /no central code was searched/.test(allPrompt))
+    const allShown = ansMod.renderPassages([
+      { server: 'WD', path: docs[0]!, fileName: 'MDDA.pdf', chunkIndex: 1, score: 0.9, text: 'a' },
+      { server: 'WD', path: docs[2]!, fileName: 'UP.pdf', chunkIndex: 1, score: 0.9, text: 'b' },
+    ], undefined, 'all-states')
+    check('All states: each passage is labelled with its own state', allShown.includes('MDDA.pdf (Uttarakhand bylaws)') && allShown.includes('UP.pdf (Uttar Pradesh bylaws)'), allShown)
+  }
   check('without a state, passages are labelled as before',
     !ansMod.renderPassages([{ server: 'WD', path: docs[0]!, fileName: 'x.pdf', chunkIndex: 1, score: 0.9, text: 'a' }]).includes('bylaws)'))
 
@@ -1128,8 +1191,13 @@ async function main() {
     check('a NAS prompt still says when the documents do not answer', !nasSys.includes(ans.NO_ANSWER) && nasSys.includes('not found in the documents'))
     const gen = String(ans.buildGeneralAnswerMessages('bylaws', 'FAR for 200 sq m?', [], 'X', 'Uttarakhand')[0]!.content)
     check('the general answer prompt names the state and forbids "not found" and citations', gen.includes('Uttarakhand') && /Never write that something was not found/.test(gen) && /Never invent a clause number/.test(gen))
-    check('the general answer never attributes figures to a document or to the state, and does not confirm a named clause',
-      /Never attribute a figure or rule to a named document/.test(gen) && gen.includes("never present a figure as Uttarakhand's rule") && /do not confirm that it exists/.test(gen) && /checked against the applicable bylaws/.test(gen))
+    check('with a state, the general answer gives that state\'s own regulations, only confident figures, marked as not from the library',
+      /Answer for Uttarakhand: name the building regulations in force there/.test(gen) && gen.includes("Never present a guess as Uttarakhand's rule") &&
+      /not from the firm's document library/.test(gen) && /No LaTeX/.test(gen) && !/general practice in India/.test(gen) &&
+      /do not confirm that it exists/.test(gen) && /Never invent a clause or section number/.test(gen) && /impossible or nonsensical/.test(gen))
+    const genAll = String(ans.buildGeneralAnswerMessages('bylaws', 'FAR for 200 sq m?', [], 'X')[0]!.content)
+    check('with no state, the general answer stays all-India and never attributes figures to a document or confirms a named clause',
+      /Never attribute a figure or rule to a named document/.test(genAll) && /do not confirm that it exists/.test(genAll) && /checked against the applicable bylaws/.test(genAll) && /No LaTeX/.test(genAll))
     check('the conversation and then the question follow the prompt', msgs.length === 4 && msgs[3]?.role === 'user' && msgs[3]?.content === 'FAR for 200 sq m?')
     const footer = ans.sourcesFooter('FAR is 1.75 [3][1], also [1]; not [9]', passages, 'bylaws')
     check('sources list the cited passages, in citation order, with their numbers',

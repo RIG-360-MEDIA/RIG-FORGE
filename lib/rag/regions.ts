@@ -5,8 +5,9 @@
  * national and apply everywhere.
  *
  * Used by the Bylaws tab's State dropdown: with a state chosen, the search
- * covers that state's documents and the national ones, the state's first,
- * and leaves out every other state's (see retrieve in lib/rag/answer.ts).
+ * covers that state's own documents only: no national documents, no BIS
+ * model copies, no other state's (see stateScope, and retrieve in
+ * lib/rag/answer.ts).
  *
  * State names count only in folder names: a file name is too loose
  * ("UK(UP_Zamindari...)" is an Uttarakhand bill that names Uttar Pradesh).
@@ -115,23 +116,66 @@ export function statesOf(paths: string[]): string[] {
   return [...new Set(paths.map(stateOfPath).filter((s): s is string => s !== null))].sort()
 }
 
+/** A state's own documents: its bylaws, development authority regulations
+ * and government orders. Not its copy of the BIS model, which is a central
+ * model offered to the state, not the state's rules. */
+function isOwnDocument(path: string, state: string): boolean {
+  return stateOfPath(path) === state && !isModelRegulation(path)
+}
+
 /**
- * What a search with `state` chosen covers: its documents and the national
- * ones. `preferred` marks the state's own bylaws, ranked first; its copy of
- * the BIS model is searched but not preferred. The national BIS master is
- * left out when the state has its own copy (the same text twice).
+ * What a search with `state` chosen covers: that state's own documents
+ * ONLY. No national document (NBC, MBBL, ECBC, reference books, loose files
+ * in no state's folder), no BIS model regulations (the state's copy
+ * included), and no other state's documents. A state with none of its own
+ * gets an empty scope, which finds nothing: it never widens.
  */
 export function stateScope(paths: string[], state: string): { paths: string[]; preferred: Set<string> } {
-  const preferred = new Set<string>()
-  const allowed: string[] = []
-  const ownModel = paths.some((p) => stateOfPath(p) === state && isModelRegulation(p))
-  for (const p of paths) {
-    const s = stateOfPath(p)
-    const model = isModelRegulation(p)
-    if (s === state && !model) preferred.add(p)
-    if (s === state || (s === null && !(model && ownModel))) allowed.push(p)
-  }
-  return { paths: allowed, preferred }
+  const own = paths.filter((p) => isOwnDocument(p, state))
+  return { paths: own, preferred: new Set(own) }
+}
+
+/** The states with documents of their own (not just a BIS model copy), sorted. */
+export function statesWithOwnDocuments(paths: string[]): string[] {
+  return statesOf(paths.filter((p) => !isModelRegulation(p)))
+}
+
+/** Folders that hold national documents ("NBCs", "National Master Document",
+ * a "CENTRAL" folder made for them). */
+const CENTRAL_FOLDER = /\bnbcs?\b|\bnational\b|\bcentral\b/
+/** File names of national codes and regulations: the NBC (SP 7), the TCPO
+ * Model Building Bye-Laws, ECBC/ECSBC, the National Electrical Code, URDPFI,
+ * Indian Standards (IS 456), the harmonised accessibility guidelines, NDMA,
+ * CPWD, MoHUA and TCPO documents. */
+const CENTRAL_NAME = /\bnbc\b|national building code|\bsp[\s:]*7\b|\bmbbl\b|model building bye|\becs?bc\b|energy conservation (?:and sustainable )?building code|\bnec\b|national electrical code|\burdpfi\b|\bis[\s:]*\d{3,5}\b|harmoni[sz]ed guidelines|\bndma\b|\bcpwd\b|\bmohua\b|\btcpo\b/
+
+/**
+ * A central (national) document: in no state's folder, and recognised as
+ * national by its folder or its name (CENTRAL_FOLDER, CENTRAL_NAME), or the
+ * BIS model's national master. A loose file that is neither (a state G.O. or
+ * bill left in By_Laws, a design reference book) is NOT central: it is
+ * searched with "All states", never presented as a central rule. Put a
+ * central document in a "CENTRAL" folder to have it counted.
+ */
+export function isCentralDocument(path: string): boolean {
+  if (stateOfPath(path) !== null) return false
+  if (isModelRegulation(path)) return true // the national master; state copies have a state
+  const parts = path.split('/').filter(Boolean)
+  return parts.slice(0, -1).some((f) => CENTRAL_FOLDER.test(plain(f))) || CENTRAL_NAME.test(plain(parts[parts.length - 1] ?? ''))
+}
+
+/** The Central tab: central documents only, no state's. */
+export function centralScope(paths: string[]): { paths: string[]; preferred: Set<string> } {
+  return { paths: paths.filter(isCentralDocument), preferred: new Set() }
+}
+
+/**
+ * The Bylaws tab with "All states": every state's own documents and any
+ * file that is not central. Never a central document (those are the Central
+ * tab's) and never a BIS model copy (a central model, one per state).
+ */
+export function allStatesOnlyScope(paths: string[]): { paths: string[]; preferred: Set<string> } {
+  return { paths: paths.filter((p) => !isCentralDocument(p) && !isModelRegulation(p)), preferred: new Set() }
 }
 
 /**

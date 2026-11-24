@@ -51,6 +51,18 @@ add('trijya', UP, 2, 0.92, 'Basement: basements are permitted below the whole pl
 add('trijya', NBC, 0, 0.85, 'National Building Code of India 2016, Volume 1.')
 add('trijya', NBC, 1, 0.88, setbackTable('Mercantile (commercial) buildings', 'up to 600\n6.0\n3.0\n3.0\n3.0\n600-1000\n6.0\n4.5\n3.0\n3.0'))
 add('trijya', NBC, 2, 0.87, 'Basement: the basement shall be ventilated; fire safety per Part 4.')
+// BIS model regulations: Uttarakhand's copy, a state with only its copy
+// (Manipur) and the national master. Scored above MDDA, so any search that
+// lets the model in with Uttarakhand chosen fails.
+const BIS = '/utility data/By_Laws/BIS STANDARDIZED REGULATIONS 2023'
+const BIS_UK = `${BIS}/States/Uttarakhand/20240115-Uttarakhand-Final-Standardized-Development-and-Building-Regulations.pdf`
+const BIS_MN = `${BIS}/States/Manipur/20240115-Manipur-Final-Standardized-Development-and-Building-Regulations.pdf`
+const BIS_MASTER = `${BIS}/National Master Document/SP-732023-Standardized-Development-and-Building-Regulations-2023.pdf`
+for (const p of [BIS_UK, BIS_MN, BIS_MASTER]) {
+  add('trijya', p, 0, 0.9, 'Standardized Development and Building Regulations 2023, Bureau of Indian Standards.')
+  add('trijya', p, 1, 0.91, setbackTable('Mercantile / commercial', 'up to 600\n4.5\n3.0\n3.0\n3.0\n600-1000\n6.0\n3.0\n3.0\n3.0'))
+  add('trijya', p, 2, 0.9, 'Basement: permitted within the setback lines (BIS model).')
+}
 // Another organisation's copy of the Uttarakhand bylaws, scored highest of all.
 add('other-org', UK, 0, 0.99, 'Other organisation: Mussoorie Dehradun bye-laws.')
 add('other-org', UK, 1, 0.99, setbackTable('Commercial / office buildings', 'up to 600\n9.9\n9.9\n9.9\n9.9'))
@@ -112,12 +124,15 @@ async function main() {
   const ans = await import('../lib/rag/answer')
   const regions = await import('../lib/rag/regions')
   const inOrg = <T>(org: string, fn: () => Promise<T>) => runWithOrg(org, fn)
-  const allowed = new Set([UK, UK_GO, NBC])
+  // With Uttarakhand chosen: its own documents only. Not the NBC, not the BIS copies.
+  const allowed = new Set([UK, UK_GO])
   const where = (p: { path: string }) => regions.stateOfPath(p.path) ?? 'national'
 
   console.log('\n## States offered')
   const states = await inOrg('trijya', () => ans.bylawsStates())
-  check('dropdown lists Uttar Pradesh and Uttarakhand', JSON.stringify(states) === '["Uttar Pradesh","Uttarakhand"]', JSON.stringify(states))
+  check('dropdown lists Manipur (BIS copy only), Uttar Pradesh and Uttarakhand', JSON.stringify(states) === '["Manipur","Uttar Pradesh","Uttarakhand"]', JSON.stringify(states))
+  const own = await inOrg('trijya', () => ans.bylawsStatesWithOwnDocuments())
+  check('only Uttar Pradesh and Uttarakhand have bylaws of their own', JSON.stringify(own) === '["Uttar Pradesh","Uttarakhand"]', JSON.stringify(own))
   const otherStates = await inOrg('nobody', () => ans.bylawsStates())
   check('an organisation with no documents gets no states', otherStates.length === 0, JSON.stringify(otherStates))
   const scrollsBefore = scrolls
@@ -136,7 +151,10 @@ async function main() {
     const scoped = await inOrg('trijya', () => ans.retrieve('bylaws', q, 8, { state: 'Uttarakhand' }))
     console.log(`   with Uttarakhand: ${scoped.passages.map((p) => `${where(p)}:${p.chunkIndex}`).join(', ') || '(none)'}${scoped.allMatched ? '' : ' (closest only)'}`)
     const leaked = scoped.passages.filter((p) => !allowed.has(p.path))
-    check('no Uttar Pradesh passage with Uttarakhand chosen', leaked.length === 0, leaked.map((p) => p.path).join(', '))
+    check('no Uttar Pradesh, NBC or BIS passage with Uttarakhand chosen', leaked.length === 0, leaked.map((p) => p.path).join(', '))
+    check('every search with Uttarakhand chosen was limited to its own two documents',
+      searches.every((f) => (f?.must ?? []).some((c) => c.key === 'path' && JSON.stringify([...(c.match?.any ?? [])].sort()) === JSON.stringify([UK, UK_GO].sort()))),
+      JSON.stringify(searches.map((f) => (f?.must ?? []).find((c) => c.key === 'path')?.match?.any)))
     check('every Qdrant search carried the state filter', searches.length > 0 && searches.every((f) => (f?.must ?? []).some((c) => c.key === 'path' && Array.isArray(c.match?.any))), `${searches.length} searches`)
     check('every Qdrant search carried the organisation filter', searches.every((f) => (f?.must ?? []).some((c) => c.key === 'organizationId' && c.match?.value === 'trijya')))
     check('no other organisation\'s passage', scoped.passages.every((p) => !p.text.startsWith('Other organisation') && !p.text.includes('9.9')))
@@ -161,14 +179,55 @@ async function main() {
   check('another organisation sees only its own passages', foreign.passages.length > 0 && foreign.passages.every((p) => p.text.includes('9.9') || p.text.startsWith('Other organisation')), foreign.passages.map((p) => p.text.slice(0, 30)).join(' | '))
   const stranger = await inOrg('nobody', () => ans.retrieve('bylaws', 'setback for 500 sq m commercial plot', 8, { state: 'Uttarakhand' }))
   check('an organisation with no documents gets nothing (an empty scope never widens to everything)', stranger.passages.length === 0, String(stranger.passages.length))
+  searches.length = 0
+  const manipur = await inOrg('trijya', () => ans.retrieve('bylaws', 'setback for 500 sq m commercial plot', 8, { state: 'Manipur' }))
+  check('Manipur (only a BIS copy) gets no passages: not its BIS copy, not the NBC, not another state', manipur.passages.length === 0, manipur.passages.map((p) => p.path).join(', '))
+  check('  and no Qdrant search was sent for it (an empty scope is never sent as "all")', searches.length === 0, `${searches.length} searches`)
+
+  console.log('\n## Central tab: central documents only')
+  const centralAllowed = new Set([NBC, BIS_MASTER])
+  for (const q of ['setback for 500 sq m commercial plot', 'basement rules', '500 वर्ग मीटर व्यावसायिक भूखंड के लिए सेट बैक']) {
+    searches.length = 0
+    const c = await inOrg('trijya', () => ans.retrieve('bylaws', q, 8, { area: 'central' }))
+    const out = c.passages.filter((p) => !centralAllowed.has(p.path))
+    check(`central "${q.slice(0, 30)}": only NBC and the BIS master (no MDDA, UP or BIS state copy)`, c.passages.length > 0 && out.length === 0, out.map((p) => p.path).join(', ') || `${c.passages.length} passages`)
+    check('  every Qdrant search was limited to the central documents',
+      searches.length > 0 && searches.every((f) => (f?.must ?? []).some((cnd) => cnd.key === 'path' && JSON.stringify([...(cnd.match?.any ?? [])].sort()) === JSON.stringify([...centralAllowed].sort()))))
+    const cw = await inOrg('trijya', () => ans.widerRetrieval(c)())
+    check('  the wider second search stays central', cw.area === 'central' && cw.passages.every((p) => centralAllowed.has(p.path)), cw.passages.filter((p) => !centralAllowed.has(p.path)).map((p) => p.path).join(', '))
+  }
+  const cdocs = await inOrg('trijya', () => ans.centralDocuments())
+  check('the Central tab lists exactly the documents it searches', JSON.stringify([...cdocs].sort()) === JSON.stringify([...centralAllowed].sort()), JSON.stringify(cdocs))
+  const otherCentral = await inOrg('other-org', () => ans.retrieve('bylaws', 'setback for 500 sq m commercial plot', 8, { area: 'central' }))
+  check('another organisation with no central documents gets nothing from Trijya\'s', otherCentral.passages.length === 0, otherCentral.passages.map((p) => p.path).join(', '))
+
+  console.log('\n## Bylaws tab, All states: state documents only')
+  const stateAllowed = new Set([UK, UK_GO, UP])
+  for (const q of ['setback for 500 sq m commercial plot', 'basement rules']) {
+    searches.length = 0
+    const a = await inOrg('trijya', () => ans.retrieve('bylaws', q, 8, { area: 'all-states' }))
+    const out = a.passages.filter((p) => !stateAllowed.has(p.path))
+    check(`all states "${q}": MDDA and UP only, no NBC or BIS`, a.passages.length > 0 && out.length === 0, out.map((p) => p.path).join(', '))
+    check('  every Qdrant search was limited to the state documents',
+      searches.length > 0 && searches.every((f) => (f?.must ?? []).some((cnd) => cnd.key === 'path' && JSON.stringify([...(cnd.match?.any ?? [])].sort()) === JSON.stringify([...stateAllowed].sort()))))
+  }
+  const chat = await inOrg('trijya', () => ans.retrieve('bylaws', 'basement rules', 8))
+  check('the chat (no state, no area) still searches state and central documents', chat.passages.some((p) => p.path === NBC) && chat.passages.some((p) => p.path === UP))
 
   console.log('\n## Load: 50 questions at once')
   const t0 = Date.now()
   const many = await Promise.all(Array.from({ length: 50 }, (_, i) =>
     inOrg(i % 5 === 0 ? 'other-org' : 'trijya', () => ans.retrieve('bylaws', `setback for ${300 + i * 10} sq m commercial plot`, 8, { state: 'Uttarakhand' }))
       .then((x) => ({ org: i % 5 === 0 ? 'other-org' : 'trijya', x }))))
-  const crossed = many.filter(({ org, x }) => x.passages.some((p) => (org === 'trijya') === (p.text.includes('9.9') || p.text.startsWith('Other organisation')) || p.path === UP))
+  const crossed = many.filter(({ org, x }) => x.passages.some((p) => (org === 'trijya') === (p.text.includes('9.9') || p.text.startsWith('Other organisation')) || !allowed.has(p.path)))
   check('50 concurrent questions from two organisations: none crosses organisation or state', crossed.length === 0, `${crossed.length} crossed, ${Date.now() - t0} ms`)
+  // Central, one state and all states at once: none takes another's documents.
+  const mixed = await Promise.all(Array.from({ length: 60 }, (_, i) => {
+    const opts = i % 3 === 0 ? { area: 'central' as const } : i % 3 === 1 ? { state: 'Uttarakhand' } : { area: 'all-states' as const }
+    const ok = i % 3 === 0 ? centralAllowed : i % 3 === 1 ? allowed : stateAllowed
+    return inOrg('trijya', () => ans.retrieve('bylaws', `setback for ${300 + i * 10} sq m commercial plot`, 8, opts)).then((x) => x.passages.filter((p) => !ok.has(p.path)).length)
+  }))
+  check('60 concurrent Central / Uttarakhand / All states questions: none takes another tab\'s documents', mixed.every((n) => n === 0), `${mixed.filter((n) => n > 0).length} leaked`)
 
   server.close()
   console.log(`\n${pass} passed, ${fail} failed`)
