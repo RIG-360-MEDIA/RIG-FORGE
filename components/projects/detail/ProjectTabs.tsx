@@ -2,15 +2,15 @@
 
 import { useEffect, useState, useCallback } from 'react'
 
-export type ProjectTabId = 'overview' | 'tasklist' | 'tasks' | 'updates' | 'payments' | 'proposals'
+export type ProjectTabId = 'overview' | 'tasklist' | 'tasks' | 'updates' | 'payments'
 
 function parseHash(hash: string): ProjectTabId {
   const h = hash.replace(/^#/, '').toLowerCase()
-  if (h === 'tasklist' || h === 'tasks' || h === 'updates' || h === 'payments' || h === 'proposals') return h
+  if (h === 'tasklist' || h === 'tasks' || h === 'updates' || h === 'payments') return h
   return 'overview'
 }
 
-/** showPayments: ADMIN / SUPER_ADMIN only, for Payments and Proposals (the page decides; the API checks again). */
+/** showPayments: ADMIN / SUPER_ADMIN only (the page decides; the API checks again). Proposals live in Workspace. */
 export default function ProjectTabs({ showPayments = false }: { showPayments?: boolean }) {
   const [active, setActive] = useState<ProjectTabId>('overview')
 
@@ -35,11 +35,11 @@ export default function ProjectTabs({ showPayments = false }: { showPayments?: b
     { id: 'tasklist', label: 'TASK LIST' },
     { id: 'tasks', label: 'TASKS' },
     { id: 'updates', label: 'UPDATES' },
-    ...(showPayments ? [{ id: 'payments' as const, label: 'PAYMENTS' }, { id: 'proposals' as const, label: 'PROPOSALS' }] : []),
+    ...(showPayments ? [{ id: 'payments' as const, label: 'PAYMENTS' }] : []),
   ]
 
   return (
-    // Six tabs do not fit a phone screen: the row scrolls sideways instead of widening the page.
+    // Five tabs do not fit a phone screen: the row scrolls sideways instead of widening the page.
     <div className="flex overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       {tabs.map((t) => {
         const isActive = active === t.id

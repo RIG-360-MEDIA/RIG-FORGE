@@ -1,8 +1,11 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Code2, FolderOpen, HardDrive, Mail, ScrollText, Users, Video } from 'lucide-react'
+import { Code2, FileSignature, FolderOpen, HardDrive, Mail, ScrollText, Users, Video } from 'lucide-react'
 
+import { useAuth } from '@/hooks/useAuth'
+import { isAdminRole } from '@/lib/roles'
+import ProposalsPanel from '@/components/workspace/ProposalsPanel'
 import MailPanel from '@/components/workspace/MailPanel'
 import CodePanel from '@/components/workspace/CodePanel'
 import MeetPanel from '@/components/workspace/MeetPanel'
@@ -18,6 +21,7 @@ const TABS = [
   { key: 'drive', label: 'Drive', icon: HardDrive },
   { key: 'files', label: 'Files', icon: FolderOpen },
   { key: 'bylaws', label: 'Bylaws', icon: ScrollText },
+  { key: 'proposals', label: 'Proposals', icon: FileSignature },
   { key: 'contacts', label: 'Contacts', icon: Users },
 ] as const
 
@@ -68,11 +72,18 @@ export default function WorkspacePage() {
     return () => { alive = false }
   }, [])
 
+  // Proposals carry fees and bank details: Admin and Super Admin only (the API
+  // checks again), and only for Trijya (the company with the NAS), whose
+  // letterhead they print on.
+  const { user, loading: authLoading } = useAuth()
+  const canSeeProposals = !!user && isAdminRole(user.role) && !user.isExternal
+
   const tabs = TABS.filter(
     (t) =>
       (t.key !== 'code' || githubEnabled) &&
       (t.key !== 'files' || nasEnabled) &&
-      (t.key !== 'bylaws' || nasEnabled), // bylaws RAG is NAS-org-scoped, same gate as Files
+      (t.key !== 'bylaws' || nasEnabled) && // bylaws RAG is NAS-org-scoped, same gate as Files
+      (t.key !== 'proposals' || (nasEnabled && canSeeProposals)),
   )
 
   // An invite link (?call=<room>) drops the user straight onto the Meet tab;
@@ -95,21 +106,23 @@ export default function WorkspacePage() {
   // A tab the user cannot see (e.g. ?tab=files for a company without the NAS,
   // once that is known) falls back to Mail instead of an empty panel.
   useEffect(() => {
-    if ((tab === 'code' && githubChecked && !githubEnabled) || ((tab === 'files' || tab === 'bylaws') && nasChecked && !nasEnabled)) {
+    if ((tab === 'code' && githubChecked && !githubEnabled) || ((tab === 'files' || tab === 'bylaws') && nasChecked && !nasEnabled)
+      || (tab === 'proposals' && ((nasChecked && !nasEnabled) || (!authLoading && !canSeeProposals)))) {
       setTab('mail', { replace: true })
     }
-  }, [tab, githubEnabled, nasEnabled, githubChecked, nasChecked])
+  }, [tab, githubEnabled, nasEnabled, githubChecked, nasChecked, authLoading, canSeeProposals])
 
   return (
     <div className="p-4 sm:p-6 max-w-[1400px] mx-auto">
       <h1 className="font-mono text-xs uppercase tracking-widest text-text-secondary mb-3">Workspace</h1>
-      <div className="flex gap-1 mb-4 border-b border-border-default">
+      {/* On a phone the tabs do not all fit: the row scrolls sideways instead of widening the page. */}
+      <div className="flex gap-1 mb-4 border-b border-border-default overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {tabs.map((t) => (
           <button
             key={t.key}
             type="button"
-            onClick={() => setTab(t.key)}
-            className={`inline-flex items-center gap-1.5 px-4 py-2 text-sm font-mono -mb-px border-b-2 transition-colors ${
+            onClick={(e) => { setTab(t.key); e.currentTarget.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' }) }}
+            className={`inline-flex shrink-0 whitespace-nowrap items-center gap-1.5 px-4 py-2 text-sm font-mono -mb-px border-b-2 transition-colors ${
               tab === t.key ? 'border-accent-ink text-text-primary' : 'border-transparent text-text-secondary hover:text-text-primary'
             }`}
           >
@@ -125,6 +138,7 @@ export default function WorkspacePage() {
       {tab === 'drive' && <DrivePanel />}
       {tab === 'files' && <FilesPanel />}
       {tab === 'bylaws' && <BylawsPanel />}
+      {tab === 'proposals' && canSeeProposals && <ProposalsPanel />}
       {tab === 'contacts' && <ContactsPanel />}
     </div>
   )

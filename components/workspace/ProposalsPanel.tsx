@@ -1,18 +1,21 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
 import type { ApiResponse } from '@/lib/types'
 import {
-  DISCIPLINES, PROJECT_TYPES, PROPOSAL_STATUS_TEXT, buildRefNo, financialYear, rupeeFigure, totalRate,
+  DISCIPLINES, FIRM_NAME, PROJECT_TYPES, PROPOSAL_STATUS_TEXT, buildRefNo, financialYear, rupeeFigure, suggestedProjectName, totalRate,
   type Discipline, type ProposalContent, type ProposalSettingsData, type ProposalStage, type ProposalStatus, type ProposalView,
 } from '@/lib/proposal-types'
 import { STANDARD_SQFT_SCHEDULE } from '@/lib/payment-types'
-import { ErrorLine, Modal, field, ghostBtn, label, primaryBtn } from './PaymentsTab'
+import { ErrorLine, Modal, field, ghostBtn, label, primaryBtn } from '@/components/projects/detail/PaymentsTab'
 
-// Fee proposals for a project: the AI drafts the project-specific wording,
-// fees and terms come from the form and Firm details, the admin edits and
-// downloads it as a PDF in the firm's letterhead, and an accepted proposal
-// sets up the project's payments. ADMIN and SUPER_ADMIN only.
+// Fee proposals, in Workspace: a proposal goes to a client before there is a
+// project. The AI drafts the project-specific wording, fees and terms come
+// from the form and Firm details, the admin edits it and downloads the PDF in
+// Trijya's letterhead. When the client accepts, a project is created (or an
+// existing one picked) and its payments are set up from the fee table.
+// ADMIN and SUPER_ADMIN only.
 
 async function api<T>(url: string, method = 'GET', body?: unknown): Promise<{ data: T | null; error: string | null }> {
   try {
@@ -27,7 +30,9 @@ async function api<T>(url: string, method = 'GET', body?: unknown): Promise<{ da
 
 const lines = (t: string) => t.split('\n').map((x) => x.trim()).filter(Boolean)
 const showDate = (iso: string) => new Date(`${iso.slice(0, 10)}T00:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
-const today = () => new Date().toISOString().slice(0, 10)
+/** Today in India (the financial year turns on 1 April, IST). */
+const today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+const pdfUrl = (id: string) => `/api/proposals/${id}/pdf`
 
 const STATUS_STYLE: Record<ProposalStatus, string> = {
   DRAFT: 'bg-surface-sunken text-secondary',
@@ -85,9 +90,7 @@ function StagesEditor({ stages, onChange, disabled }: { stages: ProposalStage[];
 
 // ─── New proposal ────────────────────────────────────────────────────────────
 
-function NewProposalModal({ projectId, projectName, onClose, onCreated }: {
-  projectId: string; projectName: string; onClose: () => void; onCreated: (p: ProposalView) => void
-}) {
+function NewProposalModal({ onClose, onCreated }: { onClose: () => void; onCreated: (p: ProposalView) => void }) {
   const [salutation, setSalutation] = useState('Sir')
   const [name, setName] = useState('')
   const [city, setCity] = useState('')
@@ -115,7 +118,7 @@ function NewProposalModal({ projectId, projectName, onClose, onCreated }: {
   async function create() {
     setBusy(true); setError(null)
     const num = (t: string) => t.replace(/[,\s₹]/g, '')
-    const r = await api<ProposalView>(`/api/projects/${projectId}/proposals`, 'POST', {
+    const r = await api<ProposalView>('/api/proposals', 'POST', {
       client: { salutation, name, city }, projectType, location, disciplines, notes, date: today(),
       fees: {
         stages, areaSqft: area, gstPercent: num(gst), landscapePerAcre: num(landscape) || 0,
@@ -129,7 +132,7 @@ function NewProposalModal({ projectId, projectName, onClose, onCreated }: {
 
   return (
     <Modal title="New proposal" onClose={busy ? () => {} : onClose} wide>
-      <p className="text-sm text-secondary">For <b className="text-primary">{projectName}</b>. The AI writes the letter, project brief and scope of work from these details; the fees and terms below are used exactly as given.</p>
+      <p className="text-sm text-secondary">The AI writes the letter, project brief and scope of work from these details; the fees and terms below are used exactly as given. No project is needed yet: it is created when the client accepts.</p>
       <div className="grid grid-cols-1 sm:grid-cols-[7rem_1fr_1fr] gap-3">
         <label className={label}>Dear
           <select value={salutation} onChange={(e) => setSalutation(e.target.value)} className={field}>
@@ -194,34 +197,64 @@ function NewProposalModal({ projectId, projectName, onClose, onCreated }: {
 
 // ─── Accept ──────────────────────────────────────────────────────────────────
 
-function AcceptModal({ projectId, proposal, onClose, onDone }: {
-  projectId: string; proposal: ProposalView; onClose: () => void; onDone: (p: ProposalView, paymentsCreated: boolean) => void
+type AcceptResult = { proposal: ProposalView; paymentsCreated: boolean; projectId: string; projectCreated: boolean }
+
+function AcceptModal({ proposal, onClose, onDone }: {
+  proposal: ProposalView; onClose: () => void; onDone: (r: AcceptResult) => void
 }) {
   const [area, setArea] = useState(proposal.content.fees.areaSqft ?? '')
   const [acres, setAcres] = useState('')
+  const [mode, setMode] = useState<'new' | 'existing'>('new')
+  const [projectName, setProjectName] = useState(suggestedProjectName(proposal.content))
+  const [projects, setProjects] = useState<{ id: string; name: string }[] | null>(null)
+  const [projectId, setProjectId] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const f = proposal.content.fees
   const sq = Number(area.replace(/[,\s]/g, ''))
   const fee = sq > 0 ? Math.round(totalRate(f.stages) * sq) + (f.landscapePerAcre && Number(acres) > 0 ? Math.round(f.landscapePerAcre * Number(acres)) : 0) : null
 
+  useEffect(() => {
+    if (mode !== 'existing' || projects) return
+    void api<{ items: { id: string; name: string }[] }>('/api/projects?limit=100').then((r) => {
+      if (r.error) setError(r.error)
+      setProjects(r.data?.items ?? [])
+    })
+  }, [mode, projects])
+
   async function save() {
     setBusy(true); setError(null)
-    const r = await api<{ proposal: ProposalView; paymentsCreated: boolean }>(`/api/projects/${projectId}/proposals/${proposal.id}/accept`, 'POST', { area, landscapeAcres: acres })
+    const r = await api<AcceptResult>(`/api/proposals/${proposal.id}/accept`, 'POST', {
+      area, landscapeAcres: acres, ...(mode === 'existing' ? { projectId } : { projectName }),
+    })
     setBusy(false)
     if (r.error) { setError(r.error); return }
-    if (r.data) onDone(r.data.proposal, r.data.paymentsCreated)
+    if (r.data) onDone(r.data)
   }
+  const ready = sq > 0 && (mode === 'new' ? projectName.trim().length > 0 : !!projectId)
   return (
     <Modal title="Client accepted the proposal" onClose={onClose}>
-      <p className="text-sm text-secondary">The fee table becomes this project&apos;s payment schedule: every stage at its rate x the area, with GST {f.gstPercent}%. The area can be revised later in Payments.</p>
+      <p className="text-sm text-secondary">The proposal becomes a project, and its fee table becomes the project&apos;s payment schedule: every stage at its rate x the area, with GST {f.gstPercent}%. The area can be revised later in Payments.</p>
+      <div className="space-y-2">
+        <label className="flex items-center gap-2 text-sm text-primary"><input type="radio" checked={mode === 'new'} onChange={() => setMode('new')} className="accent-accent" />Create a new project</label>
+        {mode === 'new' && <label className={`${label} ml-6`}>Project name<input value={projectName} onChange={(e) => setProjectName(e.target.value)} maxLength={100} className={field} /></label>}
+        <label className="flex items-center gap-2 text-sm text-primary"><input type="radio" checked={mode === 'existing'} onChange={() => setMode('existing')} className="accent-accent" />Add to a project that already exists</label>
+        {mode === 'existing' && (
+          <label className={`${label} ml-6`}>Project
+            <select value={projectId} onChange={(e) => setProjectId(e.target.value)} className={field}>
+              <option value="">{projects ? 'Choose a project...' : 'Loading projects...'}</option>
+              {(projects ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </label>
+        )}
+      </div>
       <label className={label}>Built-up area (sq ft)<input autoFocus value={area} onChange={(e) => setArea(e.target.value)} inputMode="decimal" placeholder="e.g. 12,500" className={field} /></label>
       {!!f.landscapePerAcre && <label className={label}>Landscape area (acres, optional)<input value={acres} onChange={(e) => setAcres(e.target.value)} inputMode="decimal" placeholder="e.g. 2.5" className={field} /></label>}
       {fee !== null && <p className="text-sm text-secondary">Fee <b className="text-primary">₹{rupeeFigure(fee)}</b>{f.gstPercent > 0 ? ` + GST ₹${rupeeFigure(Math.round(fee * f.gstPercent) / 100)}` : ''}</p>}
       <ErrorLine text={error} />
       <div className="flex justify-end gap-2">
         <button type="button" onClick={onClose} className={ghostBtn}>Cancel</button>
-        <button type="button" disabled={busy || !(sq > 0)} onClick={() => void save()} className={primaryBtn}>{busy ? 'Saving...' : 'Accept and set up payments'}</button>
+        <button type="button" disabled={busy || !ready} onClick={() => void save()} className={primaryBtn}>{busy ? 'Saving...' : mode === 'new' ? 'Accept and create the project' : 'Accept and set up payments'}</button>
       </div>
     </Modal>
   )
@@ -229,8 +262,8 @@ function AcceptModal({ projectId, proposal, onClose, onDone }: {
 
 // ─── Editor ──────────────────────────────────────────────────────────────────
 
-function ProposalEditor({ projectId, initial, onBack, onChanged }: {
-  projectId: string; initial: ProposalView; onBack: () => void; onChanged: (p: ProposalView | null) => void
+function ProposalEditor({ initial, onBack, onChanged }: {
+  initial: ProposalView; onBack: () => void; onChanged: (p: ProposalView | null) => void
 }) {
   const [p, setP] = useState(initial)
   const [c, setC] = useState<ProposalContent>(initial.content)
@@ -240,7 +273,7 @@ function ProposalEditor({ projectId, initial, onBack, onChanged }: {
   const [notice, setNotice] = useState<string | null>(null)
   const [accepting, setAccepting] = useState(false)
   const readOnly = p.status !== 'DRAFT'
-  const url = `/api/projects/${projectId}/proposals/${p.id}`
+  const url = `/api/proposals/${p.id}`
 
   function edit(patch: Partial<ProposalContent>) { setC((x) => ({ ...x, ...patch })); setDirty(true) }
   function editFees(patch: Partial<ProposalContent['fees']>) { setC((x) => ({ ...x, fees: { ...x.fees, ...patch } })); setDirty(true) }
@@ -255,9 +288,18 @@ function ProposalEditor({ projectId, initial, onBack, onChanged }: {
     return r.data
   }
   const save = () => run('save', 'PATCH', { content: c })
-  async function openPdf() {
+  /** Preview on screen, in a new tab. */
+  async function preview() {
     if (dirty && !(await save())) return
-    window.open(`/print/proposals/${projectId}/${p.id}`, '_blank', 'noopener')
+    window.open(`/print/proposals/${p.id}`, '_blank', 'noopener')
+  }
+  /** Download the PDF file (unsaved edits are saved first, so the file has them). */
+  async function download() {
+    if (dirty && !(await save())) return
+    const a = document.createElement('a')
+    a.href = pdfUrl(p.id); a.download = ''
+    document.body.appendChild(a); a.click(); a.remove()
+    setNotice('Downloading the PDF. It is saved in your Downloads.')
   }
   async function remove() {
     if (!window.confirm(`Delete draft ${p.refNo}? Its reference number will not be used again.`)) return
@@ -282,7 +324,8 @@ function ProposalEditor({ projectId, initial, onBack, onChanged }: {
         <div className="flex flex-wrap gap-2">
           {!readOnly && <button type="button" disabled={!!busy} onClick={() => void run('redraft', 'PATCH', { redraft: true, notes: c.notes }, 'Wording rewritten. Fees were kept as they were.')} className="px-3 py-2 text-xs font-medium rounded border border-border-default text-primary hover:border-accent">{busy === 'redraft' ? 'Rewriting...' : 'Rewrite wording with AI'}</button>}
           {!readOnly && <button type="button" disabled={!!busy || !dirty} onClick={() => void save()} className="px-3 py-2 text-xs font-medium rounded border border-border-default text-primary hover:border-accent disabled:opacity-40">{busy === 'save' ? 'Saving...' : dirty ? 'Save changes' : 'Saved'}</button>}
-          <button type="button" disabled={!!busy} onClick={() => void openPdf()} className={primaryBtn}>Preview and download PDF</button>
+          <button type="button" disabled={!!busy} onClick={() => void preview()} className="px-3 py-2 text-xs font-medium rounded border border-border-default text-primary hover:border-accent">Preview</button>
+          <button type="button" disabled={!!busy} onClick={() => void download()} className={primaryBtn}>Download PDF</button>
         </div>
       </div>
       {notice && <div role="status" className="text-sm text-status-success bg-status-success/10 border border-status-success/30 rounded-lg px-3 py-2">{notice}</div>}
@@ -291,8 +334,8 @@ function ProposalEditor({ projectId, initial, onBack, onChanged }: {
       <div className="flex flex-wrap gap-2 rounded-lg border border-border-default bg-surface-raised/40 px-4 py-3 text-sm">
         <span className="text-secondary mr-auto">
           {p.status === 'DRAFT' && 'Next: download the PDF, send it to the client, then mark it as sent.'}
-          {p.status === 'SENT' && `Sent ${p.sentAt ? showDate(p.sentAt) : ''}. When the client agrees, accept it to set up payments.`}
-          {p.status === 'ACCEPTED' && `Accepted ${p.acceptedAt ? showDate(p.acceptedAt) : ''}. Its fee table is the project's payment schedule (Payments tab).`}
+          {p.status === 'SENT' && `Sent ${p.sentAt ? showDate(p.sentAt) : ''}. When the client agrees, accept it: it becomes a project with its payment schedule.`}
+          {p.status === 'ACCEPTED' && <>Accepted {p.acceptedAt ? showDate(p.acceptedAt) : ''}.{p.projectId && <> Project: <Link href={`/dashboard/projects/${p.projectId}#payments`} className="font-medium text-accent hover:underline">{p.projectName ?? 'open project'}</Link> (its fee table is the project&apos;s payment schedule).</>}</>}
           {p.status === 'DECLINED' && 'The client declined. Reopen it to revise and send again.'}
         </span>
         {p.status === 'DRAFT' && <button type="button" disabled={!!busy || dirty} title={dirty ? 'Save first' : ''} onClick={() => void run('sent', 'PATCH', { status: 'SENT' }, 'Marked as sent. The letterhead and terms are now fixed for this proposal.')} className="text-xs font-semibold text-accent hover:underline disabled:opacity-40">Mark as sent</button>}
@@ -358,9 +401,12 @@ function ProposalEditor({ projectId, initial, onBack, onChanged }: {
         <p className="text-xs text-muted">Client responsibilities, reimbursables, indemnity, copyright, interpretation and arbitration come from Firm details and are the same in every proposal.</p>
       </section>
 
-      {accepting && <AcceptModal projectId={projectId} proposal={p} onClose={() => setAccepting(false)} onDone={(np, created) => {
+      {accepting && <AcceptModal proposal={p} onClose={() => setAccepting(false)} onDone={(r) => {
         setAccepting(false)
-        done(np, created ? 'Accepted. The payment schedule is set up in the Payments tab.' : 'Accepted. This project already had payments set up, so they were left as they are.')
+        done(r.proposal, r.projectCreated
+          ? `Accepted. The project "${r.proposal.projectName ?? ''}" was created, with its payment schedule in its Payments tab.`
+          : r.paymentsCreated ? 'Accepted. The payment schedule is set up in the project\'s Payments tab.'
+            : 'Accepted. This project already had payments set up, so they were left as they are.')
       }} />}
     </div>
   )
@@ -373,6 +419,8 @@ function FirmDetailsModal({ initial, onClose, onSaved }: { initial: ProposalSett
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const f = s.firm
+  // A number saved in an earlier financial year does not carry over: a new year starts at 1.
+  const nextThisYear = !f.nextSerialFy || f.nextSerialFy === financialYear(today()) ? f.nextSerial : 1
   const setF = (patch: Partial<typeof f>) => setS((x) => ({ ...x, firm: { ...x.firm, ...patch } }))
   const setBank = (patch: Partial<typeof f.bank>) => setS((x) => ({ ...x, firm: { ...x.firm, bank: { ...x.firm.bank, ...patch } } }))
   const setT = (patch: Partial<typeof s.terms>) => setS((x) => ({ ...x, terms: { ...x.terms, ...patch } }))
@@ -387,7 +435,7 @@ function FirmDetailsModal({ initial, onClose, onSaved }: { initial: ProposalSett
   }
   async function save() {
     setBusy(true); setError(null)
-    const r = await api<{ data: ProposalSettingsData }>('/api/proposal-settings', 'PUT', s)
+    const r = await api<{ data: ProposalSettingsData }>('/api/proposal-settings', 'PUT', { ...s, firm: { ...s.firm, nextSerial: nextThisYear } })
     setBusy(false)
     if (r.error) { setError(r.error); return }
     if (r.data) onSaved(r.data.data)
@@ -401,7 +449,10 @@ function FirmDetailsModal({ initial, onClose, onSaved }: { initial: ProposalSett
       <p className="text-sm text-secondary">Set once for the whole company. Every proposal uses these; a proposal already sent keeps the details it was sent with.</p>
       <h3 className="text-xs font-semibold uppercase tracking-wider text-accent">Letterhead</h3>
       <div className="grid grid-cols-2 gap-3">
-        {input('name', 'Firm name', 'e.g. Trijya Design Studio')}
+        <div className={label}>Firm name
+          <p className={`${field} bg-surface-sunken cursor-not-allowed normal-case tracking-normal`} aria-readonly="true">{FIRM_NAME}</p>
+          <span className="text-[11px] normal-case tracking-normal text-muted">Fixed. Every proposal is from {FIRM_NAME}.</span>
+        </div>
         {input('tagline', 'Services line', 'ARCHITECTURE | VASTU | INTERIOR | LANDSCAPE | PLANNING')}
         {input('address', 'Address')}
         {input('homeState', 'Home state (for out-of-state visits)', 'e.g. Uttarakhand')}
@@ -421,9 +472,9 @@ function FirmDetailsModal({ initial, onClose, onSaved }: { initial: ProposalSett
       <h3 className="text-xs font-semibold uppercase tracking-wider text-accent">Reference numbers</h3>
       <div className="grid grid-cols-2 gap-3">
         {input('refPrefix', 'Prefix', 'e.g. TDS/Offer/DD/Arch')}
-        <label className={label}>Next number<input value={String(f.nextSerial)} inputMode="numeric" onChange={(e) => setF({ nextSerial: Number(e.target.value) || 1 })} className={field} /></label>
+        <label className={label}>Next number ({financialYear(today())})<input value={String(nextThisYear)} inputMode="numeric" onChange={(e) => setF({ nextSerial: Number(e.target.value) || 1, nextSerialFy: financialYear(today()) })} className={field} /></label>
       </div>
-      <p className="text-xs text-muted">The next proposal will be <b className="text-primary">{buildRefNo(f.refPrefix, f.nextSerial, financialYear(today()))}</b>.</p>
+      <p className="text-xs text-muted">The next proposal will be <b className="text-primary">{buildRefNo(f.refPrefix, nextThisYear, financialYear(today()))}</b>. Numbers start again from 1 on 1 April, with the new financial year.</p>
       <h3 className="text-xs font-semibold uppercase tracking-wider text-accent">Payment details printed on proposals</h3>
       <div className="grid grid-cols-2 gap-3">
         {input('chequePayee', 'Cheques in favour of')}
@@ -453,22 +504,30 @@ function FirmDetailsModal({ initial, onClose, onSaved }: { initial: ProposalSett
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
-export default function ProposalsTab({ projectId, projectName }: { projectId: string; projectName: string }) {
+const FILTERS: { key: 'ALL' | ProposalStatus; label: string }[] = [
+  { key: 'ALL', label: 'All' }, { key: 'DRAFT', label: 'Drafts' }, { key: 'SENT', label: 'Sent' },
+  { key: 'ACCEPTED', label: 'Accepted' }, { key: 'DECLINED', label: 'Declined' },
+]
+
+export default function ProposalsPanel() {
   const [list, setList] = useState<ProposalView[] | null>(null)
   const [settings, setSettings] = useState<ProposalSettingsData | null>(null)
+  const [saved, setSaved] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [open, setOpen] = useState<ProposalView | null>(null)
   const [creating, setCreating] = useState(false)
   const [firmOpen, setFirmOpen] = useState(false)
+  const [filter, setFilter] = useState<'ALL' | ProposalStatus>('ALL')
+  const [q, setQ] = useState('')
 
   const load = useCallback(async () => {
     const [a, b] = await Promise.all([
-      api<ProposalView[]>(`/api/projects/${projectId}/proposals`),
-      api<{ data: ProposalSettingsData }>('/api/proposal-settings'),
+      api<ProposalView[]>('/api/proposals'),
+      api<{ data: ProposalSettingsData; saved: boolean }>('/api/proposal-settings'),
     ])
     if (a.error || b.error) setError(a.error ?? b.error)
-    setList(a.data ?? []); setSettings(b.data?.data ?? null)
-  }, [projectId])
+    setList(a.data ?? []); setSettings(b.data?.data ?? null); setSaved(b.data?.saved ?? true)
+  }, [])
   useEffect(() => { void load() }, [load])
 
   const changed = (p: ProposalView | null) => {
@@ -476,16 +535,23 @@ export default function ProposalsTab({ projectId, projectName }: { projectId: st
     if (p) setOpen(p)
   }
 
+  const shown = useMemo(() => {
+    const term = q.trim().toLowerCase()
+    return (list ?? []).filter((p) => (filter === 'ALL' || p.status === filter) && (!term || [
+      p.refNo, p.content.client.name, p.content.client.city, p.content.projectType, p.content.location, p.projectName ?? '',
+    ].some((x) => x.toLowerCase().includes(term))))
+  }, [list, filter, q])
+
   if (!list || !settings) return error ? <ErrorLine text={error} /> : <div className="h-24 rounded-xl bg-surface-raised animate-pulse" />
 
-  if (open) return <ProposalEditor key={open.id} projectId={projectId} initial={open} onBack={() => setOpen(null)} onChanged={changed} />
+  if (open) return <ProposalEditor key={open.id} initial={open} onBack={() => setOpen(null)} onChanged={changed} />
 
   return (
     <div className="space-y-4 pt-1">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-base font-semibold text-primary">Proposals</h2>
-          <p className="text-xs text-muted">Fee proposals for this project, written with AI in your letterhead. Only admins can see this.</p>
+          <p className="text-xs text-muted">Fee proposals for clients, written with AI in the {FIRM_NAME} letterhead. When a client accepts, the proposal becomes a project. Only admins can see this.</p>
         </div>
         <div className="flex gap-2">
           <button type="button" onClick={() => setFirmOpen(true)} className="px-3 py-2 text-xs font-medium rounded border border-border-default text-primary hover:border-accent">Firm details</button>
@@ -493,33 +559,55 @@ export default function ProposalsTab({ projectId, projectName }: { projectId: st
         </div>
       </div>
       <ErrorLine text={error} />
-      {!settings.firm.name && (
+      {!saved && (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-status-warning/40 bg-status-warning/10 px-4 py-2.5 text-sm">
-          <span className="text-primary">Fill in your firm details once (letterhead, signatory, bank details, reference numbers) so proposals print correctly.</span>
+          <span className="text-primary">Fill in the firm details once (address, signatory, bank details, reference numbers) so proposals print correctly.</span>
           <button type="button" onClick={() => setFirmOpen(true)} className="text-xs font-semibold text-accent hover:underline">Firm details</button>
         </div>
       )}
       {list.length === 0 ? (
         <div className="rounded-xl border border-border-default px-4 py-10 text-center">
-          <p className="text-sm text-secondary">No proposals for this project yet.</p>
+          <p className="text-sm text-secondary">No proposals yet.</p>
           <button type="button" onClick={() => setCreating(true)} className={`mt-3 ${primaryBtn}`}>Write the first proposal</button>
         </div>
       ) : (
-        <ul className="rounded-xl border border-border-default divide-y divide-border-default">
-          {list.map((p) => (
-            <li key={p.id}>
-              <button type="button" onClick={() => setOpen(p)} className="flex w-full flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 text-left hover:bg-surface-raised/40">
-                <span className="text-sm font-semibold text-primary">{p.refNo}</span>
-                <StatusPill status={p.status} />
-                <span className="text-sm text-secondary">{p.content.client.name} · {p.content.projectType} at {p.content.location}</span>
-                <span className="ml-auto text-xs text-muted tabular-nums">₹{totalRate(p.content.fees.stages).toFixed(2)} / sq ft · {showDate(p.content.date)} · {p.createdByName}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
+        <>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="inline-flex flex-wrap rounded-lg border border-border-default p-0.5">
+              {FILTERS.map((x) => {
+                const n = x.key === 'ALL' ? list.length : list.filter((p) => p.status === x.key).length
+                return (
+                  <button key={x.key} type="button" onClick={() => setFilter(x.key)}
+                    className={`px-3 py-1.5 text-xs font-medium rounded-md ${filter === x.key ? 'bg-accent text-white' : 'text-secondary hover:text-primary'}`}>
+                    {x.label} <span className="opacity-70">{n}</span>
+                  </button>
+                )
+              })}
+            </div>
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search client, place, number or project" className={`${field} max-w-xs`} />
+          </div>
+          {shown.length === 0 ? <p className="text-sm text-muted px-1">No proposals match.</p> : (
+            <ul className="rounded-xl border border-border-default divide-y divide-border-default">
+              {shown.map((p) => (
+                <li key={p.id} className="flex flex-col gap-2 px-4 py-3 hover:bg-surface-raised/40 sm:flex-row sm:items-center sm:gap-4">
+                  <button type="button" onClick={() => setOpen(p)} className="flex min-w-0 flex-1 flex-wrap items-center gap-x-4 gap-y-1 text-left">
+                    <span className="text-sm font-semibold text-primary break-all">{p.refNo}</span>
+                    <StatusPill status={p.status} />
+                    <span className="w-full text-sm text-secondary sm:w-auto">{p.content.client.name} · {p.content.projectType} at {p.content.location}</span>
+                    <span className="text-xs text-muted tabular-nums">₹{totalRate(p.content.fees.stages).toFixed(2)} / sq ft · {showDate(p.content.date)} · {p.createdByName}</span>
+                  </button>
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 sm:shrink-0 sm:justify-end">
+                    {p.projectId && <Link href={`/dashboard/projects/${p.projectId}`} className="text-xs font-medium text-accent hover:underline">Project: {p.projectName ?? 'open'}</Link>}
+                    <a href={pdfUrl(p.id)} download className="text-xs font-semibold text-accent hover:underline">Download PDF</a>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
       )}
-      {creating && <NewProposalModal projectId={projectId} projectName={projectName} onClose={() => setCreating(false)} onCreated={(p) => { setCreating(false); void load(); setOpen(p) }} />}
-      {firmOpen && <FirmDetailsModal initial={settings} onClose={() => setFirmOpen(false)} onSaved={(s) => { setSettings(s); setFirmOpen(false) }} />}
+      {creating && <NewProposalModal onClose={() => setCreating(false)} onCreated={(p) => { setCreating(false); void load(); setOpen(p) }} />}
+      {firmOpen && <FirmDetailsModal initial={settings} onClose={() => setFirmOpen(false)} onSaved={(s) => { setSettings(s); setSaved(true); setFirmOpen(false) }} />}
     </div>
   )
 }

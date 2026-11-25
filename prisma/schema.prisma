@@ -1188,7 +1188,10 @@ model ProposalSettings {
 model Proposal {
   id             String    @id @default(cuid())
   organizationId String    @default("rig360")
-  projectId      String
+  /// Set when the client accepts: the project the proposal became. Proposals start without one.
+  projectId      String?
+  /// Indian financial year of the proposal date ("2026-27"); numbering restarts at 1 each year.
+  fy             String
   serial         Int
   refNo          String
   status         String    @default("DRAFT") // DRAFT | SENT | ACCEPTED | DECLINED
@@ -1199,9 +1202,9 @@ model Proposal {
   sentAt         DateTime?
   acceptedAt     DateTime?
 
-  project Project @relation(fields: [projectId], references: [id])
+  project Project? @relation(fields: [projectId], references: [id])
 
-  @@unique([organizationId, serial])
+  @@unique([organizationId, fy, serial])
   @@index([projectId])
   @@index([organizationId])
 }

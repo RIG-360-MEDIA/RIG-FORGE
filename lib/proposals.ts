@@ -9,7 +9,7 @@ import { canUsePayments } from '@/lib/payments'
 import { TX_OPTIONS } from '@/lib/task-categories'
 import { isAssistantEnabled, reportRateLimit, selectNextModel } from '@/lib/llm/provider'
 import {
-  DEFAULT_SANCTION_NOTES, DEFAULT_TERMS, DISCIPLINES, EMPTY_FIRM, SCOPE_LIBRARY,
+  DEFAULT_SANCTION_NOTES, DEFAULT_TERMS, DISCIPLINES, EMPTY_FIRM, FIRM_NAME, SCOPE_LIBRARY,
   buildRefNo, financialYear,
   type Discipline, type FirmDetails, type ProposalContent, type ProposalSettingsData, type ProposalStage,
   type ProposalStatus, type ProposalTerms, type ProposalView,
@@ -19,17 +19,18 @@ import { STANDARD_SQFT_SCHEDULE } from '@/lib/payment-types'
 // ─── Access ──────────────────────────────────────────────────────────────────
 
 /** Proposals carry fees and bank details: the same people as payments (admins, not external). */
-export async function proposalsGuard(request: NextRequest, projectId?: string):
-  Promise<{ payload: TokenPayload; project: { id: string; name: string } | null } | { response: Response }> {
+export async function proposalsGuard(request: NextRequest): Promise<{ payload: TokenPayload } | { response: Response }> {
   const token = getTokenFromCookies(request)
   if (!token) return { response: errorResponse('Authentication required', 401) }
   const payload = verifyToken(token)
   if (!payload) return { response: errorResponse('Invalid or expired token', 401) }
   if (!canUsePayments(payload)) return { response: errorResponse('Proposals are only for admins', 403) }
-  if (!projectId) return { payload, project: null }
-  const project = await prisma.project.findFirst({ where: { id: projectId, isActive: true }, select: { id: true, name: true } })
-  if (!project) return { response: errorResponse('Project not found', 404) }
-  return { payload, project }
+  return { payload }
+}
+
+/** Today's date in India, YYYY-MM-DD (the financial year turns at midnight IST on 1 April, not UTC). */
+export function todayIso(now = new Date()): string {
+  return now.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
 }
 
 // ─── Validation helpers ──────────────────────────────────────────────────────
@@ -90,6 +91,7 @@ export function mergeSettings(raw: unknown): ProposalSettingsData {
   const r = (raw && typeof raw === 'object' ? raw : {}) as Partial<ProposalSettingsData>
   const firm = { ...EMPTY_FIRM, ...(r.firm ?? {}) } as FirmDetails
   firm.bank = { ...EMPTY_FIRM.bank, ...(r.firm?.bank ?? {}) }
+  firm.name = FIRM_NAME // fixed, whatever was saved
   return { firm, terms: { ...DEFAULT_TERMS, ...(r.terms ?? {}) } }
 }
 
@@ -98,13 +100,26 @@ export async function loadSettings(): Promise<{ data: ProposalSettingsData; save
   return { data: mergeSettings(row?.data), saved: !!row }
 }
 
+/** The letterhead and terms a proposal prints with: its frozen copy once sent, else the current Firm details. */
+export async function settingsFor(content: ProposalContent): Promise<ProposalSettingsData> {
+  const { data } = await loadSettings()
+  const firm = content.firm ? { ...content.firm, name: FIRM_NAME } : data.firm
+  return { firm, terms: content.terms ?? data.terms }
+}
+
+/** One proposal by id (the company scope comes from the tenant extension). */
+export function findProposal(id: string) {
+  return prisma.proposal.findFirst({ where: { id } })
+}
+
 /** Check settings sent by the Firm details form. Returns the clean value or an error message. */
 export function parseSettings(body: unknown): ProposalSettingsData | string {
   const b = (body && typeof body === 'object' ? body : {}) as { firm?: Record<string, unknown>; terms?: Record<string, unknown> }
   const f = b.firm ?? {}
   const bank = (f.bank && typeof f.bank === 'object' ? f.bank : {}) as Record<string, unknown>
+  // The firm name is fixed (FIRM_NAME) and not taken from the form.
   const fields: [keyof FirmDetails, number][] = [
-    ['name', 120], ['tagline', 200], ['address', 300], ['homeState', 60], ['email', 120], ['phone', 60],
+    ['tagline', 200], ['address', 300], ['homeState', 60], ['email', 120], ['phone', 60],
     ['signatoryName', 100], ['signatoryTitle', 100], ['refPrefix', 60], ['chequePayee', 120], ['pan', 20], ['gstin', 20],
   ]
   const firm = { ...EMPTY_FIRM, bank: { ...EMPTY_FIRM.bank } } as FirmDetails
@@ -121,6 +136,7 @@ export function parseSettings(body: unknown): ProposalSettingsData | string {
   const serial = intIn(f.nextSerial, 1, 999999, 1)
   if (serial === 'bad' || serial === null) return 'The next reference number must be a whole number from 1 to 999999'
   firm.nextSerial = serial
+  firm.nextSerialFy = financialYear(todayIso()) // the number typed is for the current financial year
   if (f.logoDataUrl) {
     if (typeof f.logoDataUrl !== 'string' || !/^data:image\/(png|jpeg|webp|svg\+xml);base64,[A-Za-z0-9+/=]+$/.test(f.logoDataUrl)) {
       return 'The logo must be a PNG, JPEG, WebP or SVG image'
@@ -193,7 +209,7 @@ export function parseDraftInput(body: unknown): DraftInput | string {
   const notes = str(b.notes, 2000)
   if (notes === null) return 'Notes must be at most 2000 characters'
   if (FORBIDDEN.test(notes)) return 'Notes cannot ask for speed money or similar payments'
-  const date = typeof b.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.date) ? b.date : new Date().toISOString().slice(0, 10)
+  const date = typeof b.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.date) ? b.date : todayIso()
   const fees = parseFees(b.fees, ds)
   if (typeof fees === 'string') return fees
   return { date, client: { salutation, name, city: city || '' }, projectType, location, disciplines: ds, notes: notes || '', fees }
@@ -399,21 +415,36 @@ export function parseContent(raw: unknown, prev: ProposalContent): ProposalConte
 type Tx = Omit<typeof prisma, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>
 
 /**
- * Give the next reference number and create the proposal, one at a time per
- * company (a lock), so two admins never get the same number. The serial is
- * the larger of Firm details' "next number" and one past the highest used.
+ * The serial a new proposal in financial year `fy` gets. Numbers run per
+ * financial year: the first proposal dated on or after 1 April is number 1.
+ * Within a year it is the larger of Firm details' "next number" (when that
+ * was set for this year) and one past the highest used this year.
  */
-export function createWithNextSerial(orgId: string, fn: (tx: Tx, serial: number, refNo: string) => Promise<string>, date: string): Promise<string> {
+export function nextSerialFor(fy: string, firm: Pick<FirmDetails, 'nextSerial' | 'nextSerialFy'>, highestThisYear: number | null): number {
+  // Settings saved before numbering went per year have no year: they were for the year they were used in.
+  const typed = !firm.nextSerialFy || firm.nextSerialFy === fy ? firm.nextSerial : 1
+  return Math.max(typed, (highestThisYear ?? 0) + 1)
+}
+
+/**
+ * Give the next reference number and create the proposal, one at a time per
+ * company (a lock), so two admins never get the same number.
+ */
+export function createWithNextSerial(orgId: string, fn: (tx: Tx, serial: number, refNo: string, fy: string) => Promise<string>, date: string): Promise<string> {
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`proposal-serial:${orgId}`}))`
     const row = await tx.proposalSettings.findFirst()
     const settings = mergeSettings(row?.data)
-    const top = await tx.proposal.aggregate({ _max: { serial: true } })
-    const serial = Math.max(settings.firm.nextSerial, (top._max.serial ?? 0) + 1)
-    const refNo = buildRefNo(settings.firm.refPrefix, serial, financialYear(date))
-    const id = await fn(tx, serial, refNo)
-    const next = { ...settings, firm: { ...settings.firm, nextSerial: serial + 1 } }
-    if (row) await tx.proposalSettings.update({ where: { id: row.id }, data: { data: next as unknown as Prisma.InputJsonValue } })
+    const fy = financialYear(date)
+    const top = await tx.proposal.aggregate({ where: { fy }, _max: { serial: true } })
+    const serial = nextSerialFor(fy, settings.firm, top._max.serial)
+    const refNo = buildRefNo(settings.firm.refPrefix, serial, fy)
+    const id = await fn(tx, serial, refNo, fy)
+    // Only move "next number" forward for the current year (a back-dated proposal must not reset it).
+    if (row && fy >= (settings.firm.nextSerialFy ?? fy)) {
+      const next = { ...settings, firm: { ...settings.firm, nextSerial: serial + 1, nextSerialFy: fy } }
+      await tx.proposalSettings.update({ where: { id: row.id }, data: { data: next as unknown as Prisma.InputJsonValue } })
+    }
     return id
   }, TX_OPTIONS)
 }
@@ -421,14 +452,17 @@ export function createWithNextSerial(orgId: string, fn: (tx: Tx, serial: number,
 // ─── Views ───────────────────────────────────────────────────────────────────
 
 type ProposalRow = {
-  id: string; projectId: string; serial: number; refNo: string; status: string; content: Prisma.JsonValue
+  id: string; projectId: string | null; fy: string; serial: number; refNo: string; status: string; content: Prisma.JsonValue
   createdById: string; createdAt: Date; updatedAt: Date; sentAt: Date | null; acceptedAt: Date | null
 }
 
 export async function toViews(rows: ProposalRow[]): Promise<ProposalView[]> {
   const users = await prisma.user.findMany({ where: { id: { in: [...new Set(rows.map((r) => r.createdById))] } }, select: { id: true, name: true } })
+  const projectIds = [...new Set(rows.map((r) => r.projectId).filter((x): x is string => !!x))]
+  const projects = projectIds.length ? await prisma.project.findMany({ where: { id: { in: projectIds } }, select: { id: true, name: true } }) : []
   return rows.map((r) => ({
-    id: r.id, projectId: r.projectId, serial: r.serial, refNo: r.refNo, status: r.status as ProposalStatus,
+    id: r.id, projectId: r.projectId, projectName: projects.find((p) => p.id === r.projectId)?.name ?? null,
+    fy: r.fy, serial: r.serial, refNo: r.refNo, status: r.status as ProposalStatus,
     content: r.content as unknown as ProposalContent,
     createdByName: users.find((u) => u.id === r.createdById)?.name ?? 'Someone',
     createdAt: r.createdAt.toISOString(), updatedAt: r.updatedAt.toISOString(),

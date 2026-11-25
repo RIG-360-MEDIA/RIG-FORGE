@@ -9,14 +9,15 @@ import {
   type ProposalContent, type ProposalSettingsData, type ProposalView,
 } from '@/lib/proposal-types'
 
-// A proposal as a printable A4 document in the firm's letterhead style
-// (modelled on Trijya Design Studio's 2026 proposals). "Download PDF" opens
-// the browser's print dialog; choose "Save as PDF". The saved file is named
-// like their own: "81 - Mr. K C Singhal - Resort Proposal".
+// A proposal on screen as an A4 document in the firm's letterhead style
+// (modelled on Trijya Design Studio's 2026 proposals). "Download PDF" saves a
+// real PDF file made on the server (/api/proposals/[id]/pdf, same layout),
+// named like their own: "81 - Mr. K C Singhal - Resort Proposal.pdf".
+// "Print" still opens the browser's print dialog.
 
 const poppins = Poppins({ subsets: ['latin'], weight: ['300', '400', '500', '600', '700'], display: 'swap' })
 
-type Payload = { proposal: ProposalView; settings: ProposalSettingsData; projectName: string }
+type Payload = { proposal: ProposalView; settings: ProposalSettingsData }
 
 const RED = '#B3261E'
 const GOLD = '#E0A93B'
@@ -220,13 +221,16 @@ ${contact}`)}; white-space: pre; font: 300 6.3pt ${poppins.style.fontFamily}; co
         .pp-bank td { padding: 1.2mm 4mm; } .pp-bank td:first-child { color: #666; width: 30%; }
         .pp-fm { border-left: 0.8mm solid #ccc; padding: 1mm 0 1mm 4mm; color: #555; font-size: 8.4pt; text-align: justify; margin: 3mm 0; }
         .pp-end { margin-top: 6mm; }
-        .pp-toolbar { position: sticky; top: 0; z-index: 10; display: flex; gap: 12px; align-items: center; justify-content: center; padding: 10px; background: #222; color: #eee; font: 13px system-ui, sans-serif; }
-        .pp-toolbar button { background: #EA580C; color: #fff; border: 0; padding: 8px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; }
+        .pp-toolbar { position: sticky; top: 0; z-index: 10; display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; justify-content: center; padding: 10px 12px; background: #222; color: #eee; font: 13px system-ui, sans-serif; }
+        .pp-download { background: #EA580C; color: #fff; text-decoration: none; padding: 10px 22px; border-radius: 6px; font-weight: 700; font-size: 15px; }
+        .pp-print { background: transparent; color: #eee; border: 1px solid #777; padding: 8px 14px; border-radius: 6px; cursor: pointer; font: inherit; }
+        .pp-ref { opacity: .8; }
         .pp-words { break-before: avoid; }
         @media print {
           html, body { background: #fff !important; }
           .pp-shell { background: #fff !important; }
           .pp-toolbar { display: none; }
+          .pp-fit { zoom: 1 !important; }
           .pp-doc { width: auto; margin: 0; padding: 0; }
           .pp-cover { min-height: 274mm; }
         }
@@ -308,14 +312,14 @@ ${contact}`)}; white-space: pre; font: 300 6.3pt ${poppins.style.fontFamily}; co
   )
 }
 
-export default function ProposalPrintPage({ params }: { params: { projectId: string; proposalId: string } }) {
+export default function ProposalPrintPage({ params }: { params: { proposalId: string } }) {
   const [data, setData] = useState<Payload | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     void (async () => {
       try {
-        const res = await fetch(`/api/projects/${params.projectId}/proposals/${params.proposalId}`, { credentials: 'include' })
+        const res = await fetch(`/api/proposals/${params.proposalId}`, { credentials: 'include' })
         const json = await res.json() as ApiResponse<Payload>
         if (!res.ok || !json.data) { setError(json.error ?? 'Could not load the proposal. Are you signed in as an admin?'); return }
         setData(json.data)
@@ -326,18 +330,27 @@ export default function ProposalPrintPage({ params }: { params: { projectId: str
         setError('Network error. Please try again.')
       }
     })()
-  }, [params.projectId, params.proposalId])
+  }, [params.proposalId])
+
+  // On a phone, shrink the A4 page (210 mm = 794 px) to the screen width instead of making it scroll sideways.
+  const [zoom, setZoom] = useState(1)
+  useEffect(() => {
+    const fit = () => setZoom(Math.min(1, window.innerWidth / 794))
+    fit()
+    window.addEventListener('resize', fit)
+    return () => window.removeEventListener('resize', fit)
+  }, [])
 
   if (error) return <p style={{ padding: 40, fontFamily: 'system-ui' }}>{error}</p>
   if (!data) return <p style={{ padding: 40, fontFamily: 'system-ui' }}>Loading proposal...</p>
   return (
     <div className={`${poppins.className} pp-shell`} style={{ background: "#e9e7e3", minHeight: "100vh" }}>
       <div className="pp-toolbar">
-        <span>{data.proposal.refNo}</span>
-        <button type="button" onClick={() => window.print()}>Download PDF</button>
-        <span>In the print window choose &quot;Save as PDF&quot;, paper A4.</span>
+        <span className="pp-ref">{data.proposal.refNo}</span>
+        <a className="pp-download" href={`/api/proposals/${params.proposalId}/pdf`} download>Download PDF</a>
+        <button type="button" className="pp-print" onClick={() => window.print()}>Print</button>
       </div>
-      <Document p={data.proposal} s={data.settings} />
+      <div className="pp-fit" style={zoom < 1 ? { zoom } : undefined}><Document p={data.proposal} s={data.settings} /></div>
     </div>
   )
 }

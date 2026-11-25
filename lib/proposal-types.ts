@@ -33,7 +33,11 @@ export interface ProposalStage {
   rate: number
 }
 
+/** The firm on every proposal. Fixed: it cannot be changed in Firm details. */
+export const FIRM_NAME = 'Trijya Design Studio'
+
 export interface FirmDetails {
+  /** Always FIRM_NAME. */
   name: string
   /** "ARCHITECTURE | VASTU | INTERIOR | LANDSCAPE | PLANNING" */
   tagline: string
@@ -46,8 +50,10 @@ export interface FirmDetails {
   signatoryTitle: string
   /** Reference number before the serial: "TDS/Offer/DD/Arch" gives "TDS/Offer/DD/Arch/81/2026-27". */
   refPrefix: string
-  /** The serial the next proposal gets. */
+  /** The serial the next proposal gets, in the financial year nextSerialFy. */
   nextSerial: number
+  /** The financial year nextSerial belongs to ("2026-27"). In a new financial year numbering starts again at 1. */
+  nextSerialFy?: string
   chequePayee: string
   bank: { accountName: string; accountNo: string; bankName: string; ifsc: string }
   pan: string
@@ -111,7 +117,11 @@ export interface ProposalContent {
 
 export interface ProposalView {
   id: string
-  projectId: string
+  /** The project it became when accepted; null until then. */
+  projectId: string | null
+  projectName: string | null
+  /** Financial year of the proposal ("2026-27"). */
+  fy: string
   serial: number
   refNo: string
   status: ProposalStatus
@@ -126,7 +136,7 @@ export interface ProposalView {
 // ─── Defaults ─────────────────────────────────────────────────────────────────
 
 export const EMPTY_FIRM: FirmDetails = {
-  name: '', tagline: '', address: '', homeState: '', email: '', phone: '', signatoryName: '', signatoryTitle: 'Principal Architect',
+  name: FIRM_NAME, tagline: '', address: '', homeState: '', email: '', phone: '', signatoryName: '', signatoryTitle: 'Principal Architect',
   refPrefix: 'Offer', nextSerial: 1, chequePayee: '',
   bank: { accountName: '', accountNo: '', bankName: '', ifsc: '' }, pan: '', gstin: '', logoDataUrl: null,
 }
@@ -211,6 +221,17 @@ export function financialYear(isoDate: string): string {
   const [y, m] = isoDate.split('-').map(Number)
   const start = m! >= 4 ? y! : y! - 1
   return `${start}-${String((start + 1) % 100).padStart(2, '0')}`
+}
+
+/** The project name suggested when a proposal is accepted: "Mr. K C Singhal - Resort, Mussoorie". */
+export function suggestedProjectName(c: Pick<ProposalContent, 'client' | 'projectType' | 'location'>): string {
+  return `${c.client.name} - ${c.projectType}, ${c.location.split(',')[0]!.trim()}`.slice(0, 100)
+}
+
+/** The PDF's file name, in Trijya's own style: "81 - Mr. K C Singhal - Resort Proposal.pdf". */
+export function proposalFileName(p: { serial: number; content: Pick<ProposalContent, 'client' | 'projectType'> }): string {
+  const name = `${p.serial} - ${p.content.client.name} - ${p.content.projectType} Proposal`
+  return `${name.replace(/[\\/:*?"<>|\r\n]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 150)}.pdf`
 }
 
 /** "TDS/Offer/DD/Arch" + 81 + "2026-27" -> "TDS/Offer/DD/Arch/81/2026-27". */

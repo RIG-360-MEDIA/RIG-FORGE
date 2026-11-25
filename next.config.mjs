@@ -26,9 +26,11 @@ const nextConfig = {
   },
 
   // pdf-parse (used to read NAS PDFs) is a CommonJS lib that must run at
-  // runtime, not be bundled/transpiled by webpack.
+  // runtime, not be bundled/transpiled by webpack. @react-pdf/renderer (the
+  // proposal PDF download) is loaded at runtime too: it is ESM with its own
+  // font and layout engines that webpack does not need to touch.
   experimental: {
-    serverComponentsExternalPackages: ['pdf-parse'],
+    serverComponentsExternalPackages: ['pdf-parse', '@react-pdf/renderer'],
   },
 }
 
