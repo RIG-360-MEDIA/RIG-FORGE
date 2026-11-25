@@ -269,6 +269,47 @@ export function listDocumentPaths(organizationId: string, collection: string = C
   return paths
 }
 
+const headsCache = new Map<string, { at: number; heads: Promise<Map<string, string>> }>()
+
+/**
+ * The first passage of every document (its title page), by path, for the
+ * document's year (lib/rag/years.ts). Same scroll as listDocumentPaths, with
+ * the text, cut to HEAD_TEXT characters. Cached for 10 minutes.
+ */
+export function listDocumentHeads(organizationId: string, collection: string = COLLECTION): Promise<Map<string, string>> {
+  const key = `${organizationId}\u0000${collection}`
+  const had = headsCache.get(key)
+  if (had && Date.now() - had.at < DOCUMENTS_TTL_MS) return had.heads
+  const heads = (async () => {
+    const out = new Map<string, string>()
+    let offset: string | number | undefined
+    for (let page = 0; page < 50; page++) {
+      const res = await withCollection(collection, () => getClient().scroll(collection, {
+        filter: { must: [
+          { key: 'organizationId', match: { value: organizationId } },
+          { key: 'chunkIndex', match: { value: 0 } },
+        ] },
+        with_payload: ['path', 'text'],
+        with_vector: false,
+        limit: 200,
+        ...(offset !== undefined ? { offset } : {}),
+      }))
+      for (const p of res.points) {
+        const pl = p.payload as { path?: unknown; text?: unknown } | null | undefined
+        if (typeof pl?.path === 'string') out.set(pl.path, typeof pl.text === 'string' ? pl.text.slice(0, HEAD_TEXT) : '')
+      }
+      const next = res.next_page_offset
+      if (next === null || next === undefined || typeof next === 'object') break
+      offset = next
+    }
+    return out
+  })()
+  heads.catch(() => headsCache.delete(key))
+  headsCache.set(key, { at: Date.now(), heads })
+  return heads
+}
+const HEAD_TEXT = 1500
+
 /**
  * Minimum cosine similarity for a passage to be returned at all. Without one,
  * search always returns `limit` passages however unrelated, and the assistant
@@ -428,8 +469,11 @@ export interface ConstrainedSearchResult {
   hits: ConstrainedSearchHit[]
   constraints: QueryConstraints
   /** False when no passage met every part of the question: `hits` are then
-   * the closest passages by meaning, and the caller must say so. */
+   * the closest passages by meaning, and the caller must say so. With
+   * several topics: false when a topic got no row (see missingTopics). */
   allMatched: boolean
+  /** A question with several topics: those no row was found for (the hits answer the others). */
+  missingTopics?: QueryConstraints['topics']
 }
 
 /** How far below MIN_SCORE the candidate pool reaches when the question is
@@ -497,6 +541,9 @@ export async function searchChunksConstrained(
   collection: string = COLLECTION,
   /** Only these documents, the preferred ones first (the Bylaws tab's State). */
   scope?: SearchScope,
+  /** Each document's year (lib/rag/years.ts): between matches that are
+   * otherwise equal, the newer document's goes first. */
+  years?: Map<string, number>,
 ): Promise<ConstrainedSearchResult> {
   const constraints = analyzeQuery(queryText)
   if (!isConstrained(constraints)) {
@@ -538,24 +585,44 @@ export async function searchChunksConstrained(
   } catch (e) {
     console.warn('[rag] other-language re-search failed:', (e as Error).message)
   }
+  // A question naming several topics ("FAR, setbacks and coverage for a 200
+  // sq m residential plot") is answered by several tables: MDDA gives FAR and
+  // coverage in one table and setbacks in another, so no single row holds
+  // all three. Each topic is matched on its own (below), and searched on its
+  // own too, in both languages, so each topic's table reaches the pool.
+  const topicSets = constraints.topics.length > 1
+    ? constraints.topics.map((topic) => ({ ...constraints, topics: [topic] }))
+    : [constraints]
+  if (topicSets.length > 1) {
+    await Promise.all(topicSets.flatMap((sub) => [describeConstraints(sub), describeConstraintsHindi(sub)]).filter(Boolean).map(async (text) => {
+      try {
+        merge(await searchChunks(organizationId, await embedQuery(text), CONSTRAINED_POOL_SIZE, collection, floor, scope?.paths))
+      } catch (e) {
+        console.warn('[rag] per-topic re-search failed:', (e as Error).message)
+      }
+    }))
+  }
   const candidates = pool.filter((h) => mightMatch(h.text, constraints))
   const around = await neighbourPassages(organizationId, candidates, collection)
-  const passing: Array<ChunkSearchHit & { order: number; tieBreak: number; useScore: number; quality: number; matchedRow?: string; section?: string; values?: string }> = []
-  for (const hit of candidates) {
-    const prev: ChunkPayload[] = []
-    for (let b = CONTEXT_PASSAGES; b >= 1; b--) {
-      const p = around.get(passageKey(hit.server, hit.path, hit.chunkIndex - b))
-      if (p) prev.push(p)
+  type Passing = ChunkSearchHit & { order: number; tieBreak: number; useScore: number; quality: number; matchedRow?: string; section?: string; values?: string }
+  /** The passages with a row (or section) meeting every part of `c`, best first, each row once. */
+  const matchesFor = (c: QueryConstraints): Passing[] => {
+    const passing: Passing[] = []
+    for (const hit of candidates) {
+      const prev: ChunkPayload[] = []
+      for (let b = CONTEXT_PASSAGES; b >= 1; b--) {
+        const p = around.get(passageKey(hit.server, hit.path, hit.chunkIndex - b))
+        if (p) prev.push(p)
+      }
+      const next = around.get(passageKey(hit.server, hit.path, hit.chunkIndex + 1))
+      const m = matchPassage(hit.text, c, prev.map((p) => p.text), next?.text ?? '')
+      if (!m) continue
+      // The row is in another passage of the same table: show that passage,
+      // which has the row, with this hit's score.
+      const shown = !m.shift ? hit : m.shift > 0 ? next ?? hit : prev[prev.length + m.shift] ?? hit
+      passing.push({ ...hit, ...shown, score: hit.score, order: rank(m), tieBreak: m.tieBreak ?? 0, useScore: m.useScore, quality: m.quality, matchedRow: m.row, section: m.section, values: m.values })
     }
-    const next = around.get(passageKey(hit.server, hit.path, hit.chunkIndex + 1))
-    const m = matchPassage(hit.text, constraints, prev.map((p) => p.text), next?.text ?? '')
-    if (!m) continue
-    // The row is in another passage of the same table: show that passage,
-    // which has the row, with this hit's score.
-    const shown = !m.shift ? hit : m.shift > 0 ? next ?? hit : prev[prev.length + m.shift] ?? hit
-    passing.push({ ...hit, ...shown, score: hit.score, order: rank(m), tieBreak: m.tieBreak ?? 0, useScore: m.useScore, quality: m.quality, matchedRow: m.row, section: m.section, values: m.values })
-  }
-  if (passing.length > 0) {
+    if (passing.length === 0) return []
     // The best kind of match first (the asked use, then an exact table row,
     // then a residential table when no use was asked), then meaning +
     // keywords. With a state chosen, its passages go ahead of national ones
@@ -564,7 +631,13 @@ export async function searchChunksConstrained(
     // is under another use, never pushes the national row that answers down.
     const ranked = rerankByKeyword(passing, queryText, passing.length)
     const own = (h: { path: string; quality: number }) => (scope?.preferred.has(h.path) && h.quality >= 2 ? 1 : 0)
-    ranked.sort((a, b) => b.useScore - a.useScore || own(b) - own(a) || b.order - a.order || documentPriority(b.fileName) - documentPriority(a.fileName) || a.tieBreak - b.tieBreak)
+    // Newer first only when both years are known: an undated document is
+    // never put behind (or ahead of) a dated one for its date.
+    const newer = (a: { path: string }, b: { path: string }) => {
+      const ya = years?.get(a.path), yb = years?.get(b.path)
+      return ya && yb ? yb - ya : 0
+    }
+    ranked.sort((a, b) => b.useScore - a.useScore || own(b) - own(a) || b.order - a.order || documentPriority(b.fileName) - documentPriority(a.fileName) || newer(a, b) || a.tieBreak - b.tieBreak)
     // The same row is often in two passages (overlap, or a table split
     // across them): show it once.
     const seen = new Set<string>()
@@ -573,13 +646,15 @@ export async function searchChunksConstrained(
     // books: documentPriority <= 1) are not shown. They are not in force, and
     // with them in the passages the model answered an 800 sq m commercial
     // question from the BIS table instead of MDDA's.
-    const stateAnswers = ranked.some((h) => scope?.preferred.has(h.path) && (h.quality === 3 || !!h.values) && h.useScore >= Math.max(...ranked.map((x) => x.useScore)))
+    // Only a document in force counts (documentPriority > 1): a draft or a
+    // model in the state's folder answering does not hide the others.
+    const stateAnswers = ranked.some((h) => scope?.preferred.has(h.path) && documentPriority(h.fileName) > 1 && (h.quality === 3 || !!h.values) && h.useScore >= Math.max(...ranked.map((x) => x.useScore)))
     // The question named a use and a table row for it was found: rows of
     // tables for other uses are not shown. With MDDA's ropeway-building table
     // ("1200-1500: Front 6.0 m ...") beside the commercial one, an office
     // question on a 1200 sq m plot was answered from the ropeway row.
-    const useRow = constraints.uses.length > 0 && ranked.some((h) => h.quality === 3 && h.useScore === 2)
-    const unique = ranked.filter((h) => {
+    const useRow = c.uses.length > 0 && ranked.some((h) => h.quality === 3 && h.useScore === 2)
+    return ranked.filter((h) => {
       if (stateAnswers && documentPriority(h.fileName) <= 1) return false
       if (useRow && h.quality === 3 && h.useScore < 2) return false
       const key = h.matchedRow ? `${h.fileName}\u0000${h.matchedRow.replace(/\s+/g, ' ').toLowerCase()}` : `${h.path}\u0000${h.chunkIndex}`
@@ -587,10 +662,33 @@ export async function searchChunksConstrained(
       seen.add(key)
       return true
     })
+  }
+
+  const perTopic = topicSets.map(matchesFor)
+  const found = perTopic.filter((list) => list.length > 0)
+  if (found.length > 0) {
+    // One topic: its list. Several: each topic's best row in turn (FAR,
+    // setback, coverage, then each one's second, ...), each passage once,
+    // so every topic asked is answered. Room for three rows per topic.
+    const max = topicSets.length > 1 ? Math.max(limit, Math.min(12, 3 * topicSets.length)) : limit
+    const taken = new Set<string>()
+    const merged: Passing[] = []
+    for (let i = 0; merged.length < max && found.some((list) => i < list.length); i++) {
+      for (const list of found) {
+        const h = list[i]
+        if (!h || merged.length >= max) continue
+        const key = passageKey(h.server, h.path, h.chunkIndex)
+        if (taken.has(key)) continue
+        taken.add(key)
+        merged.push(h)
+      }
+    }
+    const missing = topicSets.length > 1 ? constraints.topics.filter((_, i) => perTopic[i]!.length === 0) : []
     return {
-      hits: unique.slice(0, limit).map(({ order: _o, tieBreak: _t, useScore: _u, quality: _q, ...h }) => ({ ...h, matchType: 'hybrid' as const })),
+      hits: merged.map(({ order: _o, tieBreak: _t, useScore: _u, quality: _q, ...h }) => ({ ...h, matchType: 'hybrid' as const })),
       constraints,
-      allMatched: true,
+      allMatched: missing.length === 0,
+      ...(missing.length ? { missingTopics: missing } : {}),
     }
   }
   // Nothing meets every part: return the closest passages by meaning (still

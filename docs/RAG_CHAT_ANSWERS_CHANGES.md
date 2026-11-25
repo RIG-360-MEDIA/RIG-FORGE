@@ -685,3 +685,135 @@ Tests:
   - central classification of 24 example paths;
   - Central and All states never overlap and lose nothing but BIS copies;
   - the Central and All states prompts.
+
+## 22. Latest bylaws first, and every bylaws answer cross-checked before it is shown (24 Nov)
+
+**Document years** (`lib/rag/years.ts`). The index stores no dates, so a
+document's year is read in this order:
+1. its file name: "UP Building Bylaws 2025", "G-O-07-01-2022",
+   "Draftbuildingrules8092017", a "20250416…" timestamp, "SP-732023";
+2. failing that, the innermost folder with a year;
+3. failing that, its title page (first passage): the latest year printed
+   there, so "2011 (as amended up to 2023)" gives 2023.
+
+Only 1950 to this year counts. A "Master Plan 2041" or "2000 sq m" is not a
+year. A document with no year found is left unknown, never guessed.
+
+The title pages are listed once per 10 minutes (`listDocumentHeads`). If
+that fails, years come from names only.
+
+**Latest first.**
+- Between matches that are otherwise equal, the newer document's passage
+  ranks first (both years must be known).
+- Each passage is shown to the model with its year.
+- The prompt says: answer from the latest document. A later G.O.,
+  notification or amendment overrides the bylaw it amends, and a newer
+  edition overrides an older one. Name the document and year in the first
+  sentence. Give an older figure only as superseded.
+- The Bylaws and Central tabs show each document's year beside it.
+- **Both years in the answer.** When two or more documents of different
+  years give a figure for the case asked, the answer has a **By year** part
+  right after Details. It is a table, latest first:
+  Document | Year | figures [n] | Status.
+  - Status is "Latest: applies" for the latest document.
+  - It is "Older edition: superseded" only for an earlier version of the
+    same bylaws.
+  - Otherwise it is "Older document". A different authority's bylaws are
+    not called superseded.
+
+  The cross-check adds the table if the draft lacks it, and never drops the
+  older row.
+
+**Cross-check** (`buildVerifyMessages`, bylaws answers only, both tabs and
+the chat). The first answer is written but not shown. A second model call
+checks it against the passages:
+- every figure must be printed in the passage it cites;
+- every [n] must point at the right passage;
+- a newer document's figure must not have been passed over for an older
+  one;
+- the tab's scope must be kept.
+
+That call uses a different provider from the drafter when one is
+available. Only its corrected answer is shown. It may add one note when it
+is certain a newer version than the latest document here exists, and it
+never changes a figure for that note.
+
+If the check finds nothing supports an answer, the flow continues as before:
+the wider search, then the general answer. If the check gets no reply, the
+first answer is shown.
+
+The Bylaws/Central tabs show "Reading the bylaws…" and "Cross-checking the
+answer against the latest bylaws…" while it runs. Answers take about two
+model calls' time.
+
+Tests:
+- `scripts/test-bylaws-state.ts`: a fake OpenAI-compatible model runs the
+  real flow.
+  - An older 2011 edition scoring higher than the 2023 bylaws ranks second.
+    Without the year tie-break it ranks first and 2 checks fail.
+  - Only the cross-checked answer is shown, never the draft.
+  - The check is given the years, the draft and the state rule.
+  - Rejected drafts lead to the general answer.
+  - A failed check shows the draft.
+- `scripts/test-rag.ts`: years from 12 names, folders and title pages; the
+  cross-check prompt for each tab.
+
+## 23. Reported wrong answers: several-topic questions, drafts, invented regulations (25 Nov)
+
+The question was "FAR, setbacks and coverage for a 200sqm residential plot in
+dehradun plains", with Uttarakhand chosen.
+
+**What went wrong.**
+
+1. *Answered from `DRAFT.pdf` only.* `matchPassage` takes a row only when
+   its table covers every topic asked. MDDA gives FAR and coverage in one
+   table and setbacks in another, so no MDDA row qualified. Only the draft
+   held all three in one row.
+   - On MDDA's real residential FAR table, the three-topic question matched
+     nothing.
+   - Asked per topic, it gives the right row: plains coverage 65%,
+     FAR 1.70.
+2. *Plains and hills read as alternatives:* "75% (with an alternative 70%)".
+3. *The general fallback invented regulations:* "UDCR 2015", a "Dehradun
+   Development Authority", FAR 1.5 and 30% coverage, all as Uttarakhand's
+   rules. Its state prompt asked the model to "name the regulations in force
+   there and give their figures as you know them".
+
+**Fixes.**
+
+- **Several topics** (`searchChunksConstrained`):
+  - Each topic is matched on its own and searched on its own, in English
+    and Hindi.
+  - The results take each topic's best row in turn, up to 3 rows per
+    topic.
+  - A topic with no row is reported (`missingTopics`). The answer covers
+    the other topics and is never dropped whole.
+- **Drafts** (`isDraftDocument`):
+  - "draft" or "प्रारूप" in the file name ranks a document with the models
+    (`documentPriority` 1).
+  - It is labelled "DRAFT: proposed, not in force".
+  - It is hidden when a bylaw in force gives the row. Only documents in
+    force count for that.
+  - It is never "the latest bylaws".
+  - The cross-check rewrites a draft figure given as the rule.
+- **Plains / hills** (`plainsOrHills`): when the question says plains or
+  hills, that column is the answer. Otherwise both are given, each labelled,
+  never as alternatives.
+- **Partial answers:**
+  - The answer and the cross-check keep every supported part.
+  - `NOT_IN_DOCUMENTS` only when no part is supported.
+- **General fallback with a state:**
+  - It never names a regulation, act, authority, zone, clause or year.
+  - It never gives a figure as the state's rule.
+  - It gives general Indian practice as ranges, ending with "this is general
+    guidance, not from the <state> bylaws in the firm's library".
+
+**Tests** (`scripts/test-bylaws-state.ts`):
+- The reported question runs against MDDA's real residential FAR table, a
+  residential setback table, and a `DRAFT.pdf` scored highest.
+- MDDA's FAR/coverage row (65%, 1.70) and setback row are found, and the
+  draft is left out.
+- With per-topic matching switched off, only the draft is found and 4
+  checks fail.
+- The MDDA residential setback table in the test is constructed. The real
+  one was not available here.

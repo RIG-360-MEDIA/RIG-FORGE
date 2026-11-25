@@ -27,6 +27,8 @@ const check = (label: string, cond: boolean, detail = '') => {
 
 const UK = '/utility data/By_Laws/MDDA UTTARAKHAND/MDDA Compiled_byelaws_uttarakhand.pdf'
 const UK_GO = '/utility data/By_Laws/MDDA UTTARAKHAND/G-O-07-01-2022.pdf'
+const UK_OLD = '/utility data/By_Laws/MDDA UTTARAKHAND/MDDA Building Bye-laws 2011.pdf'
+const UK_DRAFT = '/utility data/By_Laws/MDDA UTTARAKHAND/DRAFT.pdf'
 const UP = '/utility data/By_Laws/UTTAR PRADESH/UP Building Bylaws 2025.pdf'
 const NBC = '/utility data/By_Laws/NBCs/NBC 2016 VOL1.pdf'
 
@@ -38,11 +40,26 @@ const points: Point[] = []
 const add = (org: string, p: string, chunkIndex: number, score: number, text: string) =>
   points.push({ id: `${points.length}`, org, path: p, chunkIndex, score, text })
 
-// Uttarakhand: the commercial setback table (7.5 / 3.0 / 3.0 / -).
-add('trijya', UK, 0, 0.83, 'Mussoorie Dehradun Development Authority building bye-laws. Chapter 1 definitions.')
+// Uttarakhand: the commercial setback table (7.5 / 3.0 / 3.0 / -). Its file
+// name has no year; its title page gives 2023.
+add('trijya', UK, 0, 0.83, 'Mussoorie Dehradun Development Authority building bye-laws 2016 (as amended up to 2023). Chapter 1 definitions.')
 add('trijya', UK, 1, 0.86, setbackTable('Commercial / office buildings', 'up to 600\n7.5\n3.0\n3.0\n-\n600-1000\n8.0\n3.0\n3.0\n-'))
 add('trijya', UK, 2, 0.84, 'Basement: a basement may be permitted up to the setback lines, with ventilation and fire safety.')
 add('trijya', UK_GO, 0, 0.82, 'Government order on compounding of buildings in Uttarakhand.')
+// The Dehradun residential question ("FAR, setbacks and coverage for a
+// 200sqm residential plot in dehradun plains"): MDDA's residential FAR and
+// coverage table (real extracted text: 150-250 sq m plains 65% / FAR 1.70)
+// and a residential setback table are separate tables, and a DRAFT.pdf
+// holds all three in one row, scored highest. That draft alone answered it.
+const MDDA_RES_FAR = '(i) \nआवासीय \nक्र0 सं0 \nउपयोग समूह \n( भूखण्ड क्षेत्रफल  \nवर्गमीटर में ) \nमैदानी क्षेत्र \nपर्वतीय क्षेत्र \nअधिकतम भू- \nआच्छादनः \nअनुमन्य \nएफ0ए0आर0\n# ग्रीन बिल्डिंग \nहेतु प्राप्त रेटिंग \nके आधार पर देय \nअतिरिक्त \nएफ0ए0आर0 \nअधिकतम भू- \nआच्छादन : \n (%  में)  \nअनुमन्य \nएफ0ए0आर0 \na \nप्लाटेड \n \n1- > 75-150 तक \n70 \n1.80 \n- \n75 \n1.80 \n2-\n>150- 250 तक \n65\n1.70\n-\n70\n1.60\n3- >250- 350 तक \n60 \n1.60 \n- \n65 \n1.50 \n'
+add('trijya', UK, 3, 0.84, MDDA_RES_FAR)
+add('trijya', UK, 4, 0.84, setbackTable('Residential plotted development', 'up to 150\n2.0\n1.0\n-\n-\n150-250\n3.0\n1.5\n-\n-\n250-350\n3.5\n2.0\n1.5\n-'))
+add('trijya', UK_DRAFT, 0, 0.9, 'DRAFT building bye-laws for consultation.')
+add('trijya', UK_DRAFT, 1, 0.95, 'Residential plotted development\nPlot area (sq m)\nGround coverage (%)\nFAR\nFront setback (m)\nup to 200\n75\n2.25\n1.20\n200-300\n70\n2.0\n1.80')
+// An older Uttarakhand edition (2011): the same table with older figures,
+// scored HIGHER than the current one, so only the year can put it second.
+add('trijya', UK_OLD, 0, 0.8, 'MDDA building bye-laws 2011.')
+add('trijya', UK_OLD, 1, 0.87, setbackTable('Commercial / office buildings', 'up to 600\n6.0\n2.0\n2.0\n-\n600-1000\n7.0\n3.0\n3.0\n-'))
 // Uttar Pradesh: the same questions, scored higher, different figures.
 add('trijya', UP, 0, 0.90, 'Uttar Pradesh building bye-laws 2025. Chapter 1.')
 add('trijya', UP, 1, 0.93, setbackTable('Commercial buildings', 'up to 600\n4.5\n3.0\n1.5\n1.5\n600-1000\n6.0\n3.0\n3.0\n3.0'))
@@ -81,6 +98,38 @@ const payload = (p: Point) => ({ organizationId: p.org, server: 'WD', path: p.pa
 
 const searches: Array<{ must?: Cond[] }> = []
 let scrolls = 0
+
+// A fake OpenAI-compatible model (the "local" provider): which reply it
+// gives depends on the prompt: the answer draft, the cross-check, or the
+// general (no documents) answer. Each request is recorded.
+type Role = 'draft' | 'verify' | 'general'
+const llmCalls: Array<{ role: Role; system: string; user: string }> = []
+const llm: Record<Role, string | number> = { draft: '', verify: '', general: '' }
+const roleOf = (system: string): Role =>
+  /you check the draft below/.test(system) ? 'verify' : /from your own knowledge/.test(system) ? 'general' : 'draft'
+function llmReply(res: http.ServerResponse, body: { messages: Array<{ role: string; content: unknown }> }) {
+  const text = (c: unknown) => typeof c === 'string' ? c : Array.isArray(c) ? c.map((p: { text?: string }) => p.text ?? '').join('') : ''
+  const system = body.messages.filter((m) => m.role === 'system').map((m) => text(m.content)).join('\n')
+  const user = text(body.messages.filter((m) => m.role === 'user').pop()?.content)
+  const role = roleOf(system)
+  llmCalls.push({ role, system, user })
+  const reply = llm[role]
+  // A number is an HTTP error status: the provider fails.
+  if (typeof reply === 'number') {
+    res.statusCode = reply
+    res.setHeader('content-type', 'application/json')
+    return res.end(JSON.stringify({ error: { message: 'fake model down', type: 'server_error' } }))
+  }
+  res.setHeader('content-type', 'text/event-stream')
+  const chunk = (delta: object, finish: string | null) =>
+    `data: ${JSON.stringify({ id: 'c1', object: 'chat.completion.chunk', created: 1, model: 'forgie', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`
+  // In pieces of 7 characters, so "NOT_IN_DOCUMENTS" arrives split.
+  const parts = reply.match(/[\s\S]{1,7}/g) ?? []
+  res.write(chunk({ role: 'assistant', content: '' }, null))
+  for (const p of parts) res.write(chunk({ content: p }, null))
+  res.write(chunk({}, 'stop'))
+  res.end('data: [DONE]\n\n')
+}
 const server = http.createServer((req, res) => {
   let body = ''
   req.on('data', (c) => { body += c })
@@ -88,6 +137,7 @@ const server = http.createServer((req, res) => {
     const j = body ? JSON.parse(body) : {}
     const url = req.url ?? ''
     const send = (result: unknown) => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ result, status: 'ok', time: 0 })) }
+    if (url === '/v1/chat/completions') return llmReply(res, j)
     if (url === '/embed') {
       res.setHeader('content-type', 'application/json')
       return res.end(JSON.stringify({ vectors: (j.texts as string[]).map(() => [1, 0, 0, 0]) }))
@@ -103,7 +153,7 @@ const server = http.createServer((req, res) => {
     if (/\/points\/scroll$/.test(url)) {
       scrolls++
       const hits = points.filter((p) => passes(p, j.filter))
-      return send({ points: hits.map((p) => ({ id: p.id, payload: { path: p.path } })), next_page_offset: null })
+      return send({ points: hits.map((p) => ({ id: p.id, payload: { path: p.path, text: p.text } })), next_page_offset: null })
     }
     if (/\/points$/.test(url)) return send([]) // retrieve by id: no neighbours in this fake
     res.statusCode = 404
@@ -119,13 +169,17 @@ async function main() {
     QDRANT_URL: base, QDRANT_API_KEY: '', QDRANT_BYLAWS_COLLECTION: 'trijya_bylaws',
     TRIJYA_NAS_BASE_URL: base, HF_EMBEDDING_DIM: '4', HF_EMBEDDING_MODEL: 'test-model', RAG_MIN_SCORE: '0.8',
     CF_ACCESS_CLIENT_ID: '', CF_ACCESS_CLIENT_SECRET: '',
+    // Answers come from the fake model only: no cloud key is set.
+    ASSISTANT_ENABLED: 'true', ASSISTANT_PROVIDER_ORDER: 'local', RAG_ANSWER_LOCAL_FIRST: 'true',
+    LOCAL_LLM_BASE_URL: `${base}/v1`, LOCAL_LLM_MODEL: 'forgie',
+    OPENAI_API_KEYS: '', OPENAI_API_KEY: '', GROQ_API_KEYS: '', GEMINI_API_KEYS: '', CEREBRAS_API_KEYS: '',
   })
   const { runWithOrg } = await import('../lib/tenant-context')
   const ans = await import('../lib/rag/answer')
   const regions = await import('../lib/rag/regions')
   const inOrg = <T>(org: string, fn: () => Promise<T>) => runWithOrg(org, fn)
   // With Uttarakhand chosen: its own documents only. Not the NBC, not the BIS copies.
-  const allowed = new Set([UK, UK_GO])
+  const allowed = new Set([UK, UK_GO, UK_OLD, UK_DRAFT])
   const where = (p: { path: string }) => regions.stateOfPath(p.path) ?? 'national'
 
   console.log('\n## States offered')
@@ -152,8 +206,8 @@ async function main() {
     console.log(`   with Uttarakhand: ${scoped.passages.map((p) => `${where(p)}:${p.chunkIndex}`).join(', ') || '(none)'}${scoped.allMatched ? '' : ' (closest only)'}`)
     const leaked = scoped.passages.filter((p) => !allowed.has(p.path))
     check('no Uttar Pradesh, NBC or BIS passage with Uttarakhand chosen', leaked.length === 0, leaked.map((p) => p.path).join(', '))
-    check('every search with Uttarakhand chosen was limited to its own two documents',
-      searches.every((f) => (f?.must ?? []).some((c) => c.key === 'path' && JSON.stringify([...(c.match?.any ?? [])].sort()) === JSON.stringify([UK, UK_GO].sort()))),
+    check('every search with Uttarakhand chosen was limited to its own four documents',
+      searches.every((f) => (f?.must ?? []).some((c) => c.key === 'path' && JSON.stringify([...(c.match?.any ?? [])].sort()) === JSON.stringify([...allowed].sort()))),
       JSON.stringify(searches.map((f) => (f?.must ?? []).find((c) => c.key === 'path')?.match?.any)))
     check('every Qdrant search carried the state filter', searches.length > 0 && searches.every((f) => (f?.must ?? []).some((c) => c.key === 'path' && Array.isArray(c.match?.any))), `${searches.length} searches`)
     check('every Qdrant search carried the organisation filter', searches.every((f) => (f?.must ?? []).some((c) => c.key === 'organizationId' && c.match?.value === 'trijya')))
@@ -173,6 +227,104 @@ async function main() {
   check('top passage is the MDDA commercial table, row up to 600: 7.5 / 3.0 / 3.0', !!top && top.path === UK && /7\.5/.test(`${top.values ?? ''} ${top.matchedRow ?? ''}`), top ? `${top.fileName}: ${top.values ?? top.matchedRow}` : 'none')
   const prompt = String(ans.buildAnswerMessages(r, 'setback for 500 sq m commercial plot', [], 'Forge')[0]!.content)
   check('prompt names the state and labels each passage', /chose the state Uttarakhand/.test(prompt) && prompt.includes('(Uttarakhand bylaws)') && !prompt.includes('UP Building Bylaws'))
+
+  console.log('\n## Latest bylaws: years and ranking')
+  const rowPaths = r.passages.filter((p) => p.matchedRow || p.values).map((p) => p.path)
+  check('the current bylaws (title page: amended up to 2023) rank above the 2011 edition, which scores higher',
+    rowPaths[0] === UK && rowPaths.includes(UK_OLD), rowPaths.map((p) => p.split('/').pop()).join(' | '))
+  const yearOf = (p: string) => r.passages.find((x) => x.path === p)?.year
+  check('each passage carries its year: 2023 from the title page, 2011 from the file name', yearOf(UK) === 2023 && yearOf(UK_OLD) === 2011, `${yearOf(UK)} / ${yearOf(UK_OLD)}`)
+  check('the answer prompt shows each year and asks for the latest bylaws',
+    prompt.includes('(year 2023)') && prompt.includes('(year 2011)') && /Latest bylaws first/.test(prompt) && /never assumed to be the latest/.test(prompt))
+
+  console.log('\n## Cross-check before the answer is shown (fake model)')
+  const nNew = r.passages.findIndex((p) => p.path === UK) + 1
+  const nOld = r.passages.findIndex((p) => p.path === UK_OLD) + 1
+  const run = async () => {
+    const shown: string[] = []
+    const statuses: string[] = []
+    let general = false
+    llmCalls.length = 0
+    const out = await inOrg('trijya', () => ans.answerNeverNotFound({
+      first: r, second: ans.widerRetrieval(r), question: 'setback for 500 sq m commercial plot', history: [], orgName: 'Forge',
+      emit: (d) => shown.push(d), onStatus: (s) => statuses.push(s), onGeneral: () => { general = true },
+    }))
+    return { out, shown: shown.join(''), statuses, general, roles: llmCalls.map((c) => c.role).join(',') }
+  }
+
+  // A: the draft used the 2011 edition; the cross-check corrects it from 2023.
+  llm.draft = `**The answer**\nUnder the MDDA Building Bye-laws 2011, the front setback is 6.0 m [${nOld}].`
+  llm.verify = [
+    '**The answer**',
+    `Under the MDDA bylaws (2023), the front setback for a 500 sq m commercial plot is 7.5 m [${nNew}].`,
+    '',
+    '**By year**',
+    '| Document | Year | Front setback | Status |',
+    '|---|---|---|---|',
+    `| MDDA Compiled_byelaws_uttarakhand.pdf | 2023 | 7.5 m [${nNew}] | Latest: applies |`,
+    `| MDDA Building Bye-laws 2011.pdf | 2011 | 6.0 m [${nOld}] | Older edition: superseded |`,
+  ].join('\n')
+  const a = await run()
+  check('only the cross-checked answer is shown; the draft never is', a.shown === llm.verify && !a.shown.includes('Under the MDDA Building Bye-laws 2011'), a.shown)
+  check('  one draft, then one cross-check', a.roles === 'draft,verify', a.roles)
+  check('  the user is told it is being cross-checked', a.statuses.includes('Cross-checking the answer against the latest bylaws…'), a.statuses.join(' | '))
+  const verifyCall = llmCalls.find((c) => c.role === 'verify')?.system ?? ''
+  check('  the cross-check is given the draft, the years, the latest year and the state rule',
+    verifyCall.includes('Under the MDDA Building Bye-laws 2011, the front setback is 6.0 m') && verifyCall.includes('(year 2023)') && verifyCall.includes('(year 2011)') &&
+    verifyCall.includes('The latest year among these passages is 2023') && verifyCall.includes("Only Uttarakhand's own documents were searched"))
+  check('  and never a document outside the state', !verifyCall.includes('UP Building Bylaws') && !verifyCall.includes('NBC 2016') && !verifyCall.includes('Standardized'))
+  const refs = ans.answerReferences(a.out.text, r.passages, 'bylaws')
+  check('  the sources are the 2023 bylaws first, then the 2011 edition, each with its year',
+    refs[0]?.path === UK && refs[0]?.year === 2023 && refs[1]?.path === UK_OLD && refs[1]?.year === 2011 && a.out.retrieval === r, JSON.stringify(refs.map((x) => [x.fileName, x.year])))
+  check('  both years are shown in the answer, latest first', /\| 2023 \| 7\.5 m[\s\S]*\| 2011 \| 6\.0 m/.test(a.shown), a.shown)
+  check('  the drafter and the cross-check are both told to show both years in a By year table',
+    /Both years shown/.test(llmCalls.find((x) => x.role === 'draft')?.system ?? '') && /Both years are shown/.test(verifyCall) && /never drop the older document's row/.test(verifyCall))
+
+  // B: the cross-check finds no passage supports an answer, twice: the general answer.
+  llm.draft = 'Front setback 6.0 m [1].'
+  llm.verify = 'NOT_IN_DOCUMENTS'
+  llm.general = 'Commonly, commercial plots of this size need a front setback of about 6 to 7.5 m. Check the current Uttarakhand bylaws before relying on it.'
+  const b = await run()
+  check('cross-check rejects both drafts: the general answer is shown, nothing of the drafts or the marker',
+    b.shown === llm.general && b.general && b.out.retrieval === null && !/NOT_IN|DOCUMENTS|6\.0 m \[1\]/.test(b.shown), `${b.roles} | ${b.shown}`)
+  check('  draft, check, wider draft, check, general', b.roles === 'draft,verify,draft,verify,general', b.roles)
+
+  // C: the draft itself says the passages do not answer: no cross-check is run.
+  llm.draft = 'NOT_IN_DOCUMENTS'
+  const c = await run()
+  check('a draft that says "not in the documents" is never checked or shown; the general answer is', c.roles === 'draft,draft,general' && c.shown === llm.general, `${c.roles} | ${c.shown}`)
+
+  // D (last: it puts the fake model's key on cooldown): the cross-check fails.
+  llm.draft = `**The answer**\nThe front setback is 7.5 m [${nNew}].`
+  llm.verify = 500
+  const d = await run()
+  check('if the cross-check gets no reply, the draft is shown rather than nothing', d.shown === llm.draft && d.out.text === llm.draft && d.out.retrieval === r, `${d.roles} | ${d.shown}`)
+
+  console.log('\n## "FAR, setbacks and coverage for a 200sqm residential plot in dehradun plains" (the reported question)')
+  const dq = 'FAR, setbacks and coverage for a 200sqm residential plot in dehradun plains.'
+  const dr = await inOrg('trijya', () => ans.retrieve('bylaws', dq, 8, { state: 'Uttarakhand' }))
+  const show = dr.passages.map((p) => `${p.fileName}: ${p.values ?? p.matchedRow ?? p.text.slice(0, 40)}`).join(' | ')
+  const farRow = dr.passages.find((p) => p.path === UK && /Plains FAR 1\.70/.test(p.values ?? ''))
+  const setbackRow = dr.passages.find((p) => p.path === UK && /150-250/.test(p.matchedRow ?? '') && /3\.0/.test(`${p.values ?? ''} ${p.matchedRow ?? ''}`))
+  check('MDDA\'s FAR and coverage row for 150-250 sq m is found: plains coverage 65%, FAR 1.70', !!farRow && /Plains ground coverage 65%/.test(farRow.values ?? ''), show)
+  check('MDDA\'s residential setback row for 150-250 sq m is found too (a separate table)', !!setbackRow, show)
+  check('every part asked was found (nothing missing)', dr.allMatched && !dr.missing, `${dr.allMatched} ${dr.missing ?? ''}`)
+  check('the DRAFT is not used when the bylaws in force give the rows', !dr.passages.some((p) => p.path === UK_DRAFT), show)
+  const dPrompt = String(ans.buildAnswerMessages(dr, dq, [], 'Forge')[0]!.content)
+  check('the model is given MDDA\'s rows, not the draft\'s 75% / 1.20 m',
+    dPrompt.includes('Plains FAR 1.70') && dPrompt.includes('Plains ground coverage 65%') && !/\b75\n2\.25\n1\.20/.test(dPrompt) && !dPrompt.includes('DRAFT.pdf'))
+  check('"dehradun plains": the Plains column is THE answer, the two columns are never alternatives',
+    /The question is about the plains: where a row gives Plains and Hills figures, the Plains figure is the answer/.test(dPrompt) && /never present the two as alternatives/.test(dPrompt))
+  check('hills and unspecified questions are handled too',
+    /The question is about the hills/.test(ans.plainsOrHills('setback for a hill area plot')) && /The question is about the hills/.test(ans.plainsOrHills('पर्वतीय क्षेत्र में सेट बैक')) &&
+    /does not say which, give both, each labelled/.test(ans.plainsOrHills('FAR for 200 sq m residential')))
+  // Without the bylaws in force, the draft is used, and marked as a draft.
+  const onlyDraft = ans.renderPassages([{ server: 'WD', path: UK_DRAFT, fileName: 'DRAFT.pdf', chunkIndex: 1, score: 0.9, text: 'x' }], 'Uttarakhand')
+  check('a draft is labelled "DRAFT: proposed, not in force" for the model', onlyDraft.includes('DRAFT.pdf (Uttarakhand bylaws) (DRAFT: proposed, not in force)'), onlyDraft)
+  // Two of three topics found: the answer covers those two, it is not thrown away.
+  const partial = String(ans.buildAnswerMessages({ ...dr, missing: 'setback (residential) for a 200 sq m plot' }, dq, [], 'Forge')[0]!.content)
+  check('when one topic has no row, the others are still answered (never all dropped)',
+    /none for setback \(residential\) for a 200 sq m plot/.test(partial) && /Answer every part they give, in full/.test(partial) && /Do not reply NOT_IN_DOCUMENTS/.test(partial))
 
   console.log('\n## Other organisation')
   const foreign = await inOrg('other-org', () => ans.retrieve('bylaws', 'setback for 500 sq m commercial plot', 8, { state: 'Uttarakhand' }))
@@ -202,7 +354,7 @@ async function main() {
   check('another organisation with no central documents gets nothing from Trijya\'s', otherCentral.passages.length === 0, otherCentral.passages.map((p) => p.path).join(', '))
 
   console.log('\n## Bylaws tab, All states: state documents only')
-  const stateAllowed = new Set([UK, UK_GO, UP])
+  const stateAllowed = new Set([UK, UK_GO, UK_OLD, UK_DRAFT, UP])
   for (const q of ['setback for 500 sq m commercial plot', 'basement rules']) {
     searches.length = 0
     const a = await inOrg('trijya', () => ans.retrieve('bylaws', q, 8, { area: 'all-states' }))

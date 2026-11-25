@@ -969,6 +969,12 @@ function lineAround(t: string, at: number, ss: number, end: number): string {
   return t.slice(begin, stop >= 0 ? at + 3 + stop : Math.min(to, at + 170)).trim()
 }
 
+/** A draft (proposed, not in force): "DRAFT.pdf", "Draft_Bylaws_2025",
+ * "Draftbuildingrules8092017", "DRAFT_MASTER_PLAN", Hindi "प्रारूप". */
+export function isDraftDocument(fileName: string): boolean {
+  return /(?<![a-z])draft|प्रारूप/i.test(fileName)
+}
+
 /**
  * Which kind of document a passage is from, for ordering matches that are
  * otherwise equal: the state bylaws and government orders that apply (and
@@ -978,6 +984,10 @@ function lineAround(t: string, at: number, ss: number, end: number): string {
  */
 export function documentPriority(fileName: string): number {
   if (/time-?saver|neufert|standards for building types/i.test(fileName)) return 0
+  // A draft is proposed, not in force: ranked with the models, and hidden
+  // when the bylaws in force give the row ("DRAFT.pdf" answered a Dehradun
+  // residential question with figures no bylaw in force has, Nov 2026).
+  if (isDraftDocument(fileName)) return 1
   if (/mbbl|model building bye/i.test(fileName)) return 1
   if (isModelRegulation(fileName)) return 1 // BIS SP 73 model, any state's copy
   if (/booklet|guide/i.test(fileName)) return 1

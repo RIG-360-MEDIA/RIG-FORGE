@@ -27,6 +27,8 @@ interface BylawsMatch {
   section?: string
   /** The row against its column labels, e.g. "Front 3 m, Rear 1.5 m, Side-1 0 m, Side-2 0 m". */
   values?: string
+  /** The document's year, when known (lib/rag/years.ts). */
+  year?: number
 }
 
 /** A document the answer cited (answerReferences in lib/rag/answer.ts). */
@@ -35,6 +37,7 @@ interface AnswerSource {
   fileName: string
   path: string
   section?: string
+  year?: number
   quote: string
   pdfUrl: string
   /** The source view link: SourceDetails reads the exact lines and position from it. */
@@ -121,6 +124,8 @@ export default function BylawsPanel({ mode = 'states' }: { mode?: 'states' | 'ce
   const [asked, setAsked] = useState('')
   // The documents the answer cited (the "sources" frame).
   const [sources, setSources] = useState<AnswerSource[]>([])
+  // What the server is doing before the answer arrives ("status" frames).
+  const [status, setStatus] = useState('')
   // The State dropdown: '' searches every document. With a state, only its
   // own documents are searched: no national codes, no BIS model copies.
   const [states, setStates] = useState<string[]>([])
@@ -171,7 +176,7 @@ export default function BylawsPanel({ mode = 'states' }: { mode?: 'states' | 'ce
     if (!query) return
     const id = ++searchId.current
     const chosen = central ? '' : state
-    setLoading(true); setErr(null); setNotConfigured(false); setAnswer(''); setSources([]); setGeneral(false); setMatches(null); setMeta(null); setAsked(query); setAskedState(chosen)
+    setLoading(true); setErr(null); setNotConfigured(false); setAnswer(''); setStatus(''); setSources([]); setGeneral(false); setMatches(null); setMeta(null); setAsked(query); setAskedState(chosen)
     try {
       const res = await fetch('/api/nas/bylaws/answer', {
         method: 'POST',
@@ -191,6 +196,8 @@ export default function BylawsPanel({ mode = 'states' }: { mode?: 'states' | 'ce
           setMeta({ requirement: r.requirement ?? null, allMatched: r.allMatched !== false })
           setLoading(false)
           setAnswering(true)
+        } else if (f.type === 'status') {
+          setStatus(String(f.text ?? ''))
         } else if (f.type === 'general') {
           setGeneral(true)
           setSources([])
@@ -294,7 +301,7 @@ export default function BylawsPanel({ mode = 'states' }: { mode?: 'states' | 'ce
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{answer}</ReactMarkdown>
                 </div>
               ) : (
-                <p className="text-xs text-text-secondary">Writing an answer…</p>
+                <p className="text-xs text-text-secondary">{status || 'Writing an answer…'}</p>
               )}
               {!general && sources.length > 0 && (
                 <div className="space-y-2 pt-1">
@@ -305,6 +312,7 @@ export default function BylawsPanel({ mode = 'states' }: { mode?: 'states' | 'ce
                         <span className="font-mono text-text-secondary mr-1.5">[{s.n}]</span>
                         <ScrollText className="inline h-4 w-4 mr-1 -mt-0.5 align-middle" aria-hidden="true" />{s.fileName}
                       </a>
+                      {s.year && <span className="text-xs text-text-secondary"> ({s.year})</span>}
                       {s.section && <span className="text-xs text-text-secondary"> — clause {s.section}</span>}
                       {/* Exact line / Paragraph / Page dropdowns, as in the chat. */}
                       <SourceDetails href={s.sourceUrl} />
@@ -346,6 +354,11 @@ export default function BylawsPanel({ mode = 'states' }: { mode?: 'states' | 'ce
                   {(central || stateOfPath(m.path)) && (
                     <span className="text-[11px] px-1.5 py-0.5 rounded border border-border-default text-text-secondary">
                       {central ? 'Central' : stateOfPath(m.path)}
+                    </span>
+                  )}
+                  {m.year && (
+                    <span className="text-[11px] px-1.5 py-0.5 rounded border border-border-default text-text-secondary" title="Year of the document">
+                      {m.year}
                     </span>
                   )}
                   <span className="text-text-secondary text-xs font-mono">{Math.round(m.score * 100)}% match</span>

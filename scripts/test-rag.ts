@@ -360,6 +360,51 @@ async function main() {
     ], undefined, 'all-states')
     check('All states: each passage is labelled with its own state', allShown.includes('MDDA.pdf (Uttarakhand bylaws)') && allShown.includes('UP.pdf (Uttar Pradesh bylaws)'), allShown)
   }
+  {
+    // Latest bylaws: a document's year, from its name, folder or title page.
+    const yr = await import('../lib/rag/years')
+    const names: Array<[string, number | null]> = [
+      ['UP Building Bylaws 2025.pdf', 2025], ['G-O-07-01-2022 (1).pdf', 2022], ['NBC 2016 VOL1.pdf', 2016],
+      ['202504161857302632Bylaws_160425.pdf', 2025], ['Draftbuildingrules8092017.pdf', 2017],
+      ['SP-732023-Standardized-Development-and-Building-Regulations-2023.pdf', 2023], ['IS 456 2000.pdf', 2000],
+      ['MDDA Compiled_byelaws_uttarakhand.pdf', null], ['Master Plan 2041.pdf', null], ['Plot 12000 sqm.pdf', null],
+      ['शासनादेश २०१९.pdf', 2019], ['Bylaws 2008 amended 2016.pdf', 2016],
+    ]
+    const wrong = names.filter(([n, y]) => yr.yearInName(n) !== y).map(([n, y]) => `${n}: ${yr.yearInName(n)} (want ${y})`)
+    check('year from the file name: plain, dates, timestamps, SP 73:2023, Devanagari digits; no future or area figures', wrong.length === 0, wrong.join(' | '))
+    check('year from the folder when the name has none', yr.documentYear('/x/By_Laws/Master Plan D.Dun 2025/zoning.pdf') === 2025)
+    check('year from the title page: the latest printed ("2011, amended 2023"), not an Act or an area',
+      yr.documentYear('/x/By_Laws/MDDA UTTARAKHAND/MDDA Compiled.pdf', 'भवन निर्माण एवं विकास उपविधि 2011 (यथा संशोधित 2023). U.P. Act 1973. Plot of 2000 sq m. Master Plan 2041.') === 2023)
+    check('no year anywhere: unknown, never guessed', yr.documentYear('/x/By_Laws/scan.pdf', 'Building bye-laws. Chapter 1.') === null)
+    check('a name year wins over the title page', yr.documentYear('/x/G-O-07-01-2022.pdf', 'amended 2024') === 2022)
+    const yp = [
+      { server: 'WD', path: '/x/MDDA UTTARAKHAND/a.pdf', fileName: 'a.pdf', chunkIndex: 1, score: 0.9, text: 'Front 7.5', year: 2023 },
+      { server: 'WD', path: '/x/MDDA UTTARAKHAND/b 2011.pdf', fileName: 'b 2011.pdf', chunkIndex: 1, score: 0.9, text: 'Front 6.0', year: 2011 },
+      { server: 'WD', path: '/x/MDDA UTTARAKHAND/c.pdf', fileName: 'c.pdf', chunkIndex: 1, score: 0.9, text: 'x' },
+    ]
+    const shownY = ansMod.renderPassages(yp, 'Uttarakhand')
+    check('each passage shows its year when known, and none is made up', shownY.includes('a.pdf (Uttarakhand bylaws) (year 2023)') && shownY.includes('(year 2011)') && shownY.includes('c.pdf (Uttarakhand bylaws)\n'), shownY)
+    check('NAS company documents get no year label', !ansMod.renderPassages([{ server: 'WD', path: '/p/spec.pdf', fileName: 'spec.pdf', chunkIndex: 0, score: 0.9, text: 'x' }]).includes('(year'))
+    const vr = { source: 'bylaws' as const, query: 'q', passages: yp, requirement: null, allMatched: true, state: 'Uttarakhand' }
+    const vSys = String(ansMod.buildVerifyMessages(vr, 'setback?', 'Draft: 6.0 m [2].', 'X')[0]!.content)
+    check('cross-check prompt: figures against their passages, citations, latest year, state, draft last',
+      /Every figure in the draft must be printed in the passage it cites/.test(vSys) && /Every \[n\] must point at a passage/.test(vSys) &&
+      /The latest year among these passages is 2023/.test(vSys) && /Only Uttarakhand's own documents were searched/.test(vSys) &&
+      vSys.trimEnd().endsWith('Draft: 6.0 m [2].') && vSys.includes(`Reply with exactly ${ansMod.NO_ANSWER} and nothing else only when no passage supports any part`))
+    check('cross-check prompt: keeps the supported parts of a several-part answer; a DRAFT document is never the rule',
+      /keep every part the passages support and remove only the unsupported parts/.test(vSys) && /A passage marked DRAFT is a proposed bylaw document/.test(vSys))
+    const aSys = String(ansMod.buildAnswerMessages(vr, 'setback?', [], 'X')[0]!.content)
+    check('answer prompt: both years in a By year table, latest first, older marked superseded only when it is an earlier version',
+      /\*\*By year\*\*/.test(aSys) && /Document \| Year \|/.test(aSys) && /latest first/.test(aSys) && /"Older edition: superseded" only when it is an earlier version/.test(aSys) && /Leave the part out when only one document/.test(aSys))
+    check('cross-check prompt: adds the By year table when the draft lacks it, never drops the older row',
+      /Add it if the draft lacks it/.test(vSys) && /never drop the older document's row/.test(vSys))
+    check('cross-check prompt: a newer-version note only when certain, never changing a figure, never mentioning AI or a draft',
+      /Only if you are certain that a version of these bylaws newer/.test(vSys) && /Never change a figure because of it/.test(vSys) && /no mention of a draft, a check, passages, searches or AI/.test(vSys))
+    const vCentral = String(ansMod.buildVerifyMessages({ ...vr, state: undefined, area: 'central' as const }, 'q', 'd', 'X')[0]!.content)
+    const vAll = String(ansMod.buildVerifyMessages({ ...vr, state: undefined, area: 'all-states' as const }, 'q', 'd', 'X')[0]!.content)
+    check('cross-check keeps each tab\'s scope: Central never a state\'s rule; All states names the state with every figure',
+      /never present a figure as a particular state's rule/.test(vCentral) && /every figure must name its state/.test(vAll))
+  }
   check('without a state, passages are labelled as before',
     !ansMod.renderPassages([{ server: 'WD', path: docs[0]!, fileName: 'x.pdf', chunkIndex: 1, score: 0.9, text: 'a' }]).includes('bylaws)'))
 
@@ -1191,10 +1236,14 @@ async function main() {
     check('a NAS prompt still says when the documents do not answer', !nasSys.includes(ans.NO_ANSWER) && nasSys.includes('not found in the documents'))
     const gen = String(ans.buildGeneralAnswerMessages('bylaws', 'FAR for 200 sq m?', [], 'X', 'Uttarakhand')[0]!.content)
     check('the general answer prompt names the state and forbids "not found" and citations', gen.includes('Uttarakhand') && /Never write that something was not found/.test(gen) && /Never invent a clause number/.test(gen))
-    check('with a state, the general answer gives that state\'s own regulations, only confident figures, marked as not from the library',
-      /Answer for Uttarakhand: name the building regulations in force there/.test(gen) && gen.includes("Never present a guess as Uttarakhand's rule") &&
-      /not from the firm's document library/.test(gen) && /No LaTeX/.test(gen) && !/general practice in India/.test(gen) &&
-      /do not confirm that it exists/.test(gen) && /Never invent a clause or section number/.test(gen) && /impossible or nonsensical/.test(gen))
+    // It once answered a Dehradun question with an invented "UDCR 2015", a
+    // "Dehradun Development Authority", FAR 1.5 and 30% coverage as Uttarakhand's rules.
+    check('with a state, the general answer never names that state\'s regulations or gives a figure as its rule; general practice, labelled',
+      !/name the building regulations in force there/.test(gen) && /you do not have Uttarakhand's bylaws text/.test(gen) &&
+      /Never name a regulation, act, bylaw, development authority, zone, clause, notification or year for Uttarakhand/.test(gen) &&
+      /never give a figure as Uttarakhand's rule/.test(gen) && /general practice in Indian building bylaws/.test(gen) &&
+      /this is general guidance, not from the Uttarakhand bylaws in the firm's library/.test(gen) && /No LaTeX/.test(gen) &&
+      /do not confirm that it exists/.test(gen) && /impossible or nonsensical/.test(gen))
     const genAll = String(ans.buildGeneralAnswerMessages('bylaws', 'FAR for 200 sq m?', [], 'X')[0]!.content)
     check('with no state, the general answer stays all-India and never attributes figures to a document or confirms a named clause',
       /Never attribute a figure or rule to a named document/.test(genAll) && /do not confirm that it exists/.test(genAll) && /checked against the applicable bylaws/.test(genAll) && /No LaTeX/.test(genAll))

@@ -17,7 +17,8 @@ export const runtime = 'nodejs'
 //
 //   {"type":"matches","requirement":...,"allMatched":...,"matches":[...]}   first
 //   {"type":"general"}                                                     the passages do not answer: hide them
-//   {"type":"text","delta":"..."}                                          the answer, as it is written
+//   {"type":"status","text":"..."}                                         what is happening before text arrives
+//   {"type":"text","delta":"..."}                                          the answer (cross-checked), as it is written
 //   {"type":"sources","sources":[{n,fileName,section,quote,pdfUrl,sourceUrl}]}  the documents it cited
 //   {"type":"done","provider":...,"model":...}                             last
 //
@@ -74,6 +75,8 @@ export async function POST(request: NextRequest): Promise<Response> {
             // The wider search's passages, which its answer's citations refer to.
             onSecond: (r) => write({ type: 'matches', ...matchesFrame(r) }),
             onGeneral: () => write({ type: 'general' }),
+            // "Reading the bylaws…", "Cross-checking the answer against the latest bylaws…".
+            onStatus: (text) => write({ type: 'status', text }),
           })
           meta = out.meta
           // Written from the documents: the ones it cited, with their exact
