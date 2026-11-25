@@ -43,7 +43,12 @@ export type DimKey = 'area' | 'height' | 'road'
 /** Every spelling a topic is written in, in the documents and in questions. */
 const TOPICS: Record<TopicKey, { label: string; terms: string[] }> = {
   far: { label: 'FAR', terms: ['far', 'floor area ratio', 'f.a.r', 'fsi', 'floor space index', 'bfar', 'mfar', 'एफ.ए.आर', 'एफ.एआर', 'एफ0ए0आर0', 'एफ0ए0आए0', 'एफएआर', 'फ्लोर एरिया रेशियो'] },
-  setback: { label: 'setback', terms: ['setback', 'setbacks', 'set-back', 'set-backs', 'set back', 'set backs', 'setbac', 'setbak', 'set bak', 'सेटबैक', 'सेटबैक्स', 'सैटबैक', 'सेट बैक', 'सैट बैक', 'सेट-बैक', 'सैट-बैक', 'सेटबेक', 'सैटबेक', 'सेट बेक', 'सैट बेक'] },
+  // Other states' words for setbacks: Maharashtra's UDCPR "marginal
+  // distances", Gujarat's GDCR "margins", "front/side/rear open space",
+  // Kerala's "front yard". Not bare "yard(s)": "200 sq yards" is not a setback.
+  setback: { label: 'setback', terms: ['setback', 'setbacks', 'set-back', 'set-backs', 'set back', 'set backs', 'setbac', 'setbak', 'set bak', 'सेटबैक', 'सेटबैक्स', 'सैटबैक', 'सेट बैक', 'सैट बैक', 'सेट-बैक', 'सैट-बैक', 'सेटबेक', 'सैटबेक', 'सेट बेक', 'सैट बेक',
+    'marginal distance', 'marginal distances', 'marginal open space', 'marginal open spaces', 'margin', 'margins',
+    'front open space', 'rear open space', 'side open space', 'side open spaces', 'front yard', 'rear yard', 'side yard', 'side yards'] },
   // "आच्छादनः" with the visarga, as MDDA's FAR tables head the column.
   coverage: { label: 'ground coverage', terms: ['ground coverage', 'coverage', 'ground cover', 'भू-आच्छादन', 'भू आच्छादन', 'आच्छादन', 'भू-आच्छादनः', 'आच्छादनः'] },
   parking: { label: 'parking', terms: ['parking', 'ecs', 'e.c.s', 'car space', 'car spaces', 'पार्किंग', 'पाकिंग', 'ई0सी0एस0'] },
@@ -453,8 +458,25 @@ function findTokens(t: string): Token[] {
 const covers = (k: Token, v: number) =>
   (k.loInc ? v >= k.lo : v > k.lo) && (k.hiInc ? v <= k.hi : v < k.hi)
 
-/** Which kind of value a token is: from its own unit, else the nearest column heading above it. */
-function tokenDim(t: string, k: Token, from: number): DimKey | null {
+/** Words that may sit between the row labels of one table: value cells,
+ * units, "Above", "Up to", row numbers. More words than these end the run. */
+const ROW_GAP_WORDS = /(?<![\p{L}])(?:above|up\s*to|upto|to|and|more|than|sq|yds?|ft|mt?r?|meters?|metres?|percent|nil|none|na|n\.a|तक|से|अधिक|मीटर|वर्ग)(?![\p{L}])/giu
+
+/** Where the run of row labels containing `k` starts: back over the rows
+ * above it while only figures and value cells lie between them. */
+function rowRunStart(t: string, toks: Token[], k: Token, from: number): number {
+  let start = k.s
+  const above = toks.filter((x) => x.s >= from && x.e <= k.s).sort((a, b) => b.s - a.s)
+  for (const x of above) {
+    const gap = t.slice(x.e, start).replace(ROW_GAP_WORDS, ' ')
+    if (/[\p{L}]{3,}/u.test(gap)) break
+    start = x.s
+  }
+  return start
+}
+
+/** Which kind of value a token is: from its own unit, else the column heading above it. */
+function tokenDim(t: string, k: Token, from: number, toks?: Token[]): DimKey | null {
   const after = t.slice(k.e, k.e + 24)
   if (k.unit === 'area') return 'area'
   if (k.unit === 'len') {
@@ -462,6 +484,19 @@ function tokenDim(t: string, k: Token, from: number): DimKey | null {
     if (/^[\s-]*(?:m|mt|mtr|meters?|metres?|मीटर)\.?\s*(?:height|high|tall|ऊँचाई|ऊंचाई)/iu.test(after)) return 'height'
     // "12.0 मीटर से 15.0 मीटर तक ऊंचे भवनों": the unit is inside the token, "high" follows it.
     if (/^\s*(?:ऊँचे|ऊंचे|ऊँचा|ऊंचा|ऊँचाई|ऊंचाई|high|tall)/u.test(after)) return 'height'
+  }
+  // A header naming several dimensions ("Plot size (sq m) | Max ground
+  // coverage | FAR | Maximum height (m)"): the row labels are the FIRST
+  // column's. The nearest heading ("Maximum height") is a value column; read
+  // by it, Delhi-style plot-size rows were taken for heights and no row matched.
+  if (toks) {
+    const start = rowRunStart(t, toks, k, from)
+    const header = t.slice(Math.max(from, start - 300), start)
+    const marks = DIM_MARKERS.flatMap(({ dim, re }) => [...header.matchAll(new RegExp(re.source, re.flags))].map((m) => ({ dim, at: m.index! })))
+    if (new Set(marks.map((m) => m.dim)).size >= 2) {
+      const first = marks.sort((a, b) => a.at - b.at)[0]!
+      return k.unit === 'len' && first.dim === 'area' ? null : first.dim
+    }
   }
   let best: { dim: DimKey; at: number } | null = null
   const head = t.slice(from, k.s)
@@ -652,18 +687,48 @@ export function coversArea(text: string, n: number): AreaMatch | null {
  * as thresholds. When a table has rows for several uses ("3(a) Shops ...",
  * "4 Commercial Complex ..."), a row whose label, just above it, is in the
  * question's own words (`labelWords`) comes first. */
+const AREA_UNIT_RES: Array<{ re: RegExp; factor: number }> = [
+  { re: /sq\.?\s*y(?:ar)?ds?\b|square\s*yards?|(?<![\p{L}])(?:gaj|gaz)(?![\p{L}])|गज/giu, factor: 0.83612736 },
+  { re: /sq\.?\s*f(?:ee)?t\b|sqft|square\s*f(?:ee|oo)t/giu, factor: 0.09290304 },
+  { re: /sq\.?\s*m(?:t|tr|eters?|etres?)?\b|sqm|square\s*m(?:eters?|etres?)|(?<![\p{L}])m2(?![\p{L}\d])|m²|वर्ग\s*मीटर|वर्गमीटर/giu, factor: 1 },
+]
+
+/**
+ * Square metres per unit of a plot-size figure in a table. Punjab, Haryana
+ * and Delhi tables are often in square yards ("Plot size (sq. yds.)"), some
+ * in square feet; the question's plot is in square metres. The figure's own
+ * unit ("250 sq yd") counts first, else the nearest unit named above it in
+ * its table (the heading), else square metres.
+ */
+function areaFactor(t: string, k: Token, sectionStart: number): number {
+  const after = t.slice(k.e, k.e + 16)
+  for (const { re, factor } of AREA_UNIT_RES) {
+    re.lastIndex = 0
+    const m = re.exec(after)
+    if (m && /^\s*$/.test(after.slice(0, m.index))) return factor
+  }
+  const head = t.slice(Math.max(sectionStart, k.s - 600), k.s)
+  let best: { at: number; factor: number } | null = null
+  for (const { re, factor } of AREA_UNIT_RES) {
+    for (const m of head.matchAll(re)) if (!best || m.index! > best.at) best = { at: m.index!, factor }
+  }
+  return best?.factor ?? 1
+}
+
 function pickCovering(t: string, toks: Token[], from: number, to: number, dim: DimKey, v: number, sectionStart = from, labelWords: string[] = []): Token | null {
-  const inDim = toks.filter((k) => k.s >= sectionStart && k.s < to && tokenDim(t, k, sectionStart) === dim)
+  const inDim = toks.filter((k) => k.s >= sectionStart && k.s < to && tokenDim(t, k, sectionStart, toks) === dim)
   const own = inDim.filter((k) => k.e > from)
+  // The plot size in the row's own unit (square yards, feet or metres).
+  const at = (k: Token) => (dim === 'area' ? v / areaFactor(t, k, sectionStart) : v)
   const thresholds = inDim.filter((k) => k.kind === 'above').map((k) => k.lo)
   const tab = (k: Token) => (k.kind !== 'exact' && isTabular(rowText(t, k, toks.find((x) => x.s >= k.e)?.s), k) ? 0 : 1)
   // An open threshold covers v only as the table's last row below it; in
   // prose ("buildings above 250 sq m ...") only when it is near v.
-  const cands = own.filter((k) => covers(k, v) && (k.kind !== 'above' ||
-    (!thresholds.some((a) => a > k.lo && a < v) && (tab(k) === 0 || k.lo >= v / 5))))
+  const cands = own.filter((k) => covers(k, at(k)) && (k.kind !== 'above' ||
+    (!thresholds.some((a) => a > k.lo && a < at(k)) && (tab(k) === 0 || k.lo >= at(k) / 5))))
   if (!cands.length) return null
   const closedness = (k: Token) => (k.kind === 'between' || k.kind === 'exact' ? 0 : 1)
-  const slack = (k: Token) => (k.kind === 'above' ? v - k.lo : k.kind === 'upto' ? k.hi - v : k.hi - k.lo)
+  const slack = (k: Token) => (k.kind === 'above' ? at(k) - k.lo : k.kind === 'upto' ? k.hi - at(k) : k.hi - k.lo)
   const labelRe = labelWords.length
     ? new RegExp(`(?<![\p{L}\p{M}])(?:${labelWords.map(escapeRe).join('|')})(?:s|es)?(?![\p{L}\p{M}])`, 'iu')
     : null

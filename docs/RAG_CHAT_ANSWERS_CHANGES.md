@@ -817,3 +817,34 @@ dehradun plains", with Uttarakhand chosen.
   checks fail.
 - The MDDA residential setback table in the test is constructed. The real
   one was not available here.
+
+## 24. Other states' tables: units, setback words, height columns (25 Nov)
+
+Found while checking whether the Dehradun fixes hold for other states.
+MDDA's tables hid all three problems.
+
+- **Units** (`areaFactor` in `lib/rag/query-match.ts`). Plot sizes in a
+  table were taken as square metres. Punjab, Haryana and Delhi tables are
+  often in sq yd, some in sq ft.
+  - Each row's figure now takes its own unit, else the nearest one named in
+    its table's heading.
+  - The question's plot is converted to that unit before choosing the row:
+    220 sq m is 263 sq yd, so the "250-500 sq yd" row.
+  - The model is told the plot in sq m, sq yd and sq ft (`plotUnits`).
+- **Setback words.** "Marginal distances" (Maharashtra UDCPR), "margins"
+  (Gujarat GDCR), "front/side/rear open space" and "front/side/rear yard"
+  (Kerala) now count as setbacks. Bare "yard" does not ("200 sq yards").
+- **Height columns** (`tokenDim`, `rowRunStart`). In a table headed "Plot
+  size (sq m) | Max ground coverage | FAR | Maximum height (m)", the nearest
+  heading ("height") was taken as the rows' dimension. Every plot-size row
+  was read as a height and nothing matched. When a header names several
+  dimensions, the rows now belong to the first column.
+
+Tests (`scripts/test-rag.ts`, in each state's format; the real texts were
+not available here):
+- a sq yd table, a sq ft table;
+- UDCPR marginal distances, GDCR margins, KMBR yards;
+- a Delhi-style table with a height column;
+- "sq yards" in a question.
+
+MDDA's results are unchanged (84/84).

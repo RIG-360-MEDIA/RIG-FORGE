@@ -361,6 +361,37 @@ async function main() {
     check('All states: each passage is labelled with its own state', allShown.includes('MDDA.pdf (Uttarakhand bylaws)') && allShown.includes('UP.pdf (Uttar Pradesh bylaws)'), allShown)
   }
   {
+    // Other states' tables (formats written for the test; their real text is
+    // not available here). A wrong unit or an unknown setback word picks the
+    // wrong row or none.
+    const rowFor = (q: string, text: string) => qmod.matchPassage(text, aq(q), [], '')?.row ?? ''
+    // Punjab / Haryana style, plot sizes in square yards: 220 sq m = 263 sq yd,
+    // so the "250-500" row, not "100-250" (which a sq m reading would pick).
+    const sqyd = 'Residential plots\nPlot size (sq. yds.)\nMaximum ground coverage (%)\nFAR\nFront setback (m)\nUpto 100\n75\n1.75\n2.0\n100-250\n65\n1.75\n3.0\n250-500\n60\n1.5\n4.5\n500-1000\n50\n1.25\n6.0'
+    check('a table in square yards: 220 sq m (263 sq yd) gets the 250-500 sq yd row, not 100-250',
+      rowFor('FAR for a 220 sq m residential plot', sqyd).startsWith('250-500') && rowFor('ground coverage for a 220 sq m residential plot', sqyd).startsWith('250-500'),
+      rowFor('FAR for a 220 sq m residential plot', sqyd))
+    check('  and a 100 sq yd question is read in sq yd too (83.6 sq m: the "Upto 100" row)', rowFor('FAR for a 100 sq yd residential plot', sqyd).startsWith('Upto 100'), rowFor('FAR for a 100 sq yd residential plot', sqyd))
+    const sqft = 'Plot area (in sq ft)\nGround coverage\nFAR\nup to 1500\n70%\n1.8\n1500-3000\n65%\n1.75\n3000-6000\n60%\n1.5'
+    check('a table in square feet: 200 sq m (2,153 sq ft) gets the 1500-3000 sq ft row', rowFor('FAR for a 200 sq m plot', sqft).startsWith('1500-3000'), rowFor('FAR for a 200 sq m plot', sqft))
+    // Maharashtra (UDCPR) "marginal distances", Gujarat (GDCR) "margins": setbacks by another name.
+    const udcpr = 'Marginal distances for residential buildings\nPlot area (sq m)\nFront\nSide\nRear\nUp to 150\n3.0\n1.5\n1.5\n150-300\n3.0\n2.25\n2.25\n300-500\n4.5\n3.0\n3.0'
+    check('Maharashtra "marginal distances" answer a setback question', rowFor('setback for a 200 sq m residential plot', udcpr).startsWith('150-300'), rowFor('setback for a 200 sq m residential plot', udcpr))
+    const gdcr = 'Margins\nPlot area (sq m)\nRoad side margin (m)\nOther sides margin (m)\nUp to 100\n1.5\n-\n100-250\n3.0\n1.5\n250-500\n4.5\n2.0'
+    check('Gujarat "margins" answer a setback question', rowFor('setbacks for a 400 sq m plot', gdcr).startsWith('250-500'), rowFor('setbacks for a 400 sq m plot', gdcr))
+    const kmbr = 'Front yard, rear yard and side yards\nPlot area (sq m)\nFront yard (m)\nRear yard (m)\nSide yard (m)\nup to 125\n1.8\n1.0\n1.0\n125-300\n3.0\n1.5\n1.2'
+    check('Kerala "front yard / side yards" answer a setback question', rowFor('setback for 200 sq m residential plot', kmbr).startsWith('125-300'), rowFor('setback for 200 sq m residential plot', kmbr))
+    // Delhi style: sq m, "Above 100 to 250", FAR as a number like 300.
+    const delhi = 'Residential plotted development\nPlot size (sq m)\nMaximum ground coverage (%)\nFAR\nMaximum height (m)\nUp to 32\n90\n350\n15\nAbove 32 to 50\n90\n350\n15\nAbove 50 to 100\n90\n350\n15\nAbove 100 to 250\n75\n300\n15\nAbove 250 to 750\n50\n225\n15'
+    check('Delhi style "Above 100 to 250": a 200 sq m plot gets that row for FAR and for coverage',
+      rowFor('FAR for a 200 sq m residential plot', delhi).startsWith('Above 100 to 250') || rowFor('FAR for a 200 sq m residential plot', delhi).startsWith('100 to 250'),
+      rowFor('FAR for a 200 sq m residential plot', delhi))
+    check('"200 sq yards" in a question is a plot size, not a setback ("yards")', JSON.stringify(aq('FAR for a 200 sq yards plot').topics) === '["far"]' && aq('FAR for a 200 sq yards plot').area === 167.23,
+      `${JSON.stringify(aq('FAR for a 200 sq yards plot').topics)} ${aq('FAR for a 200 sq yards plot').area}`)
+    const units = ansMod.plotUnits('FAR for a 200 sq m plot')
+    check('the model is told the plot in sq m, sq yd and sq ft', units.includes('200 sq m (= 239 sq yd = 2,153 sq ft)'), units)
+  }
+  {
     // Latest bylaws: a document's year, from its name, folder or title page.
     const yr = await import('../lib/rag/years')
     const names: Array<[string, number | null]> = [

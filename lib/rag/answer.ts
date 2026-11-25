@@ -385,6 +385,19 @@ export function plainsOrHills(question: string): string {
   return '- Where a row gives Plains and Hills figures and the question does not say which, give both, each labelled Plains or Hills; never present them as alternatives for the same case.'
 }
 
+/**
+ * The plot in every unit a table may use: Punjab, Haryana and Delhi tables
+ * often give plot sizes in square yards, some in square feet. The row was
+ * picked in the table's own unit (query-match areaFactor); the answer must
+ * say which unit the row is in. '' when the question gives no plot area.
+ */
+export function plotUnits(question: string): string {
+  const a = analyzeQuery(question).area
+  if (a === null) return ''
+  const n = (x: number) => Math.round(x).toLocaleString('en-IN')
+  return `- The plot in the question is ${n(a)} sq m (= ${n(a / 0.83612736)} sq yd = ${n(a / 0.09290304)} sq ft). A table may give plot sizes in sq yd or sq ft: when the applicable row is in another unit, say so (e.g. "a ${n(a)} sq m plot is ${n(a / 0.83612736)} sq yd, in the 'X-Y sq yd' row").`
+}
+
 /** Whose rules a passage is. With a state chosen: that state's (the only
  * kind searched then; see stateScope). With "All states": each passage's own
  * state, so figures of different states are never mixed up. */
@@ -520,6 +533,7 @@ export function buildAnswerMessages(
     // "Dehradun plains" was answered "75% (with an alternative 70%)": the
     // plains and hills columns read as alternatives (Nov 2026).
     plainsOrHills(question),
+    plotUnits(question),
     '- Put the passage number in square brackets after each fact it supports, e.g. [1] or [2][3]. Never cite a number that is not below.',
     '- If documents differ (a local bylaw and the NBC, or two years of a bylaw), say which document says what. Local bylaws apply over the NBC.',
     // The user asked for the latest bylaws: a 2022 G.O. amending a table
