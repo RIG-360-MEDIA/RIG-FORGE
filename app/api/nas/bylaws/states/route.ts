@@ -4,7 +4,7 @@ import { getTokenFromCookies, verifyToken } from '@/lib/auth'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
 import { isNasEnabled } from '@/lib/nas/client'
 import { isBylawsIndexingEnabled } from '@/lib/rag/index-bylaws-file'
-import { bylawsStates } from '@/lib/rag/answer'
+import { bylawsStates, bylawsStatesWithOwnDocuments } from '@/lib/rag/answer'
 
 export const runtime = 'nodejs'
 
@@ -18,7 +18,10 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     if (!verifyToken(token)) return errorResponse('Invalid or expired session', 401)
     if (!isNasEnabled()) return errorResponse('Bylaws search is not available', 403)
     if (!isBylawsIndexingEnabled()) return errorResponse('Bylaws search is not configured for this deployment', 503)
-    return successResponse({ states: await bylawsStates() })
+    // withBylaws: the states with bylaws of their own, not only a BIS model
+    // copy. Only these are answered from documents when chosen.
+    const [states, withBylaws] = await Promise.all([bylawsStates(), bylawsStatesWithOwnDocuments()])
+    return successResponse({ states, withBylaws })
   } catch (error) {
     console.error('[GET /api/nas/bylaws/states]', error)
     return errorResponse('Could not list the states. Please try again.', 500)

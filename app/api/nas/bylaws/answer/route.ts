@@ -7,17 +7,18 @@ import { getOrgId } from '@/lib/tenant-context'
 import { getOrgIdentity } from '@/lib/org-branding'
 import { isAssistantEnabled } from '@/lib/llm/provider'
 import { isBylawsIndexingEnabled } from '@/lib/rag/index-bylaws-file'
-import { type RagRetrieval, answerNeverNotFound, bylawsStates, retrieve, widerRetrieval } from '@/lib/rag/answer'
+import { type RagRetrieval, answerNeverNotFound, answerReferences, bylawsStates, retrieve, widerRetrieval } from '@/lib/rag/answer'
 
 export const runtime = 'nodejs'
 
-// POST /api/nas/bylaws/answer — the Bylaws tab. Searches the bylaws index with
+// POST /api/nas/bylaws/answer — the Bylaws and Central tabs. Searches the bylaws index with
 // the whole question (same search as /api/nas/bylaws/search), then writes an
 // answer from the passages found. NDJSON, one frame per line:
 //
 //   {"type":"matches","requirement":...,"allMatched":...,"matches":[...]}   first
 //   {"type":"general"}                                                     the passages do not answer: hide them
 //   {"type":"text","delta":"..."}                                          the answer, as it is written
+//   {"type":"sources","sources":[{n,fileName,section,quote,pdfUrl,sourceUrl}]}  the documents it cited
 //   {"type":"done","provider":...,"model":...}                             last
 //
 // When neither this search nor a wider second one answers the question, the
@@ -34,14 +35,19 @@ export async function POST(request: NextRequest): Promise<Response> {
   const query = typeof body?.query === 'string' ? body.query.trim() : ''
   if (!query) return errorResponse('query is required', 400)
   if (query.length > 1000) return errorResponse('query must not exceed 1000 characters', 400)
-  // Optional: the State dropdown. Only the national documents and that
-  // state's are searched (lib/rag/regions.ts).
-  const state = typeof body?.state === 'string' && body.state.trim() ? body.state.trim() : undefined
+  // Which documents (lib/rag/regions.ts), never mixed:
+  // - area "central" (the Central tab): the central documents only;
+  // - state (the Bylaws tab's State dropdown): that state's own documents
+  //   only, no central ones, no BIS model copies;
+  // - neither (the Bylaws tab, "All states"): every state's, no central ones.
+  if (body?.area !== undefined && body.area !== 'central') return errorResponse('area must be "central"', 400)
+  const area = body?.area === 'central' ? ('central' as const) : undefined
+  const state = !area && typeof body?.state === 'string' && body.state.trim() ? body.state.trim() : undefined
 
   let retrieval
   try {
     if (state && !(await bylawsStates()).includes(state)) return errorResponse('No bylaws are indexed for that state', 400)
-    retrieval = await retrieve('bylaws', query, 8, { state })
+    retrieval = await retrieve('bylaws', query, 8, state ? { state } : { area: area ?? 'all-states' })
   } catch (error) {
     // Detail server-side only: Qdrant/embedding errors can include internal URLs.
     console.error('[POST /api/nas/bylaws/answer]', error)
@@ -70,6 +76,11 @@ export async function POST(request: NextRequest): Promise<Response> {
             onGeneral: () => write({ type: 'general' }),
           })
           meta = out.meta
+          // Written from the documents: the ones it cited, with their exact
+          // lines, clause and page. Never sent for an answer written without them.
+          if (out.retrieval && out.text.trim()) {
+            write({ type: 'sources', sources: answerReferences(out.text, out.retrieval.passages, 'bylaws') })
+          }
         }
         write({ type: 'done', provider: meta?.provider ?? null, model: meta?.model ?? null })
       } catch (error) {
@@ -95,6 +106,7 @@ function matchesFrame(r: RagRetrieval) {
     requirement: r.requirement,
     allMatched: r.allMatched,
     state: r.state ?? null,
+    area: r.area ?? null,
     matches: r.passages.map((p) => ({ ...p, score: Math.round(p.score * 1000) / 1000, excerpt: p.text, text: undefined })),
   }
 }

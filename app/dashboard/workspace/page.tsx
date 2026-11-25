@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Code2, FileSignature, FolderOpen, HardDrive, Mail, ScrollText, Users, Video } from 'lucide-react'
+import { Code2, FileSignature, FolderOpen, HardDrive, Landmark, Mail, ScrollText, Users, Video } from 'lucide-react'
 
 import { useAuth } from '@/hooks/useAuth'
 import { isAdminRole } from '@/lib/roles'
@@ -21,6 +21,8 @@ const TABS = [
   { key: 'drive', label: 'Drive', icon: HardDrive },
   { key: 'files', label: 'Files', icon: FolderOpen },
   { key: 'bylaws', label: 'Bylaws', icon: ScrollText },
+  // The central codes (NBC, MBBL, ...), kept apart from the state bylaws.
+  { key: 'central', label: 'Central', icon: Landmark },
   { key: 'proposals', label: 'Proposals', icon: FileSignature },
   { key: 'contacts', label: 'Contacts', icon: Users },
 ] as const
@@ -83,6 +85,7 @@ export default function WorkspacePage() {
       (t.key !== 'code' || githubEnabled) &&
       (t.key !== 'files' || nasEnabled) &&
       (t.key !== 'bylaws' || nasEnabled) && // bylaws RAG is NAS-org-scoped, same gate as Files
+      (t.key !== 'central' || nasEnabled) &&
       (t.key !== 'proposals' || (nasEnabled && canSeeProposals)),
   )
 
@@ -106,7 +109,7 @@ export default function WorkspacePage() {
   // A tab the user cannot see (e.g. ?tab=files for a company without the NAS,
   // once that is known) falls back to Mail instead of an empty panel.
   useEffect(() => {
-    if ((tab === 'code' && githubChecked && !githubEnabled) || ((tab === 'files' || tab === 'bylaws') && nasChecked && !nasEnabled)
+    if ((tab === 'code' && githubChecked && !githubEnabled) || ((tab === 'files' || tab === 'bylaws' || tab === 'central') && nasChecked && !nasEnabled)
       || (tab === 'proposals' && ((nasChecked && !nasEnabled) || (!authLoading && !canSeeProposals)))) {
       setTab('mail', { replace: true })
     }
@@ -137,7 +140,8 @@ export default function WorkspacePage() {
       {tab === 'meet' && <MeetPanel />}
       {tab === 'drive' && <DrivePanel />}
       {tab === 'files' && <FilesPanel />}
-      {tab === 'bylaws' && <BylawsPanel />}
+      {tab === 'bylaws' && <BylawsPanel key="states" mode="states" />}
+      {tab === 'central' && <BylawsPanel key="central" mode="central" />}
       {tab === 'proposals' && canSeeProposals && <ProposalsPanel />}
       {tab === 'contacts' && <ContactsPanel />}
     </div>

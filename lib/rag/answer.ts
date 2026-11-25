@@ -24,7 +24,7 @@ import { embedQuery } from './embeddings'
 import { QUOTE_GAP, findSpan, tidy } from './highlight'
 import { BYLAWS_COLLECTION, COLLECTION, listDocumentPaths, searchChunksConstrained } from './qdrant'
 import { analyzeQuery, describeConstraints, documentPriority, isConstrained, type QueryConstraints } from './query-match'
-import { allStatesScope, isModelRegulation, stateOfPath, stateScope, statesOf } from './regions'
+import { allStatesOnlyScope, allStatesScope, centralScope, isModelRegulation, stateOfPath, stateScope, statesOf, statesWithOwnDocuments } from './regions'
 
 export type RagSource = 'bylaws' | 'nas'
 
@@ -217,6 +217,17 @@ export interface RagRetrieval {
   allMatched: boolean
   /** The state the search was limited to (the Bylaws tab's State dropdown). */
   state?: string
+  /** Without a state: the Central tab ('central') or the Bylaws tab's "All states" ('all-states'). */
+  area?: BylawsArea
+}
+
+/** Which bylaws documents a search without a state covers (lib/rag/regions.ts):
+ * the central (national) ones only, or every state's but no central one. */
+export type BylawsArea = 'central' | 'all-states'
+
+/** The central documents in the index, for the Central tab's list of what it searches. */
+export async function centralDocuments(): Promise<string[]> {
+  return centralScope(await listDocumentPaths(getOrgId(), BYLAWS_COLLECTION)).paths
 }
 
 /** The states that have bylaws documents in the index, for the State dropdown. */
@@ -224,22 +235,34 @@ export async function bylawsStates(): Promise<string[]> {
   return statesOf(await listDocumentPaths(getOrgId(), BYLAWS_COLLECTION))
 }
 
+/** The states with bylaws of their own in the index (not only a BIS model
+ * copy): only these can be answered from documents with the state chosen. */
+export async function bylawsStatesWithOwnDocuments(): Promise<string[]> {
+  return statesWithOwnDocuments(await listDocumentPaths(getOrgId(), BYLAWS_COLLECTION))
+}
+
 /**
- * Search `source` with the whole question. With `state` (bylaws only), only
- * that state's documents and the national ones are searched, the state's
- * first (lib/rag/regions.ts).
+ * Search `source` with the whole question. Bylaws only (lib/rag/regions.ts):
+ * - `state`: that state's own documents only; no central documents, no BIS
+ *   model copies, no other state's (stateScope).
+ * - `area: 'central'`: central documents only (centralScope).
+ * - `area: 'all-states'`: every state's documents, no central ones (allStatesOnlyScope).
+ * - neither (the chat): every document but the per-state BIS copies.
  */
-export async function retrieve(source: RagSource, query: string, limit = 8, opts: { state?: string } = {}): Promise<RagRetrieval> {
+export async function retrieve(source: RagSource, query: string, limit = 8, opts: { state?: string; area?: BylawsArea } = {}): Promise<RagRetrieval> {
   const collection = source === 'bylaws' ? BYLAWS_COLLECTION : COLLECTION
   const state = source === 'bylaws' ? opts.state : undefined
-  // With a state: its documents + the national ones. Without: every
-  // bylaws document but the per-state copies of the BIS model (one copy
-  // stands for them). Without a state the listing is best effort: if it
-  // fails, everything is searched as before.
+  const area = source === 'bylaws' && !state ? opts.area : undefined
+  // A state or an area is a hard limit: if the documents cannot be listed
+  // the search fails rather than widen. Without either (the chat) the
+  // listing is best effort: if it fails, everything is searched.
+  const strict = state
+    ? (paths: string[]) => stateScope(paths, state)
+    : area === 'central' ? centralScope : area === 'all-states' ? allStatesOnlyScope : null
   const [vector, scope] = await Promise.all([
     embedQuery(query),
-    state
-      ? listDocumentPaths(getOrgId(), collection).then((paths) => stateScope(paths, state))
+    strict
+      ? listDocumentPaths(getOrgId(), collection).then(strict)
       : source === 'bylaws'
         ? listDocumentPaths(getOrgId(), collection).then((paths) => allStatesScope(paths) ?? undefined).catch((e) => {
           console.warn('[rag] bylaws document list failed; searching all:', (e as Error).message)
@@ -247,11 +270,19 @@ export async function retrieve(source: RagSource, query: string, limit = 8, opts
         })
         : Promise.resolve(undefined),
   ])
-  const { hits, constraints, allMatched } = await searchChunksConstrained(getOrgId(), vector, query, limit, collection, scope)
+  const { hits: found, constraints, allMatched } = await searchChunksConstrained(getOrgId(), vector, query, limit, collection, scope)
+  // Every search path already filters on the scope; this second check means
+  // a passage from outside it (another state, a central document in a state
+  // search, a state's in a central one) can never reach the answer even if
+  // one of them stops doing so.
+  const inScope = strict && scope ? new Set(scope.paths) : null
+  const hits = inScope ? found.filter((h) => inScope.has(h.path)) : found
+  if (inScope && hits.length < found.length) console.error(`[rag] ${found.length - hits.length} passage(s) outside the ${state ?? area} scope dropped`)
   return {
     source,
     query,
     ...(state ? { state } : {}),
+    ...(area ? { area } : {}),
     requirement: isConstrained(constraints) ? describeConstraints(constraints) : null,
     allMatched,
     passages: hits.map((h) => ({
@@ -311,20 +342,25 @@ export function questionForAnswer(content: string, searched: string): string {
   return searched.trim() === c ? c : `${c}\n(That is: ${searched.trim()})`
 }
 
-/** With a state chosen, each passage says whose rules it is: that state's
- * bylaws, or a national document. */
-function stateLabel(p: RagPassage, state?: string): string {
-  if (!state) return ''
+/** Whose rules a passage is. With a state chosen: that state's (the only
+ * kind searched then; see stateScope). With "All states": each passage's own
+ * state, so figures of different states are never mixed up. */
+function stateLabel(p: RagPassage, state?: string, area?: BylawsArea): string {
   if (isModelRegulation(p.path)) return '' // documentKind says what it is
-  return stateOfPath(p.path) === state ? ` (${state} bylaws)` : ' (national)'
+  if (state) return stateOfPath(p.path) === state ? ` (${state} bylaws)` : ''
+  if (area === 'all-states') {
+    const own = stateOfPath(p.path)
+    return own ? ` (${own} bylaws)` : ''
+  }
+  return ''
 }
 
-export function renderPassages(passages: RagPassage[], state?: string): string {
+export function renderPassages(passages: RagPassage[], state?: string, area?: BylawsArea): string {
   let total = 0
   const out: string[] = []
   passages.forEach((p, i) => {
     const text = p.text.length > PASSAGE_CHARS ? `${p.text.slice(0, PASSAGE_CHARS)} …` : p.text
-    const lines = [`[${i + 1}] ${p.fileName}${stateLabel(p, state)}${documentKind(p.fileName)}${p.section ? ` — clause ${p.section}` : ''}`]
+    const lines = [`[${i + 1}] ${p.fileName}${stateLabel(p, state, area)}${documentKind(p.fileName)}${p.section ? ` — clause ${p.section}` : ''}`]
     if (p.values) lines.push(`Applicable row, read against its column labels: ${p.values}`)
     if (p.matchedRow) lines.push(`Row as printed: ${p.matchedRow}`)
     lines.push(text)
@@ -400,8 +436,12 @@ export function buildAnswerMessages(
   // ("for example, a 1,000 sq m plot") and did sums on it.
   const givesArea = analyzeQuery(question).area !== null
   const state = r.state
-    ? `\nThe user chose the state ${r.state}: the question is about ${r.state}, though it may not say so. Passages marked "(${r.state} bylaws)" are its own bylaws and apply over the national documents; use a national passage only for what the ${r.state} passages do not cover, and say that it is a national rule. Name ${r.state} in the first sentence.`
-    : ''
+    ? `\nThe user chose the state ${r.state}: the question is about ${r.state}, though it may not say so. Every passage below is from ${r.state}'s own documents (its bylaws, development authority regulations or government orders); no national code, BIS model or other state's document was searched. Name ${r.state} and the document in the first sentence. Never add a figure or rule from the NBC, a model regulation or another state, even one you know: only what these ${r.state} passages print.`
+    : r.area === 'central'
+      ? `\nThe user is asking about the central (national) codes. Every passage below is from a national document (the National Building Code, the Model Building Bye-Laws, the BIS model regulations or another central code); no state's bylaws were searched. Answer with the national rule, name the document in the first sentence, and never present it as a particular state's rule.`
+      : r.area === 'all-states'
+        ? `\nThe passages are from the bylaws of different states, each marked with its state; no central code was searched. Name the state with every figure and never combine figures from different states. If the question names a state, use only passages marked with that state; if none is, reply with exactly ${NO_ANSWER} and nothing else.`
+        : ''
   // Bylaws only: a question the passages do not answer is answered without
   // them (answerNeverNotFound). A NAS document question still says so.
   const notAnswered = r.source === 'bylaws' ? `reply with exactly ${NO_ANSWER} and nothing else` : 'say so in the first sentence'
@@ -448,7 +488,7 @@ export function buildAnswerMessages(
     EXAMPLE_ANSWER,
     '',
     '--- PASSAGES ---',
-    renderPassages(r.passages, r.state),
+    renderPassages(r.passages, r.state, r.area),
   ].join('\n')
   return [
     { role: 'system', content: system },
@@ -620,20 +660,42 @@ function headerLineBefore(text: string, at: number): [number, number] | null {
  * Paragraph / Page dropdowns, and opened directly it is the source view.
  */
 export function sourcesFooter(answer: string, passages: RagPassage[], source: RagSource): string {
-  const cited = citedPassages(answer, passages)
-  if (!cited.length) return ''
-  const items = cited.map((p) => {
-    const n = passages.indexOf(p) + 1
-    const quote = keyLines(answer, n, p)
+  const items = answerReferences(answer, passages, source).map((ref) =>
     // The chat shows the link as Exact line / Paragraph / Page dropdowns
     // (components/assistant/SourceDetails.tsx); elsewhere it is a plain link.
-    return [
-      `- [${n}] [${p.fileName}](${downloadUrl(p)})${p.section ? ` — clause ${p.section}` : ''}`,
+    [
+      `- [${ref.n}] [${ref.fileName}](${ref.pdfUrl})${ref.section ? ` — clause ${ref.section}` : ''}`,
       '',
-      `  [Show exact line, paragraph and page](${sourceViewUrl(source, p, quote)})`,
-    ].join('\n')
+      `  [Show exact line, paragraph and page](${ref.sourceUrl})`,
+    ].join('\n'))
+  return items.length ? `\n\n**Sources**\n${items.join('\n')}` : ''
+}
+
+/** One document an answer was taken from, with its number in the answer. */
+export interface AnswerReference {
+  /** The [n] the answer cites it by. */
+  n: number
+  fileName: string
+  path: string
+  section?: string
+  /** The exact lines of the passage the answer used. */
+  quote: string
+  /** The whole PDF, opened in the browser. */
+  pdfUrl: string
+  /** The source view: exact line, paragraph and PDF page. */
+  sourceUrl: string
+}
+
+/** The passages the answer cited, in citation order (see citedPassages), as references. */
+export function answerReferences(answer: string, passages: RagPassage[], source: RagSource): AnswerReference[] {
+  return citedPassages(answer, passages).map((p) => {
+    const n = passages.indexOf(p) + 1
+    const quote = keyLines(answer, n, p)
+    return {
+      n, fileName: p.fileName, path: p.path, ...(p.section ? { section: p.section } : {}), quote,
+      pdfUrl: downloadUrl(p), sourceUrl: sourceViewUrl(source, p, quote),
+    }
   })
-  return `\n\n**Sources**\n${items.join('\n')}`
 }
 
 // ─── Never "not found" ──────────────────────────────────────────────────────
@@ -652,15 +714,29 @@ export function buildGeneralAnswerMessages(
   orgName: string,
   state?: string,
 ): ModelMessage[] {
+  // With a state chosen the user wants that state's answer, not all-India
+  // practice: give its own regulations as known, marked as unverified.
+  const stateRules = state
+    ? [
+        `- The user chose ${state}. Answer for ${state}: name the building regulations in force there (state bylaws, the main development authority's regulations) and give their figures for this case, as you know them. Where ${state} has adopted another code (the Model Building Bye-Laws, the NBC), say so.`,
+        `- Only state a ${state} figure you are confident of. Where you are not, say "${state}'s regulations should be checked for the exact figure" and give the range commonly used in comparable states, labelled as such. Never present a guess as ${state}'s rule.`,
+        '- Never invent a clause or section number, a notification number or a year.',
+        '- If the question names a clause, section or document, do not confirm that it exists or say what it contains; answer the underlying question.',
+        `- End with one short line: these figures are from general knowledge of ${state}'s regulations, not from the firm's document library, and should be checked against the current ${state} bylaws before relying on them.`,
+      ]
+    : [
+        '- Give figures as general practice in India ("commonly", "typically"), with the case they apply to. Where they vary by state, authority or plot, say so and give the common range.',
+        '- Never attribute a figure or rule to a named document, authority or clause: no "under the MDDA bylaws", "as per clause ...", "the NBC says".',
+        '- If the question names a clause, section or document, do not confirm that it exists or say what it contains; answer the underlying question as general practice.',
+        '- End with one short line saying the figure should be checked against the applicable bylaws before relying on it.',
+      ]
   const system = [
     `You are Forgie, ${orgName}'s assistant, answering a question about ${SUBJECT[source]}${source === 'bylaws' ? ' in India' : ''}.`,
     state ? `The user chose the state ${state}: the question is about ${state}, though it may not say so.` : '',
     'Answer the latest question directly and helpfully from your own knowledge, as a complete, well-organised answer an architect can act on: markdown, short bold headings, bullets.',
-    '- Give figures as general practice in India ("commonly", "typically"), with the case they apply to. Where they vary by state, authority or plot, say so and give the common range.',
-    `- Never attribute a figure or rule to a named document, authority or clause: no "under the MDDA bylaws", "as per clause ...", "the NBC says"${state ? `, and never present a figure as ${state}'s rule` : ''}.`,
-    '- If the question names a clause, section or document, do not confirm that it exists or say what it contains; answer the underlying question as general practice.',
+    ...stateRules,
     '- If the question is impossible or nonsensical, say plainly that such a rule does not apply, and briefly why.',
-    '- End with one short line saying the figure should be checked against the applicable bylaws before relying on it.',
+    '- No LaTeX: write a formula in plain text, e.g. "Built-up area = plot area × FAR".',
     '- Never write that something was not found, that you searched documents, or that you are an AI or language model.',
     '- Never invent a clause number, a document name, a citation or square-bracket numbers like [1].',
     /\p{Script=Devanagari}/u.test(question)
@@ -762,10 +838,11 @@ export async function answerNeverNotFound(opts: {
 }
 
 /**
- * The second, wider search: twice the passages, in the same state scope. The
- * state is kept: without it another state's figure (UP for Uttarakhand)
- * could be given as the chosen state's rule, unlabelled.
+ * The second, wider search: twice the passages, in the same scope (state or
+ * area). The scope is kept: without it another state's figure (UP for
+ * Uttarakhand), or a central one in a state search, could be given as the
+ * rule asked for, unlabelled.
  */
 export function widerRetrieval(r: RagRetrieval): () => Promise<RagRetrieval> {
-  return () => retrieve(r.source, r.query, 16, r.state ? { state: r.state } : {})
+  return () => retrieve(r.source, r.query, 16, r.state ? { state: r.state } : r.area ? { area: r.area } : {})
 }

@@ -5,6 +5,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { FileSearch, ScrollText, Search } from 'lucide-react'
 
+import SourceDetails from '@/components/assistant/SourceDetails'
 import PassageText from '@/components/workspace/PassageText'
 import { tidy } from '@/lib/rag/highlight'
 import { stateOfPath } from '@/lib/rag/regions'
@@ -26,6 +27,18 @@ interface BylawsMatch {
   section?: string
   /** The row against its column labels, e.g. "Front 3 m, Rear 1.5 m, Side-1 0 m, Side-2 0 m". */
   values?: string
+}
+
+/** A document the answer cited (answerReferences in lib/rag/answer.ts). */
+interface AnswerSource {
+  n: number
+  fileName: string
+  path: string
+  section?: string
+  quote: string
+  pdfUrl: string
+  /** The source view link: SourceDetails reads the exact lines and position from it. */
+  sourceUrl: string
 }
 
 interface BylawsResult {
@@ -89,7 +102,12 @@ function Excerpt({ text, row }: { text: string; row?: string }) {
 // lib/rag/index-bylaws-file.ts) with the whole question, then a written answer
 // from the passages found, citing them by number. The passages come first and
 // stay visible; without an LLM (ASSISTANT_ENABLED off) they are shown alone.
-export default function BylawsPanel() {
+//
+// mode "states" (the Bylaws tab): state documents only, one state or all;
+// never a central document. mode "central" (the Central tab): the central
+// codes only (NBC, MBBL, the BIS master, ...); never a state's document.
+export default function BylawsPanel({ mode = 'states' }: { mode?: 'states' | 'central' }) {
+  const central = mode === 'central'
   const [q, setQ] = useState('')
   const [matches, setMatches] = useState<BylawsMatch[] | null>(null)
   const [meta, setMeta] = useState<{ requirement: string | null; allMatched: boolean } | null>(null)
@@ -101,15 +119,32 @@ export default function BylawsPanel() {
   // The passages do not answer the question: the answer is written without them.
   const [general, setGeneral] = useState(false)
   const [asked, setAsked] = useState('')
+  // The documents the answer cited (the "sources" frame).
+  const [sources, setSources] = useState<AnswerSource[]>([])
   // The State dropdown: '' searches every document. With a state, only its
-  // bylaws and the national codes are searched, its own first.
+  // own documents are searched: no national codes, no BIS model copies.
   const [states, setStates] = useState<string[]>([])
+  // States with bylaws of their own in the library; null: not reported.
+  const [withBylaws, setWithBylaws] = useState<Set<string> | null>(null)
   const [state, setState] = useState('')
   const [askedState, setAskedState] = useState('')
+  // The Central tab: the documents it searches, listed so it can be checked.
+  const [centralDocs, setCentralDocs] = useState<Array<{ path: string; fileName: string }> | null>(null)
   // A newer search makes the frames of an older one stale.
   const searchId = useRef(0)
 
   useEffect(() => {
+    if (!central) return
+    let live = true
+    fetch('/api/nas/bylaws/central', { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => { if (live && Array.isArray(j?.data?.documents)) setCentralDocs(j.data.documents) })
+      .catch(() => { /* no list; search still works */ })
+    return () => { live = false }
+  }, [central])
+
+  useEffect(() => {
+    if (central) return
     let saved = ''
     try { saved = localStorage.getItem(STATE_KEY) ?? '' } catch { /* storage blocked */ }
     let live = true
@@ -119,11 +154,12 @@ export default function BylawsPanel() {
         if (!live) return
         const list: string[] = Array.isArray(j?.data?.states) ? j.data.states : Array.isArray(j?.states) ? j.states : []
         setStates(list)
+        if (Array.isArray(j?.data?.withBylaws)) setWithBylaws(new Set(j.data.withBylaws as string[]))
         if (saved && list.includes(saved)) setState(saved)
       })
       .catch(() => { /* no dropdown; search still works */ })
     return () => { live = false }
-  }, [])
+  }, [central])
 
   const chooseState = (s: string) => {
     setState(s)
@@ -134,13 +170,14 @@ export default function BylawsPanel() {
     const query = q.trim()
     if (!query) return
     const id = ++searchId.current
-    setLoading(true); setErr(null); setNotConfigured(false); setAnswer(''); setGeneral(false); setMatches(null); setMeta(null); setAsked(query); setAskedState(state)
+    const chosen = central ? '' : state
+    setLoading(true); setErr(null); setNotConfigured(false); setAnswer(''); setSources([]); setGeneral(false); setMatches(null); setMeta(null); setAsked(query); setAskedState(chosen)
     try {
       const res = await fetch('/api/nas/bylaws/answer', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(state ? { query, state } : { query }),
+        body: JSON.stringify(central ? { query, area: 'central' } : chosen ? { query, state: chosen } : { query }),
       })
       if (!res.ok) {
         const j = await res.json().catch(() => null)
@@ -156,6 +193,9 @@ export default function BylawsPanel() {
           setAnswering(true)
         } else if (f.type === 'general') {
           setGeneral(true)
+          setSources([])
+        } else if (f.type === 'sources') {
+          setSources(Array.isArray(f.sources) ? (f.sources as AnswerSource[]) : [])
         } else if (f.type === 'text') {
           setAnswer((a) => a + String(f.delta ?? ''))
         } else if (f.type === 'error') {
@@ -181,23 +221,34 @@ export default function BylawsPanel() {
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2 flex-wrap">
-        {states.length > 0 && (
+        {!central && states.length > 0 && (
           <select
             value={state}
             onChange={(e) => chooseState(e.target.value)}
             aria-label="State"
-            title="Search this state's bylaws and the national codes, its own first"
+            title="Search only state bylaws: one state's, or all states'. Central codes are in the Central tab."
             className="px-2 py-1 text-sm border border-border-default rounded bg-surface-raised text-text-primary"
           >
             <option value="">All states</option>
-            {states.map((s) => <option key={s} value={s}>{s}</option>)}
+            {withBylaws ? (
+              <>
+                <optgroup label="Bylaws in the library">
+                  {states.filter((s) => withBylaws.has(s)).map((s) => <option key={s} value={s}>{s}</option>)}
+                </optgroup>
+                {states.some((s) => !withBylaws.has(s)) && (
+                  <optgroup label="No bylaws in the library yet">
+                    {states.filter((s) => !withBylaws.has(s)).map((s) => <option key={s} value={s}>{s}</option>)}
+                  </optgroup>
+                )}
+              </>
+            ) : states.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
         )}
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') void runSearch() }}
-          placeholder="Ask a full question, e.g. “FAR for a 2000 sq m plot”…"
+          placeholder={central ? 'Ask about the central codes, e.g. “minimum stair width for a hospital as per NBC”…' : 'Ask a full question, e.g. “FAR for a 2000 sq m plot”…'}
           className="px-2 py-1 text-sm border border-border-default rounded bg-transparent text-text-primary flex-1 min-w-[200px]"
         />
         <button
@@ -209,6 +260,16 @@ export default function BylawsPanel() {
         </button>
       </div>
 
+      {central && centralDocs && (
+        <details className="text-xs text-text-secondary">
+          <summary className="cursor-pointer select-none hover:text-text-primary">
+            Searches {centralDocs.length} central document{centralDocs.length === 1 ? '' : 's'} only (no state bylaws)
+          </summary>
+          <ul className="mt-1 ml-4 list-disc space-y-0.5">
+            {centralDocs.map((d) => <li key={d.path} title={d.path} className="[overflow-wrap:anywhere]">{d.fileName}</li>)}
+          </ul>
+        </details>
+      )}
       {err && <div className="text-sm text-red-500">{err}</div>}
       {notConfigured && (
         <div className="text-sm text-text-secondary p-4 border border-border-default rounded text-center">
@@ -221,9 +282,9 @@ export default function BylawsPanel() {
           <div className="px-3 py-2 text-xs font-mono text-text-secondary flex justify-between">
             <span>{general ? <>Answer for “{asked}”</> : <>
               {matches.length} result{matches.length === 1 ? '' : 's'} for “{asked}”
-              {askedState && <> in {askedState} bylaws + national codes</>}
+              {central ? <> in the central codes only</> : askedState ? <> in {askedState}&apos;s own bylaws only</> : <> in state bylaws (all states)</>}
             </>}</span>
-            <button onClick={() => { searchId.current++; setMatches(null); setMeta(null); setAnswer(''); setGeneral(false); setAnswering(false) }} className="hover:text-text-primary">✕ clear</button>
+            <button onClick={() => { searchId.current++; setMatches(null); setMeta(null); setAnswer(''); setSources([]); setGeneral(false); setAnswering(false) }} className="hover:text-text-primary">✕ clear</button>
           </div>
           {(answer || answering) && (
             <div className="px-3 py-3 text-sm text-text-primary space-y-2">
@@ -235,8 +296,24 @@ export default function BylawsPanel() {
               ) : (
                 <p className="text-xs text-text-secondary">Writing an answer…</p>
               )}
+              {!general && sources.length > 0 && (
+                <div className="space-y-2 pt-1">
+                  <p className="text-xs font-medium text-text-secondary">Sources</p>
+                  {sources.map((s) => (
+                    <div key={`${s.n}-${s.path}`} className="space-y-1">
+                      <a href={s.pdfUrl} target="_blank" rel="noopener noreferrer" className="text-sm text-text-primary hover:underline [overflow-wrap:anywhere]" title={s.path}>
+                        <span className="font-mono text-text-secondary mr-1.5">[{s.n}]</span>
+                        <ScrollText className="inline h-4 w-4 mr-1 -mt-0.5 align-middle" aria-hidden="true" />{s.fileName}
+                      </a>
+                      {s.section && <span className="text-xs text-text-secondary"> — clause {s.section}</span>}
+                      {/* Exact line / Paragraph / Page dropdowns, as in the chat. */}
+                      <SourceDetails href={s.sourceUrl} />
+                    </div>
+                  ))}
+                </div>
+              )}
               {!general && matches.length > 0 && (
-                <p className="text-xs text-text-secondary">Numbers in brackets refer to the passages below. Check the figure in the document before relying on it.</p>
+                <p className="text-xs text-text-secondary">Numbers in brackets refer to the sources above and the passages below. Check the figure in the document before relying on it.</p>
               )}
             </div>
           )}
@@ -266,9 +343,9 @@ export default function BylawsPanel() {
                   <ScrollText className="inline h-4 w-4 mr-1.5 -mt-0.5 align-middle" aria-hidden="true" />{m.fileName}
                 </a>
                 <span className="flex items-center gap-2 shrink-0">
-                  {askedState && (
+                  {(central || stateOfPath(m.path)) && (
                     <span className="text-[11px] px-1.5 py-0.5 rounded border border-border-default text-text-secondary">
-                      {stateOfPath(m.path) === askedState ? askedState : 'National'}
+                      {central ? 'Central' : stateOfPath(m.path)}
                     </span>
                   )}
                   <span className="text-text-secondary text-xs font-mono">{Math.round(m.score * 100)}% match</span>
@@ -308,7 +385,9 @@ export default function BylawsPanel() {
 
       {!matches && !err && !notConfigured && !loading && (
         <div className="px-3 py-6 text-sm text-text-secondary text-center">
-          Search Trijya&apos;s bylaws documents by meaning — ask a question above.
+          {central
+            ? 'Search the central codes (NBC, Model Building Bye-Laws, BIS model regulations, …) by meaning — ask a question above.'
+            : 'Search the state bylaws by meaning — choose a state, then ask a question above. Central codes are in the Central tab.'}
         </div>
       )}
     </div>

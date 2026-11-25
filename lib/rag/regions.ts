@@ -5,18 +5,20 @@
  * national and apply everywhere.
  *
  * Used by the Bylaws tab's State dropdown: with a state chosen, the search
- * covers that state's documents and the national ones, the state's first,
- * and leaves out every other state's (see retrieve in lib/rag/answer.ts).
+ * covers that state's own documents only: no national documents, no BIS
+ * model copies, no other state's (see stateScope, and retrieve in
+ * lib/rag/answer.ts).
  *
- * Only folder names count, not file names: a file name is too loose
+ * State names count only in folder names: a file name is too loose
  * ("UK(UP_Zamindari...)" is an Uttarakhand bill that names Uttar Pradesh).
+ * Cities and authorities (Nainital, Lucknow, ...) count in either.
  */
 
 /** Name shown in the dropdown, and the folder-name pattern that means it.
  * Authority abbreviations are listed only where they are unambiguous. */
 const STATES: Array<[string, RegExp]> = [
   ['Andhra Pradesh', /andhra|\bapcrda\b/],
-  ['Arunachal Pradesh', /arunachal/],
+  ['Arunachal Pradesh', /aruna?chal/], // the NAS folder is "2 Arunchal Pradesh"
   ['Assam', /assam/],
   ['Bihar', /bihar/],
   ['Chhattisgarh', /chh?att?isgarh/],
@@ -66,23 +68,47 @@ export function isModelRegulation(pathOrName: string): boolean {
   return BIS_MODEL.test(pathOrName)
 }
 
-/** The state a folder name stands for, or null. */
-export function stateOfFolder(name: string): string | null {
-  // Underscores and hyphens as spaces, so \b works on "MDDA_UTTARAKHAND".
-  const n = name.toLowerCase().replace(/[_-]+/g, ' ')
-  for (const [state, re] of STATES) if (re.test(n)) return state
+/**
+ * Cities and development authorities that belong to one state only. Unlike
+ * state names these are also read from file names, for documents left loose
+ * in a general folder ("bye laws/Bye-Laws-nlrda,nainital.pdf"), which would
+ * otherwise count as national and turn up in every state's search.
+ */
+const PLACES: Array<[string, RegExp]> = [
+  ['Uttarakhand', /nainital|\bnlrda\b|dehra[\s.]*dun|\bd[\s.]*dun\b|\bddun\b|\bdoon\b|mus+o+r+i+e|mas+o+r+i+e|haridwar|\bhrda\b|rishikesh|roorkee|haldwani|almora|kashipur|rudrapur|udham[\s]*singh|pithoragarh|uttarkashi|tehri|chamoli|kotdwar|badrinath|kedarnath|\bsidcul\b/],
+  ['Uttar Pradesh', /lucknow|\bnoida\b|ghaziabad|kanpur|varanasi|prayagraj|allahabad|meerut|moradabad|muradabad|bareilly|gorakhpur|aligarh|saharanpur|\bupavp\b|\bupsida\b/],
+]
+
+/** Folder or file name, lowercased, with "_" and "-" as spaces so \b works
+ * on "MDDA_UTTARAKHAND" and "Bye-Laws-nlrda,nainital". */
+function plain(name: string): string {
+  return name.toLowerCase().replace(/[_-]+/g, ' ')
+}
+
+function placeOf(n: string): string | null {
+  for (const [state, re] of PLACES) if (re.test(n)) return state
   return null
 }
 
-/** The state of a document from its folders (not its file name), or null
- * for a national document. The innermost state folder wins. */
+/** The state a folder name stands for, or null. */
+export function stateOfFolder(name: string): string | null {
+  const n = plain(name)
+  for (const [state, re] of STATES) if (re.test(n)) return state
+  return placeOf(n)
+}
+
+/** The state of a document, or null for a national one. The innermost
+ * folder naming a state (or one of its cities) wins; failing that, a city
+ * or authority in the file name. State names in file names are not read:
+ * "UK(UP_Zamindari...)" is an Uttarakhand bill that names Uttar Pradesh. */
 export function stateOfPath(path: string): string | null {
-  const folders = path.split('/').filter(Boolean).slice(0, -1)
+  const parts = path.split('/').filter(Boolean)
+  const folders = parts.slice(0, -1)
   for (let i = folders.length - 1; i >= 0; i--) {
     const s = stateOfFolder(folders[i]!)
     if (s) return s
   }
-  return null
+  return placeOf(plain(parts[parts.length - 1] ?? ''))
 }
 
 /** The states that have documents, sorted, for the dropdown. */
@@ -90,23 +116,66 @@ export function statesOf(paths: string[]): string[] {
   return [...new Set(paths.map(stateOfPath).filter((s): s is string => s !== null))].sort()
 }
 
+/** A state's own documents: its bylaws, development authority regulations
+ * and government orders. Not its copy of the BIS model, which is a central
+ * model offered to the state, not the state's rules. */
+function isOwnDocument(path: string, state: string): boolean {
+  return stateOfPath(path) === state && !isModelRegulation(path)
+}
+
 /**
- * What a search with `state` chosen covers: its documents and the national
- * ones. `preferred` marks the state's own bylaws, ranked first; its copy of
- * the BIS model is searched but not preferred. The national BIS master is
- * left out when the state has its own copy (the same text twice).
+ * What a search with `state` chosen covers: that state's own documents
+ * ONLY. No national document (NBC, MBBL, ECBC, reference books, loose files
+ * in no state's folder), no BIS model regulations (the state's copy
+ * included), and no other state's documents. A state with none of its own
+ * gets an empty scope, which finds nothing: it never widens.
  */
 export function stateScope(paths: string[], state: string): { paths: string[]; preferred: Set<string> } {
-  const preferred = new Set<string>()
-  const allowed: string[] = []
-  const ownModel = paths.some((p) => stateOfPath(p) === state && isModelRegulation(p))
-  for (const p of paths) {
-    const s = stateOfPath(p)
-    const model = isModelRegulation(p)
-    if (s === state && !model) preferred.add(p)
-    if (s === state || (s === null && !(model && ownModel))) allowed.push(p)
-  }
-  return { paths: allowed, preferred }
+  const own = paths.filter((p) => isOwnDocument(p, state))
+  return { paths: own, preferred: new Set(own) }
+}
+
+/** The states with documents of their own (not just a BIS model copy), sorted. */
+export function statesWithOwnDocuments(paths: string[]): string[] {
+  return statesOf(paths.filter((p) => !isModelRegulation(p)))
+}
+
+/** Folders that hold national documents ("NBCs", "National Master Document",
+ * a "CENTRAL" folder made for them). */
+const CENTRAL_FOLDER = /\bnbcs?\b|\bnational\b|\bcentral\b/
+/** File names of national codes and regulations: the NBC (SP 7), the TCPO
+ * Model Building Bye-Laws, ECBC/ECSBC, the National Electrical Code, URDPFI,
+ * Indian Standards (IS 456), the harmonised accessibility guidelines, NDMA,
+ * CPWD, MoHUA and TCPO documents. */
+const CENTRAL_NAME = /\bnbc\b|national building code|\bsp[\s:]*7\b|\bmbbl\b|model building bye|\becs?bc\b|energy conservation (?:and sustainable )?building code|\bnec\b|national electrical code|\burdpfi\b|\bis[\s:]*\d{3,5}\b|harmoni[sz]ed guidelines|\bndma\b|\bcpwd\b|\bmohua\b|\btcpo\b/
+
+/**
+ * A central (national) document: in no state's folder, and recognised as
+ * national by its folder or its name (CENTRAL_FOLDER, CENTRAL_NAME), or the
+ * BIS model's national master. A loose file that is neither (a state G.O. or
+ * bill left in By_Laws, a design reference book) is NOT central: it is
+ * searched with "All states", never presented as a central rule. Put a
+ * central document in a "CENTRAL" folder to have it counted.
+ */
+export function isCentralDocument(path: string): boolean {
+  if (stateOfPath(path) !== null) return false
+  if (isModelRegulation(path)) return true // the national master; state copies have a state
+  const parts = path.split('/').filter(Boolean)
+  return parts.slice(0, -1).some((f) => CENTRAL_FOLDER.test(plain(f))) || CENTRAL_NAME.test(plain(parts[parts.length - 1] ?? ''))
+}
+
+/** The Central tab: central documents only, no state's. */
+export function centralScope(paths: string[]): { paths: string[]; preferred: Set<string> } {
+  return { paths: paths.filter(isCentralDocument), preferred: new Set() }
+}
+
+/**
+ * The Bylaws tab with "All states": every state's own documents and any
+ * file that is not central. Never a central document (those are the Central
+ * tab's) and never a BIS model copy (a central model, one per state).
+ */
+export function allStatesOnlyScope(paths: string[]): { paths: string[]; preferred: Set<string> } {
+  return { paths: paths.filter((p) => !isCentralDocument(p) && !isModelRegulation(p)), preferred: new Set() }
 }
 
 /**

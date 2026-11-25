@@ -596,3 +596,92 @@ TRIJYA-3 and a connector restart.
 
 Tests: `scripts/test-rag.ts` (the MDDA table rows and named rows from the
 real extracted text, query parsing).
+
+## 21. State bylaws and central codes in separate tabs; answers list their sources (24 Nov)
+
+**Scope** (`stateScope` in `lib/rag/regions.ts`). With a state chosen in the
+Bylaws tab, only that state's own documents are searched: the files in its
+folder (bylaws, development authority regulations, G.O.s) and loose files
+named after one of its cities or authorities. This replaces sections 18–19,
+where the national documents and the state's BIS copy were searched too.
+Never searched with a state chosen:
+- national documents (NBC, MBBL, reference books);
+- any file in no state's folder;
+- the BIS model regulations, the state's own copy included;
+- any other state's documents.
+
+Safeguards:
+- `retrieve` drops any passage outside the scope a second time, after the
+  search.
+- A state with no documents of its own has an empty scope. Its search sends
+  no query to Qdrant and finds nothing, so the answer comes from the general
+  fallback (section 19's "never not found").
+- The State dropdown lists those states under "No bylaws in the library yet"
+  (`withBylaws` from `/api/nas/bylaws/states`).
+- The prompt says every passage is the state's own and forbids figures from
+  the NBC, a model regulation or another state.
+
+**Central tab** (Workspace → Central; `BylawsPanel mode="central"`). The
+central codes, kept apart from the state bylaws. The two tabs never search
+the same document:
+
+| Search | Documents |
+|---|---|
+| Central tab | Central documents only (`centralScope`) |
+| Bylaws tab, one state | That state's own documents only (`stateScope`) |
+| Bylaws tab, "All states" | Every state's documents, plus loose files that are not central (`allStatesOnlyScope`); no central document, no BIS copy |
+| Chat (no tab) | Everything but the per-state BIS copies, as before |
+
+A document is central (`isCentralDocument`) when it is in no state's
+folder and is recognised as national in one of three ways:
+- by its folder: `NBCs`, `National Master Document`, or any folder named
+  "central" or "national";
+- by its name: NBC, SP 7, MBBL / Model Building Bye-Laws, ECBC/ECSBC, NEC,
+  URDPFI, IS codes, harmonised guidelines, NDMA, CPWD, MoHUA, TCPO;
+- or it is the BIS national master.
+
+Anything else is not central. That includes loose G.O.s and bills, design
+reference books, and an "International" folder. To add a central document,
+put it in a `CENTRAL` folder. The Central tab lists the documents it
+searches (`GET /api/nas/bylaws/central`), so the list can be checked.
+
+The prompt for each search says what was searched:
+- Central: the national rule, never presented as a state's.
+- All states: each passage is labelled with its state, the state is named
+  with every figure, and figures of different states are never combined.
+
+A state, an area, and the wider second search all fail closed: if the
+document list cannot be loaded, the search fails rather than widen. Results
+are also filtered against the scope a second time after the search.
+
+**Loose files.** Files directly in `By_Laws/` that name no city and are not
+recognised as central (`UK(UP_Zamindari_Abolition)…`,
+`202504161857302632Bylaws_160425.pdf`, `G.O.V-2-…`):
+- are found by "All states" only, never by one state's search or the
+  Central tab;
+- should be moved into a state's folder (or `CENTRAL`) to be searched there.
+
+**Sources in the Bylaws tab.** After an answer written from the documents,
+the route sends a `sources` frame with the documents the answer cited
+(`answerReferences`, also used for the chat's Sources footer). Each entry
+shows its [n], the file (opens the PDF) and its clause, plus the same Exact
+line / Paragraph / Page dropdowns as the chat (`SourceDetails`). An answer
+written without the documents has no Sources list.
+
+Tests:
+- `scripts/test-bylaws-state.ts`: the fake index now holds BIS copies
+  (Uttarakhand, Manipur, master) scored above MDDA. Every search with
+  Uttarakhand chosen must be limited to its two own documents. Manipur gets
+  no passages and sends no search. Putting the old scope back fails 15
+  checks.
+- `scripts/test-bylaws-state.ts`, Central and All states:
+  - Central returns only NBC and the BIS master; All states only MDDA and
+    UP. Every Qdrant search carries that exact file list.
+  - The wider second search stays in its scope.
+  - 60 concurrent mixed questions take nothing from another tab.
+  - Making either scope return everything fails 16 checks.
+- `scripts/test-rag.ts`:
+  - scope, labels, the state prompt, and references;
+  - central classification of 24 example paths;
+  - Central and All states never overlap and lose nothing but BIS copies;
+  - the Central and All states prompts.

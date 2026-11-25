@@ -220,7 +220,7 @@ export interface ChunkSearchHit extends ChunkPayload {
 /**
  * What a search may look in: only passages of these documents (`paths`),
  * and those of `preferred` ranked first. The Bylaws tab's State dropdown
- * (lib/rag/regions.ts): the chosen state's documents plus the national ones.
+ * (lib/rag/regions.ts stateScope): the chosen state's own documents only.
  */
 export interface SearchScope {
   paths: string[]
@@ -519,7 +519,9 @@ export async function searchChunksConstrained(
   // setback table ranked 116th-558th of 6,371 for "setbacks on an 800 sqm
   // plot", outside the pool, so the row was never matched (bylaws pressure
   // test, Nov 2026). The row match is the relevance test that counts.
-  if (scope?.preferred.size) {
+  // Skipped when the scope is the state's own documents only (stateScope):
+  // the first search already was this one.
+  if (scope?.preferred.size && scope.preferred.size < scope.paths.length) {
     try {
       merge(await searchChunks(organizationId, vector, CONSTRAINED_POOL_SIZE, collection, floor, [...scope.preferred]))
     } catch (e) {
