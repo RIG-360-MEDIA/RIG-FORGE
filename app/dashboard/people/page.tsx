@@ -8,6 +8,7 @@ import { userCan } from '@/lib/permissions'
 import MemberCard from '@/components/people/MemberCard'
 import MemberSlideOver from '@/components/people/MemberSlideOver'
 import RolesManager from '@/components/people/RolesManager'
+import GenerateUserModal from '@/components/onboarding/GenerateUserModal'
 import StatusDot from '@/components/ui/StatusDot'
 import Badge from '@/components/ui/Badge'
 import Avatar from '@/components/ui/Avatar'
@@ -64,6 +65,9 @@ function PeoplePageInner() {
   // Role management (create/edit roles, assign them) is open to base admins +
   // super-admins. Promoting to base ADMIN stays super-admin-only (enforced API-side).
   const canManageRoles = user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN'
+  // Adding a member (login + temporary password) is offered here as well as on
+  // Onboarding: that tab is often cut off in the top bar on laptop screens.
+  const canAddMembers = userCan(user, 'members.manage')
   // For employees, only allow slide-over for own profile
   const selectedId = isAdmin
     ? rawSelectedId
@@ -81,6 +85,7 @@ function PeoplePageInner() {
     return s === 'WORKING' || s === 'NOT_WORKING' ? s : ''
   })
   const [rolesManagerOpen, setRolesManagerOpen] = useState(false)
+  const [addMemberOpen, setAddMemberOpen] = useState(false)
 
   // Redirect unauthenticated users
   useEffect(() => {
@@ -170,7 +175,16 @@ function PeoplePageInner() {
               TEAM MEMBERS
             </h1>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center justify-end gap-3">
+            {canAddMembers && (
+              <button
+                type="button"
+                onClick={() => setAddMemberOpen(true)}
+                className="px-4 py-2 rounded-card bg-accent text-white font-mono text-xs tracking-widest hover:opacity-90 transition-opacity"
+              >
+                + ADD MEMBER
+              </button>
+            )}
             {canManageRoles && (
               <button
                 type="button"
@@ -325,6 +339,15 @@ function PeoplePageInner() {
           setMembers((prev) => prev.map((m) => (m.id === id ? { ...m, role: role as MemberSummary['role'] } : m)))
         }
       />
+
+      {/* ── Add member: the same form as Onboarding > Generate User ── */}
+      {addMemberOpen && (
+        <GenerateUserModal
+          onClose={() => setAddMemberOpen(false)}
+          onGenerated={() => void fetchMembers()}
+          isSuperAdmin={isSuperAdmin}
+        />
+      )}
 
       {/* ── Roles & Permissions manager (admins + super-admins) ─── */}
       {canManageRoles && (
