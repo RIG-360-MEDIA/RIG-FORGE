@@ -54,6 +54,11 @@ add('trijya', UK_GO, 0, 0.82, 'Government order on compounding of buildings in U
 const MDDA_RES_FAR = '(i) \nआवासीय \nक्र0 सं0 \nउपयोग समूह \n( भूखण्ड क्षेत्रफल  \nवर्गमीटर में ) \nमैदानी क्षेत्र \nपर्वतीय क्षेत्र \nअधिकतम भू- \nआच्छादनः \nअनुमन्य \nएफ0ए0आर0\n# ग्रीन बिल्डिंग \nहेतु प्राप्त रेटिंग \nके आधार पर देय \nअतिरिक्त \nएफ0ए0आर0 \nअधिकतम भू- \nआच्छादन : \n (%  में)  \nअनुमन्य \nएफ0ए0आर0 \na \nप्लाटेड \n \n1- > 75-150 तक \n70 \n1.80 \n- \n75 \n1.80 \n2-\n>150- 250 तक \n65\n1.70\n-\n70\n1.60\n3- >250- 350 तक \n60 \n1.60 \n- \n65 \n1.50 \n'
 add('trijya', UK, 3, 0.84, MDDA_RES_FAR)
 add('trijya', UK, 4, 0.84, setbackTable('Residential plotted development', 'up to 150\n2.0\n1.0\n-\n-\n150-250\n3.0\n1.5\n-\n-\n250-350\n3.5\n2.0\n1.5\n-'))
+// MDDA's commercial FAR and coverage table, its range written ">200 से 500"
+// (no तक): read as ">200" alone, "500" became the coverage and the coverage
+// "55" the FAR ("FAR 55, ground coverage 500%", Dehradun, Nov 2026).
+const MDDA_COM_FAR = '(ii) \nव्यावसायिक \nक्र0 सं0 \nउपयोग समूह \n( भूखण्ड क्षेत्रफल  \nवर्गमीटर में ) \nमैदानी क्षेत्र \nपर्वतीय क्षेत्र \nअधिकतम भू- \nआच्छादनः \nअनुमन्य \nएफ0ए0आर0\nअधिकतम भू- \nआच्छादनः \nअनुमन्य \nएफ0ए0आर0 \n1- 200 तक \n60 \n1.50 \n55 \n1.20 \n2- >200 से 500 \n55 \n1.80 \n50 \n1.50 \n3- >500 से 1000 \n50 \n2.00 \n45 \n1.60 \n'
+add('trijya', UK, 5, 0.84, MDDA_COM_FAR)
 add('trijya', UK_DRAFT, 0, 0.9, 'DRAFT building bye-laws for consultation.')
 add('trijya', UK_DRAFT, 1, 0.95, 'Residential plotted development\nPlot area (sq m)\nGround coverage (%)\nFAR\nFront setback (m)\nup to 200\n75\n2.25\n1.20\n200-300\n70\n2.0\n1.80')
 // An older Uttarakhand edition (2011): the same table with older figures,
@@ -294,6 +299,33 @@ async function main() {
   const c = await run()
   check('a draft that says "not in the documents" is never checked or shown; the general answer is', c.roles === 'draft,draft,general' && c.shown === llm.general, `${c.roles} | ${c.shown}`)
 
+  // E: the draft says "FAR 55, ground coverage 500%" (the reported answer):
+  // the check is told which figures cannot be right; if it still returns them,
+  // those lines are never shown.
+  llm.draft = [
+    '**The answer**',
+    `The Uttarakhand bylaws give a FAR of **55** and a ground coverage of **500%** [${nNew}].`,
+    `- Setbacks: Front 6.0 m, Rear 2.0 m, Side-1: 3.0 m [${nNew}].`,
+    `- Floor area: 400 sq m × 55 = 22,000 sq m [${nNew}].`,
+  ].join('\n')
+  llm.verify = llm.draft
+  const e = await run()
+  const eVerify = llmCalls.find((x) => x.role === 'verify')?.system ?? ''
+  check('impossible figures in the draft are named to the cross-check',
+    /The draft states figures that cannot be right: [^\n]*FAR 55[^\n]*ground coverage 500%/.test(eVerify) && /ground coverage is never above 100%/.test(eVerify), eVerify.split('\n').filter((l) => /cannot be right|Sanity/.test(l)).join(' | '))
+  check('  if the check still returns them, no line with FAR 55, 500% or 22,000 is shown; the setbacks are, with a note',
+    !/\b55\b|500%|22,000/.test(e.shown) && e.shown.includes('Front 6.0 m, Rear 2.0 m, Side-1: 3.0 m') && e.shown.includes(ans.UNREADABLE_NOTE) && e.out.text === e.shown.trim(), e.shown)
+  // The check corrects them: its answer is shown as it is, with no note.
+  llm.verify = [
+    '**The answer**',
+    `Under the MDDA bylaws (2023), a 400 sq m commercial plot in the plains has a FAR of 1.80 and ground coverage of 55% [${nNew}].`,
+    `- Floor area: 400 sq m × 1.80 = 720 sq m [${nNew}].`,
+  ].join('\n')
+  const e2 = await run()
+  check('  a corrected answer is shown unchanged, with no note', e2.shown === llm.verify && !e2.shown.includes(ans.UNREADABLE_NOTE), e2.shown)
+  check('the drafter is told coverage is at most 100% and FAR a small ratio, and to write "Side-1: 3.0 m"',
+    /ground coverage is a share of the plot, never above 100%/.test(llmCalls.find((x) => x.role === 'draft')?.system ?? '') && /"Side-1: 3\.0 m"/.test(llmCalls.find((x) => x.role === 'draft')?.system ?? ''))
+
   // D (last: it puts the fake model's key on cooldown): the cross-check fails.
   llm.draft = `**The answer**\nThe front setback is 7.5 m [${nNew}].`
   llm.verify = 500
@@ -325,6 +357,16 @@ async function main() {
   const partial = String(ans.buildAnswerMessages({ ...dr, missing: 'setback (residential) for a 200 sq m plot' }, dq, [], 'Forge')[0]!.content)
   check('when one topic has no row, the others are still answered (never all dropped)',
     /none for setback \(residential\) for a 200 sq m plot/.test(partial) && /Answer every part they give, in full/.test(partial) && /Do not reply NOT_IN_DOCUMENTS/.test(partial))
+
+  console.log('\n## "FAR setbacks and coverage for a 400sqm commercial plot in dehradun plains" (FAR 55 / coverage 500%)')
+  const cq = 'FAR setbacks and coverage for a 400sqm commercial plot in dehradun plains'
+  const cr = await inOrg('trijya', () => ans.retrieve('bylaws', cq, 8, { state: 'Uttarakhand' }))
+  const cshow = cr.passages.map((p) => `${p.fileName}#${p.chunkIndex}: ${p.values ?? p.matchedRow ?? p.text.slice(0, 40)}`).join(' | ')
+  const comRow = cr.passages.find((p) => p.path === UK && p.chunkIndex === 5)
+  check('the commercial FAR row for >200 से 500 is read right: plains coverage 55%, FAR 1.80',
+    comRow?.values === 'Plains ground coverage 55%, Plains FAR 1.80, Hills ground coverage 50%, Hills FAR 1.50', cshow)
+  const cPrompt = String(ans.buildAnswerMessages(cr, cq, [], 'Forge')[0]!.content)
+  check('  the model is never told "coverage 500%" or "FAR 55"', !/coverage 500%|FAR 55\b/.test(cPrompt) && cPrompt.includes('Plains FAR 1.80'), cshow)
 
   console.log('\n## Other organisation')
   const foreign = await inOrg('other-org', () => ans.retrieve('bylaws', 'setback for 500 sq m commercial plot', 8, { state: 'Uttarakhand' }))

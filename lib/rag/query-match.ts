@@ -113,7 +113,8 @@ const escapeRe = (w: string) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 // Devanagari digits ("५०० वर्ग मीटर") as 0-9, so a plot size typed in Hindi is read.
 const fold = (s: string) => s.toLowerCase().normalize('NFC').replace(/[०-९]/g, (d) => String(d.charCodeAt(0) - 0x0966))
 /** Same text (case kept: headings are found by their capitals), dashes and minus as "-", whitespace as one space. */
-const flat = (s: string) => s.normalize('NFC').replace(/[–—−]/g, '-').replace(/\s+/g, ' ')
+// Devanagari digits (२०० से ५००) as ASCII, so a Hindi table's rows are read like any other.
+const flat = (s: string) => s.normalize('NFC').replace(/[–—−]/g, '-').replace(/[०-९]/g, (d) => String(d.charCodeAt(0) - 0x0966)).replace(/\s+/g, ' ')
 // A whole word or phrase: not inside a longer word, in any script.
 const wordRe = (w: string, flags = 'iu') => new RegExp(`(?<![\\p{L}\\p{M}])${escapeRe(w)}(?![\\p{L}\\p{M}])`, flags)
 const anyWordRe = (ws: string[], flags = 'giu') =>
@@ -381,37 +382,57 @@ interface Token {
 }
 
 const NUM = String.raw`(\d[\d,]*(?:\.\d+)?)`
-const HI_AREA = String.raw`(?:\s*(?:वर्ग\s*मीटर|वर्गमीटर|वर्गगीटर|वर्ग\s*मी\.?|मीटर|मी0))?`
+// "वर्ग मी0" is how Hindi tables shorten वर्ग मीटर; English units appear in Hindi rows too.
+const HI_AREA = String.raw`(?:\s*(?:वर्ग\s*मीटर|वर्गमीटर|वर्गगीटर|वर्ग\s*मी(?:0|\.)?|मीटर|मी0|sq\.?\s*m(?:ts?|trs?|eters?|etres?)?\.?|sqm))?`
+/** An area unit written after a range's first figure ("200 sqm - 500 sqm",
+ * "200 sq yd to 500 sq yd"). Not a plain "m": "3.0 m - 5.0" are two cells. */
+const EN_AREA = String.raw`(?:\s*(?:sq\.?\s*m(?:ts?|trs?|eters?|etres?)?\.?|sqm|sq\.?\s*y(?:ar)?ds?\.?|sq\.?\s*f(?:ee)?t\.?|sqft|square\s*(?:met(?:er|re)s?|yards?|f(?:ee|oo)t)|वर्ग\s*मीटर|वर्गमीटर|वर्ग\s*मी(?:0|\.)?|m2|m²))?`
 const toNum = (x: string) => Number(x.replace(/,/g, ''))
 // "2016-2020", "26-08-2019": years and dates are not ranges.
 const dateLike = (a: number, b: number) =>
   (a >= 1900 && a <= 2100 && b >= 1900 && b <= 2100) || (b >= 1900 && b <= 2100 && a <= 31)
 
+/** A closed range read from groups 1 (">", "=>" or none), 2 (low) and 3 (high). */
+function readRange(m: RegExpExecArray): Omit<Token, 's' | 'e' | 'text' | 'kind' | 'unit'> | null {
+  const lo = toNum(m[2]!), hi = toNum(m[3]!)
+  // "0-1000": tables write "up to 1000"; a range from zero is an OCR fragment.
+  if (!(hi > lo) || lo === 0 || dateLike(lo, hi)) return null
+  // "| 2.0 | - | 1000 तक" read flat is "2.0 - 1000": a row's last figure,
+  // a dash for an empty cell, and the next row's plot size. A decimal
+  // figure followed by a number many times larger is not a range (real
+  // ones read "300 - 500", "7.5 - 12 m"). Taken as 2-1000 sq m it covered
+  // every plot up to 1000 and beat the real "600 तक" row.
+  if (/\./.test(m[2]!) && hi >= lo * 8) return null
+  // "| 3.0 | - | 5.0 |": two figures with a dash for the empty cell
+  // between them. A range of decimals is written with its unit
+  // ("1.5 - 2.5 m"); without one, these are table cells.
+  if (/\./.test(m[2]!) && /\./.test(m[3]!) && !/^\s*(?:m\b|mt|mtr|met|मीटर|sq|वर्ग|%)/iu.test(m.input.slice(m.index + m[0].length, m.index + m[0].length + 8))) return null
+  return { lo, hi, loInc: !(m[1] && m[1].includes('>') && !m[1].includes('=')), hiInc: true }
+}
+
+// A range must be read whole. Read as its lower bound alone (">200" of
+// ">200 से 500"), the rest of it ("500") became the row's first figure and
+// every column shifted by one: "Plains ground coverage 500%, Plains FAR 55"
+// for a 400 sq m commercial plot in Dehradun (Nov 2026).
 const TOKEN_RES: Array<{ kind: Kind; re: RegExp; read: (m: RegExpExecArray) => Omit<Token, 's' | 'e' | 'text' | 'kind' | 'unit'> | null }> = [
   // Hindi: "1001 से 3000 तक", "1001 वर्गमीटर से 3000 वर्गमीटर तक"
   { kind: 'between', re: new RegExp(String.raw`${NUM}${HI_AREA}\s*से\s*${NUM}${HI_AREA}\s*तक`, 'gu'),
     read: (m) => ({ lo: toNum(m[1]!), hi: toNum(m[2]!), loInc: true, hiInc: true }) },
+  // Hindi: "200 से अधिक 500 तक", "200 से अधिक एवं 500 वर्ग मी0 तक" (more than 200, up to 500)
+  { kind: 'between', re: new RegExp(String.raw`${NUM}${HI_AREA}\s*से\s*(?:अधिक|ज्यादा|ऊपर)\s*(?:,|एवं|तथा|और|व)?\s*${NUM}${HI_AREA}\s*तक`, 'gu'),
+    read: (m) => (toNum(m[2]!) > toNum(m[1]!) ? { lo: toNum(m[1]!), hi: toNum(m[2]!), loInc: false, hiInc: true } : null) },
   // Hindi: "35000 से अधिक"
   { kind: 'above', re: new RegExp(String.raw`${NUM}${HI_AREA}\s*से\s*(?:अधिक|ज्यादा|ऊपर)`, 'gu'),
     read: (m) => ({ lo: toNum(m[1]!), hi: Infinity, loInc: false, hiInc: false }) },
-  // ">300 - 1000", "=>100 – 300", ">500 to1200", "1000 -2000"
-  { kind: 'between', re: new RegExp(String.raw`(=?>=?|≥|>)?\s*${NUM}\s*(?:-|to|upto)\s*${NUM}(?![\d-]|\.\d)`, 'giu'),
-    read: (m) => {
-      const lo = toNum(m[2]!), hi = toNum(m[3]!)
-      // "0-1000": tables write "up to 1000"; a range from zero is an OCR fragment.
-      if (!(hi > lo) || lo === 0 || dateLike(lo, hi)) return null
-      // "| 2.0 | - | 1000 तक" read flat is "2.0 - 1000": a row's last figure,
-      // a dash for an empty cell, and the next row's plot size. A decimal
-      // figure followed by a number many times larger is not a range (real
-      // ones read "300 - 500", "7.5 - 12 m"). Taken as 2-1000 sq m it covered
-      // every plot up to 1000 and beat the real "600 तक" row.
-      if (/\./.test(m[2]!) && hi >= lo * 8) return null
-      // "| 3.0 | - | 5.0 |": two figures with a dash for the empty cell
-      // between them. A range of decimals is written with its unit
-      // ("1.5 - 2.5 m"); without one, these are table cells.
-      if (/\./.test(m[2]!) && /\./.test(m[3]!) && !/^\s*(?:m\b|mt|mtr|met|मीटर|sq|वर्ग|%)/iu.test(m.input.slice(m.index + m[0].length, m.index + m[0].length + 8))) return null
-      return { lo, hi, loInc: !(m[1] && m[1].includes('>') && !m[1].includes('=')), hiInc: true }
-    } },
+  // Hindi without तक: ">200 से 500", "200 वर्ग मी0 से 500 वर्ग मी0"
+  { kind: 'between', re: new RegExp(String.raw`(=?>=?|≥|>)?\s*${NUM}${HI_AREA}\s*से\s*${NUM}${HI_AREA}(?![\d.]|\s*(?:से|तक))`, 'gu'),
+    read: readRange },
+  // "between 200 and 500 sq m"
+  { kind: 'between', re: new RegExp(String.raw`(?<![\p{L}])between()\s+${NUM}${EN_AREA}\s*(?:and|&)\s*${NUM}(?![\d-]|\.\d)`, 'giu'),
+    read: readRange },
+  // ">300 - 1000", "=>100 – 300", ">500 to1200", "1000 -2000", ">200 sqm - 500 sqm"
+  { kind: 'between', re: new RegExp(String.raw`(=?>=?|≥|>)?\s*${NUM}${EN_AREA}\s*(?:-|to|upto)\s*${NUM}(?![\d-]|\.\d)`, 'giu'),
+    read: readRange },
   // Hindi: "1000 तक", "100 वर्गमीटर तक" (not the second half of "से ... तक")
   { kind: 'upto', re: new RegExp(String.raw`(?<!से\s{0,3})(?<!से)${NUM}${HI_AREA}\s*तक`, 'gu'),
     read: (m) => ({ lo: 0, hi: toNum(m[1]!), loInc: true, hiInc: true }) },
@@ -446,7 +467,7 @@ function findTokens(t: string): Token[] {
       // "up to 50 percent": a share, not a plot area, height or road width.
       if (/^\s*(?:%|percent|per cent|प्रतिशत)/iu.test(after)) continue
       // "12.0 मीटर से 15.0 मीटर तक": metres (no वर्ग) inside a Hindi range are a length.
-      const unit = AREA_SUFFIX.test(after) || /वर्ग/.test(m[0]) ? 'area' : LEN_SUFFIX.test(after) || /(?:मीटर|मी0)/.test(m[0]) ? 'len' : null
+      const unit = AREA_SUFFIX.test(after) || /वर्ग|sq|square|m2|m²/iu.test(m[0]) ? 'area' : LEN_SUFFIX.test(after) || /(?:मीटर|मी0)/.test(m[0]) ? 'len' : null
       if (kind === 'exact' && unit !== 'area') continue
       taken.push([s, e])
       out.push({ s, e, text: t.slice(s, e).trim(), kind, unit, ...r })
@@ -615,12 +636,36 @@ const COLUMN_SETS: Array<{ re: RegExp; labels: string[]; unit?: string; units?: 
  * are what the question asked about (FAR labels are not shown for a ground
  * coverage question, though the same table holds both). */
 function readValues(t: string, sectionStart: number, k: Token, row: string, asked: TopicKey[]): string | undefined {
-  return readValuesFrom(t, sectionStart, k.s, row.slice(k.text.length), asked)
+  let after = row.slice(k.text.length)
+  // A range read only as its lower bound (">200" of a ">200 ... 500" written
+  // some way no pattern knows): the rest of the label is not a figure.
+  if (k.kind === 'above') {
+    const rest = /^\s*(?:से|-|to|upto|and|&|तथा|एवं)\s*(\d[\d,]*(?:\.\d+)?)(?:\s*(?:वर्ग\s*मीटर|वर्गमीटर|वर्ग\s*मी(?:0|\.)?|sq\.?\s*m\.?|sqm|sq\.?\s*yds?\.?|sq\.?\s*ft\.?))?(?:\s*तक)?/iu.exec(after)
+    if (rest && toNum(rest[1]!) > k.lo) after = after.slice(rest[0].length)
+  }
+  return readValuesFrom(t, sectionStart, k.s, after, asked)
 }
+
+/** Whether a figure can be the value of a column: ground coverage is a share
+ * of the plot (at most 100%), FAR a small ratio, a setback a few metres. A
+ * figure outside these is a misread column, never labelled. */
+function plausible(label: string, unit: string, v: string): boolean {
+  if (v === '-') return true
+  const n = Number(v.replace('%', ''))
+  if (!Number.isFinite(n)) return false
+  if (unit === '%') return n > 0 && n <= 100
+  if (/\bFAR\b/.test(label)) return !v.endsWith('%') && n > 0 && n <= MAX_FAR
+  if (unit === 'm') return !v.endsWith('%') && n >= 0 && n <= 50
+  return true
+}
+
+/** The largest FAR any Indian bylaw gives (transit-oriented zones reach about 5 to 8). */
+export const MAX_FAR = 10
 
 /** The figures in `after` against the column labels found above `at`. */
 function readValuesFrom(t: string, sectionStart: number, at0: number, after: string, asked: TopicKey[]): string | undefined {
-  const vals = after.match(/(?<![\p{L}\d.])(?:\d+(?:\.\d+)?%?|-)(?![\p{L}\d])/gu) ?? []
+  // "200 वर्ग मी0": the 0 of मी0 follows a vowel sign (\p{M}), not a figure.
+  let vals: string[] = after.match(/(?<![\p{L}\p{M}\d.])(?:\d+(?:\.\d+)?%?|-)(?![\p{L}\p{M}\d])/gu) ?? []
   if (!vals.length) return undefined
   let cols: (typeof COLUMN_SETS)[number] | null = null, at = -1
   const head = t.slice(Math.max(sectionStart, at0 - 1500), at0)
@@ -631,10 +676,19 @@ function readValuesFrom(t: string, sectionStart: number, at0: number, after: str
   if (!cols || vals.length < cols.labels.length) return undefined
   const topics = Array.isArray(cols.topic) ? cols.topic : [cols.topic]
   if (asked.length && !asked.some((a) => topics.includes(a))) return undefined
+  const unitOf = (i: number) => cols!.units?.[i] ?? cols!.unit ?? ''
+  // Leading figures no first column can hold (a plot size of 500 under
+  // "ground coverage") are what is left of the row's label: skip them.
+  for (let skip = 0; skip < 2 && vals.length > cols.labels.length && /^\d{2,}$/.test(vals[0]!) && !plausible(cols.labels[0]!, unitOf(0), vals[0]!); skip++) vals = vals.slice(1)
+  // Still a figure its column cannot hold: the row is misread. No labels:
+  // a wrong label is worse than none (the row text is still given).
+  if (cols.labels.some((l, i) => !plausible(l, unitOf(i), vals[i]!))) return undefined
   return cols.labels.map((l, i) => {
     const v = vals[i]!
-    const unit = cols!.units?.[i] ?? cols!.unit ?? ''
-    return v === '-' ? `${l} none` : `${l} ${v}${unit === '%' ? '%' : unit ? ` ${unit}` : ''}`
+    const unit = unitOf(i)
+    // "Side-1: 3.0 m", not "Side-1 3.0 m", which reads as 13.0 m.
+    const sep = /\d$/.test(l) ? ': ' : ' '
+    return v === '-' ? `${l}${sep}none` : `${l}${sep}${v}${unit === '%' ? '%' : unit ? ` ${unit}` : ''}`
   }).join(', ')
 }
 
@@ -706,6 +760,11 @@ function areaFactor(t: string, k: Token, sectionStart: number): number {
     re.lastIndex = 0
     const m = re.exec(after)
     if (m && /^\s*$/.test(after.slice(0, m.index))) return factor
+  }
+  // A unit inside the range itself ("200 sq yd - 500").
+  for (const { re, factor } of AREA_UNIT_RES) {
+    re.lastIndex = 0
+    if (re.test(k.text)) return factor
   }
   const head = t.slice(Math.max(sectionStart, k.s - 600), k.s)
   let best: { at: number; factor: number } | null = null

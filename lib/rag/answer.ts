@@ -23,7 +23,7 @@ import { getOrgId } from '@/lib/tenant-context'
 import { embedQuery } from './embeddings'
 import { QUOTE_GAP, findSpan, tidy } from './highlight'
 import { BYLAWS_COLLECTION, COLLECTION, listDocumentHeads, listDocumentPaths, searchChunksConstrained } from './qdrant'
-import { analyzeQuery, describeConstraints, documentPriority, isConstrained, isDraftDocument, type QueryConstraints } from './query-match'
+import { analyzeQuery, describeConstraints, documentPriority, isConstrained, isDraftDocument, MAX_FAR, type QueryConstraints } from './query-match'
 import { allStatesOnlyScope, allStatesScope, centralScope, isModelRegulation, stateOfPath, stateScope, statesOf, statesWithOwnDocuments } from './regions'
 import { documentYear } from './years'
 
@@ -522,6 +522,9 @@ export function buildAnswerMessages(
     '5. Related rules: other requirements the passages state for the same case, each with its figure (ground coverage, setbacks, height, parking, ...).',
     'More detail must come from the passages, never from what such rules usually mean: do not explain a term (e.g. what Base FAR or Max FAR means) or name a condition unless a passage says it, and do not list rules the passages do not give. A column heading is a label, not a condition. When the passages give nothing for a part, leave out the part and its heading entirely; never write that something is not provided. No closing summary that repeats the answer.',
     'Write in full sentences and bullets; as long as the passages support (often 120 to 300 words), short when they hold little.',
+    // "FAR 55, ground coverage 500%" (Dehradun, Nov 2026): a row read one column off.
+    `- Sanity: ground coverage is a share of the plot, never above 100%; FAR is a small ratio (in Indian bylaws about 0.5 to 5, never above ${MAX_FAR}); a setback is a few metres. A figure outside these is a misread column (often the end of the plot-size range, e.g. "200 से 500" gives 500, or the coverage read as the FAR): never write it. Read the row again in the passage text, column by column; if it still cannot be read, give the other figures and say that one should be read from the table [n].`,
+    '- Write a label that ends in a number with a colon before its figure ("Side-1: 3.0 m"), never "Side-1 3.0 m", which reads as 13.0 m.',
     '- Every figure you write must be printed in a passage, or be your arithmetic on figures that are. When a column holds words instead of a number (e.g. Ground coverage: "Max. coverage after ensuring setbacks"), quote those words as its value: never turn them into a percentage or a number. A figure in one table is never the value of a different column or table (FAR figures are not ground coverage).',
     `- If no passage gives a figure for exactly what was asked, ${notAnswered}; never pick a nearby figure from another row, table or topic and present it as the answer.`,
     '- When a passage gives an "Applicable row", that row is the one for the case asked: answer from it, naming its columns (e.g. Front 3 m, Rear 1.5 m).',
@@ -829,6 +832,110 @@ export function buildGeneralAnswerMessages(
   ]
 }
 
+// ---------------------------------------------------------------------------
+// Impossible figures
+// ---------------------------------------------------------------------------
+//
+// "FAR 55, ground coverage 500%" for a 400 sq m commercial plot in Dehradun
+// (Nov 2026): a table row read one column off, so the plot size's "500" was
+// shown as the coverage and the coverage "55" as the FAR, and a worked
+// example "400 sq m × 55 = 22,000 sq m" built on it. The cross-check passed
+// it: both figures ARE printed in the passage. A figure no bylaw can give is
+// caught here, by rule, whatever the model wrote.
+
+const FAR_WORD = String.raw`(?:FAR|F\.\s?A\.\s?R\.?|FSI|F\.\s?S\.\s?I\.?|floor[\s-]*area[\s-]*ratio|floor[\s-]*space[\s-]*index|एफ0\s?ए0\s?आर0|एफ\.\s?ए\.\s?आर\.?)`
+/** "FAR 55", "a FAR of 55", "Plains FAR: 55": the figure right after the word. */
+const FAR_FIGURE = new RegExp(String.raw`(?<![\p{L}])${FAR_WORD}(?![\p{L}])(?:\s*\([^)\n]{0,30}\))?[\s:=–-]*(?:(?:of|is|was|will\s+be|shall\s+be|be|at|permissible|permitted|allowed|allowable|maximum|max\.?|base|plains|hills|a|the|as|upto|up\s+to)\s+)*(\d+(?:,\d{2,3})*(?:\.\d+)?)(?!\d|[.,]\d)(?!\s*(?:%|sq|square|m\b|m²|m2|mt|metre|meter|वर्ग|मीटर|years?\b))`, 'giu')
+/** Arithmetic by a factor: "400 sq m × 55 = 22,000 sq m". */
+const TIMES_FIGURE = /(?:×|(?<![\p{L}])x(?=\s)|\s\*\s)\s*(\d+(?:,\d{2,3})*(?:\.\d+)?)\s*(%?)\s*=/giu
+const PERCENT = /(\d+(?:,\d{2,3})*(?:\.\d+)?)\s*(?:%|per\s*cent|percent|प्रतिशत)/giu
+const COVERAGE_WORD = /coverage|आच्छादन/iu
+const FAR_HEADER = new RegExp(String.raw`(?<![\p{L}])${FAR_WORD}(?![\p{L}])`, 'iu')
+const num = (s: string) => Number(s.replace(/,/g, ''))
+const isYear = (s: string) => /^(?:19|20)\d{2}$/.test(s)
+
+const tableCells = (line: string) => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim())
+const isTableLine = (line: string) => /^\s*\|.*\|\s*$/.test(line)
+const isSeparator = (line: string) => isTableLine(line) && tableCells(line).every((c) => /^:?-{2,}:?$/.test(c))
+
+/** The impossible figures in one line of an answer; `header` is the cells of
+ * the markdown table the line is a row of, if any. */
+function impossibleInLine(line: string, header: string[] | null): string[] {
+  const l = line.replace(/\*\*|__|`/g, '').replace(/\[\d{1,2}\]/g, ' ')
+  const out: string[] = []
+  if (header && isTableLine(l) && !isSeparator(l)) {
+    tableCells(l).forEach((cell, i) => {
+      const h = header[i] ?? ''
+      const v = /(\d+(?:,\d{2,3})*(?:\.\d+)?)\s*(%?)/.exec(cell)
+      if (!v || isYear(v[1]!)) return
+      if (COVERAGE_WORD.test(h) && num(v[1]!) > 100) out.push(`${h} ${v[1]}${v[2]}`)
+      else if (FAR_HEADER.test(h) && !/\barea\b(?!\s*ratio)|sq|built/i.test(h) && (v[2] === '%' || num(v[1]!) > MAX_FAR)) out.push(`${h} ${v[1]}${v[2]}`)
+    })
+  }
+  for (const m of l.matchAll(FAR_FIGURE)) {
+    if (!isYear(m[1]!) && num(m[1]!) > MAX_FAR) out.push(`FAR ${m[1]}`)
+  }
+  if (FAR_HEADER.test(l) || /floor\s*area|built[\s-]*up/i.test(l)) {
+    for (const m of l.matchAll(TIMES_FIGURE)) if (!m[2] && num(m[1]!) > MAX_FAR) out.push(`FAR ${m[1]} (worked example)`)
+  }
+  if (COVERAGE_WORD.test(l)) {
+    for (const m of l.matchAll(PERCENT)) if (num(m[1]!) > 100) out.push(`ground coverage ${m[1]}%`)
+  }
+  return [...new Set(out)]
+}
+
+/** Every impossible figure in an answer: ground coverage above 100%, a FAR above MAX_FAR. */
+export function impossibleFigures(text: string): string[] {
+  const g = figureGuard(() => {})
+  g.push(text)
+  g.end()
+  return g.dropped
+}
+
+/** Said when lines were held back for an impossible figure. */
+export const UNREADABLE_NOTE = '_Some figures were left out because the table row could not be read reliably; check them in the cited table before relying on this answer._'
+
+/**
+ * Pass an answer on line by line, holding back any line with an impossible
+ * figure (a table row, a bullet, a worked example). `end` flushes the last
+ * line; `finish` adds UNREADABLE_NOTE when a line was held back and returns
+ * the text that was shown.
+ */
+export function figureGuard(emit: (delta: string) => void) {
+  let buf = ''
+  let shown = ''
+  let header: string[] | null = null
+  let prev = ''
+  const dropped: string[] = []
+  const line = (l: string) => {
+    if (isSeparator(l)) header = isTableLine(prev) ? tableCells(prev) : null
+    else if (!isTableLine(l)) header = null
+    prev = l
+    const bad = impossibleInLine(l, header)
+    if (bad.length) { dropped.push(...bad); return }
+    shown += l
+    emit(l)
+  }
+  return {
+    dropped,
+    push(delta: string) {
+      buf += delta
+      let i: number
+      while ((i = buf.indexOf('\n')) >= 0) { line(buf.slice(0, i + 1)); buf = buf.slice(i + 1) }
+    },
+    end() { if (buf) line(buf); buf = '' },
+    finish(): string {
+      if (dropped.length) {
+        console.warn('[rag] held back impossible figures:', dropped.join('; '))
+        const note = `${shown.endsWith('\n') ? '\n' : '\n\n'}${UNREADABLE_NOTE}`
+        shown += note
+        emit(note)
+      }
+      return shown.trim()
+    },
+  }
+}
+
 /**
  * Stream a model's reply, holding back the start until it is clear it is
  * not NO_ANSWER. Null when it is (nothing was emitted); text '' when no
@@ -869,7 +976,7 @@ async function gatedStream(
  * certain a newer version of the bylaws than any here has been issued, and
  * never changes a figure for that. Output: the final answer only.
  */
-export function buildVerifyMessages(r: RagRetrieval, question: string, draft: string, orgName: string): ModelMessage[] {
+export function buildVerifyMessages(r: RagRetrieval, question: string, draft: string, orgName: string, issues: string[] = []): ModelMessage[] {
   const latest = Math.max(0, ...r.passages.map((p) => p.year ?? 0))
   const scope = r.state
     ? `Only ${r.state}'s own documents were searched: the answer must use only them, never the NBC, a model regulation or another state.`
@@ -889,6 +996,8 @@ export function buildVerifyMessages(r: RagRetrieval, question: string, draft: st
     `5. Only if you are certain that a version of these bylaws newer than the latest document below has been issued, add one last line: "Note: <its name and year> may have changed this; check it before relying on the figure." Never change a figure because of it, never guess one, and add nothing when you are not certain.`,
     '6. A passage marked DRAFT is a proposed bylaw document (not the draft answer you are checking), not in force. If the answer gives its figure as the rule, rewrite that part from a bylaw in force below when one gives it; otherwise say "The draft bylaws (not in force) propose ...".',
     `7. If the question asks several things (FAR, setbacks, coverage), keep every part the passages support and remove only the unsupported parts. Reply with exactly ${NO_ANSWER} and nothing else only when no passage supports any part of the answer.`,
+    `8. Sanity, even for a figure the passage prints: ground coverage is never above 100%, FAR is a small ratio (about 0.5 to 5, never above ${MAX_FAR}), a setback is a few metres. A figure outside these was read from the wrong column (often the end of the plot-size range, e.g. "200 से 500" gives 500, or the coverage taken for the FAR). Read the row again in the passage text, column by column, and correct it, the worked example and the By year table too; if it cannot be read with certainty, remove the figure and say it should be read from the table [n].`,
+    issues.length ? `The draft states figures that cannot be right: ${issues.join('; ')}. Correct every one of them as in 8.` : '',
     'Keep the draft\'s structure, bold headings, language and [n] citations. When nothing is wrong, return the draft unchanged.',
     'Output only the final answer: no preamble, no list of changes, and no mention of a draft, a check, passages, searches or AI.',
     '',
@@ -932,18 +1041,27 @@ async function streamFromPassages(
   if (draftText.startsWith(NO_ANSWER)) return null
   const cleanDraft = draftText.replace(NO_ANSWER, '').trim()
 
+  // Impossible figures in the draft (coverage 500%, FAR 55) are named to the
+  // check, and any that still reach the answer are held back line by line.
+  const issues = impossibleFigures(cleanDraft)
+  if (issues.length) console.warn('[rag] draft states impossible figures:', issues.join('; '))
   onStatus?.('Cross-checking the answer against the latest bylaws…')
+  const guard = figureGuard(emit)
   const checked = await gatedStream(
-    buildVerifyMessages(r, question, cleanDraft, orgName),
+    buildVerifyMessages(r, question, cleanDraft, orgName, issues),
     { ...settings, temperature: 0, ...(draft.meta ? { deprioritize: [draft.meta.provider] } : {}) },
-    emit,
+    guard.push,
   )
   if (checked === null) return null
-  if (checked.text) return checked
+  if (checked.text) {
+    guard.end()
+    return { text: guard.finish(), meta: checked.meta }
+  }
   // The check got no reply: show the draft rather than nothing.
   console.warn('[rag] answer cross-check got no reply; showing the unchecked draft')
-  emit(cleanDraft)
-  return { text: cleanDraft, meta: draft.meta }
+  guard.push(cleanDraft)
+  guard.end()
+  return { text: guard.finish(), meta: draft.meta }
 }
 
 export interface DocumentAnswer {
@@ -997,9 +1115,16 @@ export async function answerNeverNotFound(opts: {
   const messages = buildGeneralAnswerMessages(first.source, question, history, orgName, first.state)
   const settings = { temperature: 0.3, maxOutputTokens: ANSWER_MAX_OUTPUT_TOKENS }
   // Groq first, then any cloud model.
-  let res = await streamPlainAnswer(messages, { ...settings, exclude: ALL_PROVIDERS.filter((p) => p !== 'groq') }, emit)
-  if (!res.text.trim()) res = await streamPlainAnswer(messages, { ...settings, ...answerProviders() }, emit)
-  if (res.text.trim()) return { text: res.text.trim(), meta: res.meta, retrieval: null }
+  let guard = figureGuard(emit)
+  let res = await streamPlainAnswer(messages, { ...settings, exclude: ALL_PROVIDERS.filter((p) => p !== 'groq') }, guard.push)
+  if (!res.text.trim()) {
+    guard = figureGuard(emit)
+    res = await streamPlainAnswer(messages, { ...settings, ...answerProviders() }, guard.push)
+  }
+  if (res.text.trim()) {
+    guard.end()
+    return { text: guard.finish(), meta: res.meta, retrieval: null }
+  }
   return { text: '', meta: null, retrieval: lastWithPassages }
 }
 

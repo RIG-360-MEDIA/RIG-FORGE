@@ -278,6 +278,82 @@ async function main() {
     valsOf('FAR for resorts', mddaComFar).includes('Plains FAR 0.75') && valsOf('what FAR is allowed for a guest house', mddaComFar).includes('Hills FAR 1.35'))
   check('"guest house" is a hotel use, not also residential ("house")', JSON.stringify(aq('what FAR is allowed for a guest house').uses) === '["hotel"]', JSON.stringify(aq('what FAR is allowed for a guest house').uses))
   check('a "5 stars" hotel class is not read as figures', !valsOf('FAR for hotels', mddaComFar).includes('Plains ground coverage 5'))
+
+  // "FAR setbacks and coverage for a 400sqm commercial plot in dehradun plains"
+  // answered "FAR 55, ground coverage 500%" (Nov 2026): the row's range was read
+  // as ">200" alone, so its "500" became the coverage and the coverage the FAR.
+  console.log('\n## Plot-size ranges are read whole (FAR 55 / coverage 500%)')
+  const comFarHead = '(ii) \nव्यावसायिक \nक्र0 सं0 \nउपयोग समूह \n( भूखण्ड क्षेत्रफल  \nवर्गमीटर में ) \nमैदानी क्षेत्र \nपर्वतीय क्षेत्र \nअधिकतम भू- \nआच्छादनः \nअनुमन्य \nएफ0ए0आर0\nअधिकतम भू- \nआच्छादनः \nअनुमन्य \nएफ0ए0आर0 \n'
+  const comFar = (range: string, first = '1- 200 तक', cells = '55 \n1.80 \n50 \n1.50') =>
+    `${comFarHead}${first} \n60 \n1.50 \n55 \n1.20 \n2- ${range} \n${cells} \n3- >1000 \n50 \n2.00 \n45 \n1.60 \n`
+  const q400 = 'FAR and coverage for a 400sqm commercial plot in dehradun plains'
+  const right400 = 'Plains ground coverage 55%, Plains FAR 1.80, Hills ground coverage 50%, Hills FAR 1.50'
+  const rangeForms = ['>200 से 500', '>200 से 500 वर्ग मी0 तक', '200 वर्ग मी0 से 500 वर्ग मी0 तक', '200 से अधिक 500 तक', '200 से अधिक एवं 500 वर्गमीटर तक',
+    '>200 sqm-500 sqm', '>200 sq m to 500 sq m', 'between 200 and 500', '>२०० से ५०० तक', '>200–500 तक', '> 200 - \n500 तक', '>200 ~ 500']
+  const wrong = rangeForms.filter((f) => valsOf(q400, comFar(f)) !== right400)
+  check(`every way a range is written gives the right row: coverage 55%, FAR 1.80 (${rangeForms.length} forms)`, wrong.length === 0,
+    wrong.map((f) => `${f} -> ${valsOf(q400, comFar(f)) || 'none'}`).join(' | '))
+  check('  the reported shift ("Plains ground coverage 500%, Plains FAR 55") is never produced',
+    rangeForms.every((f) => !/500%|FAR 55/.test(valsOf(q400, comFar(f)))))
+  check('  the range covers 400 but not 150 or 600 (the lower and upper bounds are kept)',
+    valsOf('FAR and coverage for a 150sqm commercial plot', comFar('>200 से 500')).startsWith('Plains ground coverage 60%') &&
+    !valsOf('FAR and coverage for a 600sqm commercial plot', comFar('>200 से 500')).includes('55%'))
+  check('a row whose figures no column can hold is never labelled (coverage 155%, FAR 50)',
+    valsOf(q400, comFar('200 से 500 तक', '1- 200 तक', '155 \n1.80 \n50 \n1.50')) === '' && valsOf(q400, comFar('200 से 500 तक', '1- 200 तक', '55 \n18 \n50 \n1.50')) === '',
+    valsOf(q400, comFar('200 से 500 तक', '1- 200 तक', '155 \n1.80 \n50 \n1.50')))
+  check('the real MDDA commercial setback row for 400 sq m: 6.0 / 2.0 / 3.0, numbered labels with a colon (never "Side-1 3.0", read as 13.0)',
+    valsOf('setback for 400 sq m commercial plot in plains', mddaCommercial).startsWith('Plains front 6.0 m, Plains rear 2.0 m, Plains side-1: 3.0 m, Plains side-2: none'),
+    valsOf('setback for 400 sq m commercial plot in plains', mddaCommercial))
+
+  console.log('\n## Impossible figures never reach the user')
+  const { impossibleFigures, figureGuard, UNREADABLE_NOTE } = await import('../lib/rag/answer')
+  // The answer from the screenshot, as the model wrote it.
+  const reportedAnswer = [
+    '**The answer**',
+    'For a 400 sqm commercial plot in the plains of Dehradun, the Uttarakhand bylaws give a FAR of **55**, a ground-coverage of **500 %**, and the required setbacks are **Front 6.0 m, Rear 2.0 m, Side-1 3.0 m** [1][4].',
+    '**Details**',
+    '- **Applicable row (FAR & coverage)**: Plot area >200 – 500 sqm falls in the ">200-500" row, which applies to plains → Plains FAR 55, Plains ground-coverage 500 %[1].',
+    '- **Applicable row (setbacks)**: For a plot up to 400 sqm the plains setbacks are Front 6.0 m, Rear 2.0 m, Side-1: 3.0 m, Side-2: none [4].',
+    '**Worked example**',
+    '- **Floor-area from FAR**: 400 sqm × 55 = 22,000 sqm of permissible built-up floor area [1].',
+    '- **Ground-coverage area**: 400 sqm × 500 % = 2,000 sqm of allowable ground-coverage [1].',
+    '**By year**',
+    '| Document | Year | FAR | Ground coverage | Front setback | Status |',
+    '|---|---|---|---|---|---|',
+    '| Compiled_byelaws_I.pdf | 2020 | 55 [1] | 500% [1] | 6.0 m [4] | Latest: applies |',
+    '| MDDA Compiled_byelaws_uttarakhand.pdf | 2019 | 55 [3] | 500% [3] | 6.0 m [6] | Older edition: superseded |',
+  ].join('\n')
+  const caught = impossibleFigures(reportedAnswer)
+  check('the reported answer\'s FAR 55, coverage 500%, worked example and By year rows are all caught',
+    caught.includes('FAR 55') && caught.includes('ground coverage 500%') && caught.includes('FAR 55 (worked example)') && caught.some((f) => /^Ground coverage 500%$/.test(f)), caught.join('; '))
+  const sane = [
+    '**The answer**',
+    'Under the MDDA bylaws (2020), a 400 sq m commercial plot in the plains has a FAR of 1.80 and ground coverage of 55% [1].',
+    '- Plains FAR 1.80, Plains ground coverage 55%, Hills ground coverage 50%, Hills FAR 1.50 [1].',
+    '- The FAR for plots of 550 sq m is in the next row; FAR in the 2019 bylaws is the same; FAR (Floor Area Ratio) of 2.0 above 1000 sq m.',
+    '- 400 sq m × 1.80 = 720 sq m of floor area; 400 sq m × 55% = 220 sq m of ground coverage [1].',
+    '- Basement up to 100% of the plot below the building line; parking 1 ECS per 100 sq m.',
+    '| Document | Year | FAR | Ground coverage | Floor area at FAR | Status |',
+    '|---|---|---|---|---|---|',
+    '| Compiled_byelaws_I.pdf | 2020 | 1.80 [1] | 55% [1] | 720 sq m | Latest: applies |',
+    '| MDDA 2011.pdf | 2011 | 1.50 [2] | 60% [2] | 600 sq m | Older edition: superseded |',
+  ].join('\n')
+  check('a correct answer is left alone (FAR 1.80, 55%, "550 sq m", years, floor areas, 100% basement)', impossibleFigures(sane).length === 0, impossibleFigures(sane).join('; '))
+  // Streamed in small pieces, as the model writes.
+  const shownParts: string[] = []
+  const g = figureGuard((d) => shownParts.push(d))
+  for (const piece of reportedAnswer.match(/[\s\S]{1,5}/g) ?? []) g.push(piece)
+  g.end()
+  const finalText = g.finish()
+  const shownText = shownParts.join('')
+  check('streamed: no line with an impossible figure is ever emitted', !/\b55\b(?! ?%)|500 ?%|22,000/.test(shownText.replace(/400 sqm|Side-1/g, '')), shownText)
+  check('  the setbacks (correct) are still shown, and the user is told some figures were left out',
+    shownText.includes('Front 6.0 m, Rear 2.0 m, Side-1: 3.0 m') && shownText.includes(UNREADABLE_NOTE) && finalText === shownText.trim(), shownText)
+  const g2Parts: string[] = []
+  const g2 = figureGuard((d) => g2Parts.push(d))
+  for (const piece of sane.match(/[\s\S]{1,3}/g) ?? []) g2.push(piece)
+  g2.end()
+  check('  a correct answer streams through unchanged, with no note', g2.finish() === sane && g2Parts.join('') === sane)
   const mddaHeight = 'SET-BACKS (सेट बैक)\n12.0 मीटर से 15.0 मीटर तक ऊंचे भवनों के चारों ओर न्यूनतम 5.0 मीटर तत्पश्चात प्रत्येक 3.0 मीटर भवन ऊँंचाई अथवा उसके अंश पर सेट बैक में 1.0 मीटर अतिरिक्त'
   check('Hindi height range "12.0 मीटर से 15.0 मीटर तक ऊंचे भवनों" answers a 15 m high building',
     (qmod.matchPassage(mddaHeight, aq('setback required for a building 12 to 15 m high'), [], '')?.row ?? '').startsWith('12.0 मीटर से 15.0 मीटर तक'))
@@ -1109,7 +1185,7 @@ async function main() {
     check('"residential" is a use, 200 is the plot area', resQ.uses.join() === 'residential' && resQ.area === 200, JSON.stringify(resQ))
     const r = qm.matchPassage(residential, resQ)
     check('residential table: the ">150 to 300" row', /^>150 to 300 3 1\.5 0 0$/.test(r?.row ?? ''), JSON.stringify(r))
-    check('  read out against its columns', r?.values === 'Front 3 m, Rear 1.5 m, Side-1 0 m, Side-2 0 m', r?.values)
+    check('  read out against its columns', r?.values === 'Front 3 m, Rear 1.5 m, Side-1: 0 m, Side-2: 0 m', r?.values)
     check('  and labelled with its clause', /^3\.2\.4\.1 Residential/.test(r?.section ?? ''), r?.section)
     check('healthcare table is NOT an answer to a residential question (same row shape)', qm.matchPassage(healthcare, resQ) === null)
     const hosp = qm.matchPassage(healthcare, qm.analyzeQuery('setback for a hospital on 1500 sqm plot'))
